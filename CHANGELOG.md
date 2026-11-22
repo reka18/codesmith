@@ -5,6 +5,33 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Model specs are forgiving, and checked before anything is sent.**
+  Spaces around the provider, model and variant are dropped
+  (`anthropic/ opus` is `anthropic/opus`), providers and models are found
+  ignoring case and `-`/`.`/`_` differences, and a partial name means the
+  newest model containing it (`opus` is the newest `claude-*opus*`; a name
+  alone is looked for among every runnable model). A spec naming no known
+  model, or one that matches several equally new ones, is refused with the
+  closest matches instead of being sent; providers without a model list
+  and servers on this machine still take any model.
+- **A signed-in Claude Code counts as available**, so a fresh machine
+  defaults to its newest model rather than a local server that may not be
+  running.
+- **Signing in selects the provider.** After `/login` or
+  `codesmith auth login`, when no model was chosen (by `-m`, `/model`, the
+  agent or codesmith.json), the session switches to the provider's newest
+  model and it is saved as `model` in the global codesmith.json (comments
+  kept). A model a login chose may be changed by a later login; one you
+  set is never overridden.
+- **Claude without an Anthropic key runs through Claude Code.**
+  `anthropic/<model>` with no Anthropic key while Claude Code is signed in
+  runs the same model as `claude-agent/<model>`, or, without one exact
+  equivalent, is refused with the one-line fix.
+- **Provider errors lead with the fix.** A missing or rejected key names
+  the login command (and, for Anthropic with Claude Code signed in, the
+  `claude-agent/…` model to switch to); a local server that refuses the
+  connection is named with its URL. The provider's own error follows.
+
 ## 0.1.0 — 2026-11-21
 
 First public release.

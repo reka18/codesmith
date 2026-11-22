@@ -29,6 +29,7 @@ pub mod lsp;
 pub mod markdown;
 pub mod mcp;
 pub mod media;
+pub mod model_spec;
 pub mod nearby;
 pub mod paths;
 pub mod permission;

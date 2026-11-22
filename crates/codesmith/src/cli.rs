@@ -2612,6 +2612,11 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         }
         _ => None,
     };
+    // Claude Code's login is Claude Agent's, whichever entry offered it.
+    let signed_in = match m.kind {
+        signin::Kind::ClaudeCode => codesmith_core::providers::claude_agent::ID.to_string(),
+        _ => c.id.clone(),
+    };
     let req = LoginRequest {
         provider: c.id.clone(),
         kind: m.kind,
@@ -2620,7 +2625,34 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         client_id,
     };
     println!("{}", run_login(file, cwd, req, LoginIo::terminal()).await?);
+    adopt_after_login(cwd, &signed_in);
     Ok(())
+}
+
+/// After a login: when no model is chosen in codesmith.json, make the
+/// provider's newest model the default (see
+/// [`codesmith_core::model_spec::adopt_login`]), and say so.
+fn adopt_after_login(cwd: &std::path::Path, provider: &str) {
+    let Ok(loaded) = config::load(cwd) else {
+        return;
+    };
+    let access = codesmith_core::model_spec::Access::current(&loaded.config);
+    let Some(a) = codesmith_core::model_spec::adopt_login(
+        &loaded.config,
+        provider,
+        &access,
+        &paths::config_dir(),
+        &paths::data_dir(),
+    ) else {
+        return;
+    };
+    match a.saved {
+        Ok(path) => println!("Default model: {} (saved in {})", a.spec, path.display()),
+        Err(e) => println!(
+            "Using {} needs \"model\": {:?} in codesmith.json; it was not saved: {e}",
+            a.spec, a.spec
+        ),
+    }
 }
 
 async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
@@ -2679,6 +2711,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             };
             if let Some(done) = plugin_login(&file, &provider, login).await? {
                 println!("{done}");
+                adopt_after_login(cwd, &provider);
                 return Ok(());
             }
             let loaded = config::load(cwd)?;
@@ -2703,6 +2736,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 "{}",
                 save_key_login(&file, &loaded, &provider, &key, given, true)?
             );
+            adopt_after_login(cwd, &provider);
         }
         AuthCmd::List => {
             let loaded = config::load(cwd)?;

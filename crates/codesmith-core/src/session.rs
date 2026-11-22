@@ -604,14 +604,27 @@ impl Session {
                 agent::list(config).join(", ")
             )
         })?;
-        let model_spec = opts
-            .model
+        // A model asked for when a session starts (`-m`, the model picker,
+        // `/model`) must name one the user can run, made canonical
+        // (spacing, case, a partial name, Claude Code for Anthropic without
+        // a key). A subagent's, a remembered or a configured one is made
+        // canonical when it can be, and otherwise kept as it was.
+        let access = crate::model_spec::Access::current(config);
+        let strict = opts.parent.is_none();
+        let asked = match opts.model {
+            Some(m) if strict => Some(crate::model_spec::canonical(config, &m, &access)?.spec),
+            m => m,
+        };
+        let model_spec = asked
             .or_else(|| resumed.as_ref().map(|r| r.0.model.clone()).filter(|m| !m.is_empty()))
             .or_else(|| agent.model.clone())
             // The configured default, or (none, or on a disabled provider)
             // the newest available model, as OpenCode picks one.
             .or_else(|| config.default_model())
             .ok_or_else(|| anyhow!("no model configured or available: pass -m provider/model, set \"model\" in codesmith.json, or add a provider key"))?;
+        let model_spec = crate::model_spec::canonical(config, &model_spec, &access)
+            .map(|r| r.spec)
+            .unwrap_or(model_spec);
         let mut model = config.resolve_model(&model_spec)?;
         apply_agent_request(&mut model, &agent);
         let subagents = agent::subagents(config);
@@ -4617,7 +4630,13 @@ impl Session {
                         .flatten();
                     let e = match guidance {
                         Some(g) => anyhow!("{g}\n{text}"),
-                        None => anyhow!("{}", retry::message(&e)),
+                        None => anyhow!(
+                            "{}",
+                            retry::explain(
+                                &e,
+                                &retry::Target::of(&self.model, Some(&self.loaded.config))
+                            )
+                        ),
                     };
                     let Some(wait) = wait else {
                         let kept = failed_partial(partial.map(|p| p.parts).unwrap_or_default());
@@ -5166,7 +5185,10 @@ async fn stream_text(
             Ok(()) => return Ok((out, usage, reason)),
             Err(e) => match policy.next(&e, std::time::Instant::now()) {
                 Some(wait) => tokio::time::sleep(wait).await,
-                None => return Err(anyhow!("{e}")),
+                None => match retry::advice(&e, &retry::Target::of(model, None)) {
+                    Some(a) => return Err(anyhow!("{a}\n{e}")),
+                    None => return Err(anyhow!("{e}")),
+                },
             },
         }
     }

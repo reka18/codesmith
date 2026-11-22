@@ -197,6 +197,14 @@ impl LoginView {
         }
     }
 
+    /// Add a line to what a finished sign-in says (the model it selected).
+    pub fn add_note(&mut self, line: &str) {
+        if let Stage::Done { ok: true, message } = &mut self.stage {
+            message.push('\n');
+            message.push_str(line);
+        }
+    }
+
     /// A signing out ended.
     pub fn signed_out(&mut self, result: Result<String, String>) {
         self.stage = match result {
@@ -1014,6 +1022,27 @@ mod tests {
             f.contains("Claude Code is not installed") && f.contains("claude auth login"),
             "{f}"
         );
+        // A failed login selects nothing.
+        view_mut(&mut a).add_note("Now using claude-agent/opus.");
+        assert!(!frame(&a).contains("Now using"));
+    }
+
+    // Regression: signing in to Claude Code only said so, and the session
+    // kept the model it had.
+    #[test]
+    fn a_successful_login_says_which_model_it_selected() {
+        let (mut a, _d) = picker();
+        type_text(&mut a, "anthropic");
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(KeyCode::Down));
+        let Some(Action::Login(Outcome::Login(_))) = a.on_key(key(KeyCode::Enter)) else {
+            panic!("no login")
+        };
+        view_mut(&mut a).event(LoginEv::Done(Ok("Claude Code 2.0 is signed in.".into())));
+        view_mut(&mut a).add_note("Now using claude-agent/opus (saved as the default).");
+        let f = frame(&a);
+        assert!(f.contains("Claude Code 2.0 is signed in."), "{f}");
+        assert!(f.contains("Now using claude-agent/opus"), "{f}");
     }
 
     #[test]
