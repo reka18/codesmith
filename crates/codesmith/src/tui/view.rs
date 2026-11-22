@@ -1612,36 +1612,60 @@ fn input_hint(app: &App, p: &theme::Palette) -> Line<'static> {
     ])
 }
 
-/// The resting forge: a hammer, cold. It shows in the idle title.
-const HAMMER: &str = "⚒";
+/// The resting forge: a hammer, cold. It shows in the idle title. The
+/// text-presentation selector keeps fonts from drawing it as a (larger)
+/// emoji, so it matches the ember glyphs' size.
+const HAMMER: &str = "\u{2692}\u{FE0E}";
 /// How long the hammer takes to heat from cold steel to white heat when a
-/// turn starts, before the ember takes over.
-pub(crate) const HEAT_UP_MS: u128 = 720;
+/// turn starts, before the ember takes over. Slow enough to read each
+/// colour on the way.
+pub(crate) const HEAT_UP_MS: u128 = 1500;
 /// Where in [`EMBER_GLYPHS`] the ember starts once the hammer is white-hot:
 /// its densest, hottest glyph, so the hand-off reads as a flash.
 const EMBER_START: usize = 5;
 /// Cold steel: a blue-grey, darker on a light background.
 const STEEL_DARK: (u8, u8, u8) = (0x8a, 0x96, 0xa3);
 const STEEL_LIGHT: (u8, u8, u8) = (0x5d, 0x68, 0x74);
-/// Share of the heat-up spent going from steel to the first dull red glow.
-const FIRST_GLOW: f32 = 0.3;
+/// The hammer heating up: steel grey, dark blue, dark purple, purple, then
+/// crimson, orange, yellow and white heat. Ends where [`heat_color`] peaks.
+const HAMMER_DARK: &[(f32, (u8, u8, u8))] = &[
+    (0.0, STEEL_DARK),
+    (0.14, (0x3b, 0x5b, 0xab)),
+    (0.28, (0x4b, 0x2f, 0x8f)),
+    (0.42, (0x8a, 0x3f, 0xb8)),
+    (0.58, (0xc0, 0x28, 0x3c)),
+    (0.72, (0xd9, 0x48, 0x0f)),
+    (0.86, (0xff, 0xb0, 0x2e)),
+    (1.0, (0xff, 0xf1, 0xd0)),
+];
+/// The same on a light background, darker throughout and ending at amber.
+const HAMMER_LIGHT: &[(f32, (u8, u8, u8))] = &[
+    (0.0, STEEL_LIGHT),
+    (0.14, (0x23, 0x40, 0x7a)),
+    (0.28, (0x3b, 0x24, 0x70)),
+    (0.42, (0x6e, 0x2d, 0x96)),
+    (0.58, (0xa0, 0x1c, 0x32)),
+    (0.79, (0xb8, 0x36, 0x08)),
+    (1.0, (0xc7, 0x6a, 0x00)),
+];
+
+/// Linear interpolation along colour stops, clamped to `[0, 1]`; NaN is 0.
+fn ramp(stops: &[(f32, (u8, u8, u8))], h: f32) -> (u8, u8, u8) {
+    let h = if h.is_nan() { 0.0 } else { h.clamp(0.0, 1.0) };
+    let i = stops.iter().rposition(|(t, _)| *t <= h).unwrap_or(0);
+    let Some(&(t1, c1)) = stops.get(i + 1) else {
+        return stops[i].1;
+    };
+    let (t0, c0) = stops[i];
+    let k = (h - t0) / (t1 - t0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+    (mix(c0.0, c1.0), mix(c0.1, c1.1), mix(c0.2, c1.2))
+}
 
 /// The hammer's colour `t` of the way through heating up (0 cold, 1 white
-/// heat): steel fades into dull cherry red, which then climbs the heat ramp.
+/// heat).
 fn hammer_color(t: f32, light: bool) -> (u8, u8, u8) {
-    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
-    if t >= FIRST_GLOW {
-        return heat_color((t - FIRST_GLOW) / (1.0 - FIRST_GLOW), light);
-    }
-    let steel = if light { STEEL_LIGHT } else { STEEL_DARK };
-    let red = heat_color(0.0, light);
-    let k = t / FIRST_GLOW;
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
-    (
-        mix(steel.0, red.0),
-        mix(steel.1, red.1),
-        mix(steel.2, red.2),
-    )
+    ramp(if light { HAMMER_LIGHT } else { HAMMER_DARK }, t)
 }
 
 /// The idle title's hammer, in cold steel (or plain muted under `NO_COLOR`).
@@ -1701,16 +1725,7 @@ fn heat_color(heat: f32, light: bool) -> (u8, u8, u8) {
         (0.5, (0xb8, 0x36, 0x08)),
         (1.0, (0xc7, 0x6a, 0x00)),
     ];
-    let stops = if light { LIGHT } else { DARK };
-    let h = heat.clamp(0.0, 1.0);
-    let i = stops.iter().rposition(|(t, _)| *t <= h).unwrap_or(0);
-    let Some(&(t1, c1)) = stops.get(i + 1) else {
-        return stops[i].1;
-    };
-    let (t0, c0) = stops[i];
-    let k = (h - t0) / (t1 - t0);
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
-    (mix(c0.0, c1.0), mix(c0.1, c1.1), mix(c0.2, c1.2))
+    ramp(if light { LIGHT } else { DARK }, heat)
 }
 
 /// How the busy title may use colour.
@@ -3246,26 +3261,36 @@ mod tests {
     }
 
     #[test]
-    fn heating_warms_steel_to_red_then_brightens_to_white() {
+    fn heating_goes_steel_blue_purple_then_hot() {
+        let at = |t: f32| hammer_color(t, false);
+        let (r, g, b) = at(0.0);
+        assert!(b > r && b > g, "cold steel is blue-grey: {r},{g},{b}");
+        let (r, g, b) = at(0.14);
+        assert!(b > r + 60 && b > g + 40, "then dark blue: {r},{g},{b}");
+        let (r, g, b) = at(0.28);
+        assert!(b > g && r > g && b > r, "then dark purple: {r},{g},{b}");
+        let (r, g, b) = at(0.42);
+        assert!(r > g + 60 && b > g + 60, "then purple: {r},{g},{b}");
+        let (r, g, b) = at(0.58);
+        assert!(r > b + 100 && r > g + 100, "then crimson: {r},{g},{b}");
+        // From crimson on, the metal only brightens.
         let lum = |(r, g, b): (u8, u8, u8)| r as u32 * 2126 + g as u32 * 7152 + b as u32 * 722;
-        // Cold steel is blue-grey.
-        let (r0, _, b0) = hammer_color(0.0, false);
-        assert!(b0 > r0, "cold steel is bluish");
-        // Up to the first glow, red only gains on blue.
-        let mut last = i32::MIN;
-        for i in 0..=30 {
-            let (r, _, b) = hammer_color(FIRST_GLOW * i as f32 / 30.0, false);
-            assert!(r as i32 - b as i32 >= last, "step {i} cooled");
-            last = r as i32 - b as i32;
-        }
-        // After it, the glow only brightens.
         let mut last = 0;
-        for i in 0..=70 {
-            let t = FIRST_GLOW + (1.0 - FIRST_GLOW) * i as f32 / 70.0;
-            let l = lum(hammer_color(t, false));
-            assert!(l >= last, "glow dimmed at t={t}");
+        for i in 0..=42 {
+            let l = lum(at(0.58 + 0.42 * i as f32 / 42.0));
+            assert!(l >= last, "glow dimmed at step {i}");
             last = l;
         }
+        // Light themes follow the same path and end where the ember starts.
+        assert_eq!(hammer_color(1.0, true), heat_color(1.0, true));
+        assert_eq!(hammer_color(1.0, false), heat_color(1.0, false));
+    }
+
+    #[test]
+    fn the_hammer_is_drawn_as_text_not_emoji() {
+        // The selector keeps it at the ember's size and one column wide.
+        assert!(HAMMER.ends_with('\u{FE0E}'));
+        assert_eq!(HAMMER.width(), 1);
     }
 
     #[test]
