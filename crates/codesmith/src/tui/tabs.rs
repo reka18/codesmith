@@ -636,10 +636,10 @@ pub struct Strip {
     pub start: Cell<usize>,
 }
 
-/// The busy indicator: a forge hammer. A tab shows it as a single static
+/// The busy indicator: a forge ember. A tab shows it as a single static
 /// glyph (the tab strip draws no animation); the input box animates the
-/// full hammer-and-sparks sequence while a turn runs.
-pub const SPINNER: &str = "⚒";
+/// ember and its heat while a turn runs.
+pub const SPINNER: &str = "✶";
 /// The unread marker.
 pub const UNREAD: &str = "•";
 
