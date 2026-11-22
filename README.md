@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/codesmith-banner.jpg" alt="CodeSmith" width="100%">
+</p>
+
 # CodeSmith
 
 A terminal coding agent, written in Rust. CodeSmith is a port of
@@ -19,6 +23,30 @@ to match its features.
 > and is pinned to OpenCode's behaviour by ported tests and replays of its
 > recorded provider traffic. It is young, though, so expect rough edges.
 
+## Why port?
+
+[OpenCode](https://github.com/anomalyco/opencode) is an excellent terminal
+agent, but it runs on Node. Re-implementing its agent in Rust buys a few
+things that matter for a tool you live in all day and hand to other people:
+
+- **One binary, no runtime.** Install a single signed, notarized executable —
+  no Node, no `npm`, no version drift. The Linux builds are static musl, so
+  one file runs anywhere from Alpine to an old LTS.
+- **Light and durable.** A compiled core keeps long sessions lean on memory
+  and CPU, with no garbage-collection pauses, and keeps working without a
+  package ecosystem shifting under it.
+- **Safety where an agent touches your machine.** Permissions, secret-file
+  guards and the shell/tool boundary are enforced by a type-checked core with
+  an explicit, layered policy model — a security and operability layer that
+  goes beyond the original.
+- **Behaviour you can trust.** Parity isn't a claim: CodeSmith is pinned to
+  OpenCode by ported tests and by replaying OpenCode's own recorded provider
+  traffic, so each port is checked, not guessed.
+
+It is not a rewrite for its own sake, and not a fork of OpenCode's source: it
+is an independent implementation that aims to match OpenCode's terminal agent,
+then add the operability a local, self-hosted tool needs.
+
 ## Install
 
 ```sh
@@ -35,9 +63,8 @@ tools. CodeSmith never checks for updates unless you
 [opt in](docs/cli.md#update-checks).
 
 Release binaries are for macOS (signed and notarized) and Linux (static, any
-distribution). None have been published yet, so build from source for now.
-See [installation](docs/getting-started.md#install) for details and manual
-downloads.
+distribution). See [installation](docs/getting-started.md#install) for details
+and manual downloads.
 
 ## Quick start
 
