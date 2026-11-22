@@ -1604,10 +1604,49 @@ fn input_hint(app: &App, p: &theme::Palette) -> Line<'static> {
         parts.push(format!("{palette} commands"));
     }
     parts.push("/help".into());
-    Line::from(Span::styled(
-        format!(" {} ", parts.join(" · ")),
-        fg(p.muted),
-    ))
+    let look = ForgeLook::from_palette(p);
+    Line::from(vec![
+        Span::styled(" ", fg(p.muted)),
+        cold_hammer(look),
+        Span::styled(format!(" {} ", parts.join(" · ")), fg(p.muted)),
+    ])
+}
+
+/// The resting forge: a hammer, cold. It shows in the idle title.
+const HAMMER: &str = "⚒";
+/// How long the hammer takes to heat from cold steel to white heat when a
+/// turn starts, before the ember takes over.
+pub(crate) const HEAT_UP_MS: u128 = 720;
+/// Where in [`EMBER_GLYPHS`] the ember starts once the hammer is white-hot:
+/// its densest, hottest glyph, so the hand-off reads as a flash.
+const EMBER_START: usize = 5;
+/// Cold steel: a blue-grey, darker on a light background.
+const STEEL_DARK: (u8, u8, u8) = (0x8a, 0x96, 0xa3);
+const STEEL_LIGHT: (u8, u8, u8) = (0x5d, 0x68, 0x74);
+/// Share of the heat-up spent going from steel to the first dull red glow.
+const FIRST_GLOW: f32 = 0.3;
+
+/// The hammer's colour `t` of the way through heating up (0 cold, 1 white
+/// heat): steel fades into dull cherry red, which then climbs the heat ramp.
+fn hammer_color(t: f32, light: bool) -> (u8, u8, u8) {
+    let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+    if t >= FIRST_GLOW {
+        return heat_color((t - FIRST_GLOW) / (1.0 - FIRST_GLOW), light);
+    }
+    let steel = if light { STEEL_LIGHT } else { STEEL_DARK };
+    let red = heat_color(0.0, light);
+    let k = t / FIRST_GLOW;
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k).round() as u8;
+    (
+        mix(steel.0, red.0),
+        mix(steel.1, red.1),
+        mix(steel.2, red.2),
+    )
+}
+
+/// The idle title's hammer, in cold steel (or plain muted under `NO_COLOR`).
+fn cold_hammer(look: ForgeLook) -> Span<'static> {
+    Span::styled(HAMMER, look.rgb(hammer_color(0.0, look.light)))
 }
 
 /// The forge ember: one glyph that flares and cools, each step a little
@@ -1704,10 +1743,13 @@ impl ForgeLook {
     }
 
     fn heat(self, heat: f32) -> Style {
+        self.rgb(heat_color(heat, self.light))
+    }
+
+    fn rgb(self, (r, g, b): (u8, u8, u8)) -> Style {
         if !self.color {
             return Style::default().fg(self.muted);
         }
-        let (r, g, b) = heat_color(heat, self.light);
         Style::default().fg(Color::Rgb(r, g, b))
     }
 }
@@ -1722,21 +1764,30 @@ pub(crate) fn forge_title(
     look: ForgeLook,
 ) -> Vec<Span<'static>> {
     let ms = elapsed.as_millis();
-    let step = (ms / FORGE_FRAME.as_millis()) as usize % EMBER_GLYPHS.len();
     let verb = FORGE_VERBS[(ms / FORGE_VERB_MS) as usize % FORGE_VERBS.len()];
     let muted = Style::default().fg(look.muted);
 
-    let mut out = vec![
-        Span::styled(" ", muted),
-        Span::styled(EMBER_GLYPHS[step], look.heat(EMBER_HEAT[step])),
-        Span::styled(" ", muted),
-    ];
+    // First the cold hammer heats up; then the ember breathes, starting
+    // white-hot. The shimmer waits for the ember.
+    let glyph = match ms.checked_sub(HEAT_UP_MS) {
+        None => {
+            let t = ms as f32 / HEAT_UP_MS as f32;
+            Span::styled(HAMMER, look.rgb(hammer_color(t, look.light)))
+        }
+        Some(e) => {
+            let step = ((e / FORGE_FRAME.as_millis()) as usize + EMBER_START) % EMBER_GLYPHS.len();
+            Span::styled(EMBER_GLYPHS[step], look.heat(EMBER_HEAT[step]))
+        }
+    };
+    let hot = ms.checked_sub(HEAT_UP_MS);
+    let mut out = vec![Span::styled(" ", muted), glyph, Span::styled(" ", muted)];
     // The band enters from the left of the word and leaves past its end.
     let n = verb.chars().count() as f32;
     let travel = n + 4.0 * SHIMMER_BAND;
-    let pos = (ms % SHIMMER_MS) as f32 / SHIMMER_MS as f32 * travel - 2.0 * SHIMMER_BAND;
+    let pos =
+        hot.map(|e| (e % SHIMMER_MS) as f32 / SHIMMER_MS as f32 * travel - 2.0 * SHIMMER_BAND);
     for (i, ch) in verb.chars().enumerate() {
-        let glow = 1.0 - (i as f32 - pos).abs() / SHIMMER_BAND;
+        let glow = pos.map_or(0.0, |pos| 1.0 - (i as f32 - pos).abs() / SHIMMER_BAND);
         let style = if glow > 0.0 && look.color {
             look.heat(0.25 + 0.75 * glow)
         } else {
@@ -3144,23 +3195,115 @@ mod tests {
 
     #[test]
     fn the_ember_breathes_through_every_glyph_and_back() {
-        let seen: Vec<String> = (0..EMBER_GLYPHS.len() as u32)
+        let hot = Duration::from_millis(HEAT_UP_MS as u64);
+        let n = EMBER_GLYPHS.len();
+        let seen: Vec<String> = (0..n as u32)
             .map(|i| {
-                forge_ember(&forge_title(FORGE_FRAME * i, "esc", FORGE_DARK))
+                forge_ember(&forge_title(hot + FORGE_FRAME * i, "esc", FORGE_DARK))
                     .content
                     .to_string()
             })
             .collect();
-        assert_eq!(
-            seen,
-            EMBER_GLYPHS
-                .iter()
-                .map(|g| g.to_string())
-                .collect::<Vec<_>>()
+        let want: Vec<String> = (0..n)
+            .map(|i| EMBER_GLYPHS[(i + EMBER_START) % n].to_string())
+            .collect();
+        assert_eq!(seen, want);
+        // One full cycle later it is back where it started.
+        let again = forge_title(hot + FORGE_FRAME * n as u32, "esc", FORGE_DARK);
+        assert_eq!(forge_ember(&again).content, EMBER_GLYPHS[EMBER_START]);
+    }
+
+    fn rgb_of(span: &Span) -> (u8, u8, u8) {
+        match span.style.fg {
+            Some(Color::Rgb(r, g, b)) => (r, g, b),
+            other => panic!("not an rgb colour: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_turn_starts_with_the_cold_hammer() {
+        let spans = forge_title(Duration::ZERO, "esc", FORGE_DARK);
+        assert_eq!(forge_ember(&spans).content, HAMMER);
+        assert_eq!(rgb_of(forge_ember(&spans)), STEEL_DARK);
+    }
+
+    #[test]
+    fn the_hammer_heats_to_white_then_hands_off_at_the_hottest_ember() {
+        let last = forge_title(
+            Duration::from_millis(HEAT_UP_MS as u64 - 1),
+            "esc",
+            FORGE_DARK,
         );
-        // One full cycle later it is back at the first glyph.
-        let again = forge_title(FORGE_FRAME * EMBER_GLYPHS.len() as u32, "esc", FORGE_DARK);
-        assert_eq!(forge_ember(&again).content, EMBER_GLYPHS[0]);
+        assert_eq!(forge_ember(&last).content, HAMMER);
+        let (r, g, b) = rgb_of(forge_ember(&last));
+        assert!(
+            r > 240 && g > 210 && b > 170,
+            "nearly white-hot by the end: {r},{g},{b}"
+        );
+        let first = forge_title(Duration::from_millis(HEAT_UP_MS as u64), "esc", FORGE_DARK);
+        assert_eq!(forge_ember(&first).content, "✸");
+        assert_eq!(rgb_of(forge_ember(&first)), heat_color(1.0, false));
+    }
+
+    #[test]
+    fn heating_warms_steel_to_red_then_brightens_to_white() {
+        let lum = |(r, g, b): (u8, u8, u8)| r as u32 * 2126 + g as u32 * 7152 + b as u32 * 722;
+        // Cold steel is blue-grey.
+        let (r0, _, b0) = hammer_color(0.0, false);
+        assert!(b0 > r0, "cold steel is bluish");
+        // Up to the first glow, red only gains on blue.
+        let mut last = i32::MIN;
+        for i in 0..=30 {
+            let (r, _, b) = hammer_color(FIRST_GLOW * i as f32 / 30.0, false);
+            assert!(r as i32 - b as i32 >= last, "step {i} cooled");
+            last = r as i32 - b as i32;
+        }
+        // After it, the glow only brightens.
+        let mut last = 0;
+        for i in 0..=70 {
+            let t = FIRST_GLOW + (1.0 - FIRST_GLOW) * i as f32 / 70.0;
+            let l = lum(hammer_color(t, false));
+            assert!(l >= last, "glow dimmed at t={t}");
+            last = l;
+        }
+    }
+
+    #[test]
+    fn no_shimmer_until_the_hammer_is_hot() {
+        for ms in (0..HEAT_UP_MS as u64).step_by(40) {
+            let spans = forge_title(Duration::from_millis(ms), "", FORGE_DARK);
+            let verb = &spans[3..3 + "Forging".len()];
+            assert!(
+                verb.iter().all(|s| s.style.fg == Some(FORGE_DARK.muted)),
+                "at {ms}ms"
+            );
+        }
+    }
+
+    #[test]
+    fn the_idle_hammer_is_cold_steel_and_plain_under_no_color() {
+        let cold = cold_hammer(FORGE_DARK);
+        assert_eq!(cold.content, HAMMER);
+        assert_eq!(rgb_of(&cold), STEEL_DARK);
+        assert_eq!(
+            rgb_of(&cold_hammer(ForgeLook {
+                light: true,
+                ..FORGE_DARK
+            })),
+            STEEL_LIGHT
+        );
+        let plain = cold_hammer(ForgeLook {
+            color: false,
+            ..FORGE_DARK
+        });
+        assert_eq!(plain.style.fg, Some(FORGE_DARK.muted));
+    }
+
+    #[test]
+    fn hammer_colour_clamps_and_survives_nan() {
+        assert_eq!(hammer_color(-1.0, false), STEEL_DARK);
+        assert_eq!(hammer_color(f32::NAN, false), STEEL_DARK);
+        assert_eq!(hammer_color(7.0, true), heat_color(1.0, true));
     }
 
     #[test]
@@ -3236,6 +3379,7 @@ mod tests {
                 .map(|s| s.style.fg != Some(FORGE_DARK.muted))
                 .collect()
         };
+        let lit = |ms: u64| lit(HEAT_UP_MS as u64 + ms);
         let mid = lit(SHIMMER_MS as u64 / 2);
         assert!(
             mid.iter().any(|l| *l),
@@ -3267,8 +3411,9 @@ mod tests {
                 "at {ms}ms"
             );
         }
-        let a = forge_title(Duration::ZERO, "esc", plain);
-        let b = forge_title(FORGE_FRAME * 5, "esc", plain);
+        let hot = Duration::from_millis(HEAT_UP_MS as u64);
+        let a = forge_title(hot, "esc", plain);
+        let b = forge_title(hot + FORGE_FRAME * 5, "esc", plain);
         assert_ne!(
             forge_ember(&a).content,
             forge_ember(&b).content,
