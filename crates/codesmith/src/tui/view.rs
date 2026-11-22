@@ -1587,10 +1587,8 @@ fn input_hint(app: &App) -> String {
         return format!(" {} … ", typed.join(" "));
     }
     if app.busy {
-        return match k.hint("session.interrupt") {
-            h if h.is_empty() => " working… ".to_string(),
-            h => format!(" working… {h} to interrupt "),
-        };
+        let elapsed = app.busy_since.map(|t| t.elapsed()).unwrap_or_default();
+        return forge_hint(elapsed, &k.hint("session.interrupt"));
     }
     let mut parts = vec![app.header.agent.clone()];
     let cycle = k.hint("agent.cycle");
@@ -1603,6 +1601,60 @@ fn input_hint(app: &App) -> String {
     }
     parts.push("/help".into());
     format!(" {} ", parts.join(" · "))
+}
+
+/// Frames of the forge busy glyph: a hammer, with sparks that burst to its
+/// right on the strike. Each is three display columns wide, so the title
+/// does not jitter as it cycles. Kept text-presentation (no emoji) so every
+/// terminal gives them the same width.
+const FORGE_FRAMES: &[&str] = &[
+    "⚒  ", // raised
+    "⚒  ", // winding up
+    "⚒ ·", // starting down
+    "⚒✦✶", // strike — sparks
+    "⚒✶✦", // strike — spray
+    "⚒✧·", // sparks flying
+    "⚒· ", // embers
+    "⚒  ", // reset
+];
+/// How long each forge frame shows. The event loop ticks at this rate while
+/// busy, so the hammer swings even when nothing else is coming in.
+pub(crate) const FORGE_FRAME: std::time::Duration = std::time::Duration::from_millis(110);
+/// Smithing verbs for the busy indicator — CodeSmith's take on Claude Code's
+/// "bucket of verbs". One shows at a time, changing every [`FORGE_VERB_MS`].
+const FORGE_VERBS: &[&str] = &[
+    "Forging",
+    "Hammering",
+    "Smithing",
+    "Smelting",
+    "Tempering",
+    "Quenching",
+    "Annealing",
+    "Kindling",
+    "Stoking",
+    "Casting",
+    "Welding",
+    "Riveting",
+    "Honing",
+    "Shaping",
+    "Striking",
+    "Firing",
+];
+const FORGE_VERB_MS: u128 = 1900;
+
+/// The busy input-box title: an animated hammer throwing sparks and a
+/// rotating smithing verb, with how to stop the turn. Pure in `elapsed`, so
+/// it is deterministic to test; `elapsed` is zero (the first frame) when the
+/// turn's start time is not yet known.
+pub(crate) fn forge_hint(elapsed: std::time::Duration, interrupt_key: &str) -> String {
+    let ms = elapsed.as_millis();
+    let glyph = FORGE_FRAMES[(ms / FORGE_FRAME.as_millis()) as usize % FORGE_FRAMES.len()];
+    let verb = FORGE_VERBS[(ms / FORGE_VERB_MS) as usize % FORGE_VERBS.len()];
+    if interrupt_key.is_empty() {
+        format!(" {glyph} {verb}… ")
+    } else {
+        format!(" {glyph} {verb}… {interrupt_key} to interrupt ")
+    }
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
@@ -2953,5 +3005,61 @@ mod tests {
         assert_eq!(tokens(999), "999");
         assert_eq!(tokens(1_000), "1K");
         assert_eq!(tokens(1_050_000), "1.1M");
+    }
+
+    use std::time::Duration;
+
+    #[test]
+    fn forge_hint_shows_a_verb_and_the_interrupt_key() {
+        let s = forge_hint(Duration::ZERO, "esc");
+        assert!(s.contains('⚒'), "{s:?}");
+        assert!(s.contains("Forging…"), "{s:?}");
+        assert!(s.contains("esc to interrupt"), "{s:?}");
+    }
+
+    #[test]
+    fn forge_hint_without_a_key_omits_the_interrupt_text() {
+        let s = forge_hint(Duration::ZERO, "");
+        assert!(s.contains("Forging…"), "{s:?}");
+        assert!(!s.contains("interrupt"), "{s:?}");
+    }
+
+    #[test]
+    fn forge_hint_sparks_fly_on_the_strike_frame_only() {
+        // Frame index = elapsed / FORGE_FRAME; frame 3 is a strike.
+        let strike = forge_hint(FORGE_FRAME * 3, "esc");
+        assert!(strike.contains('✦') || strike.contains('✶'), "{strike:?}");
+        // The first (raised) frame has no spark.
+        let quiet = forge_hint(Duration::ZERO, "esc");
+        assert!(!quiet.contains('✦') && !quiet.contains('✶'), "{quiet:?}");
+    }
+
+    #[test]
+    fn forge_hint_rotates_through_the_verbs_and_wraps() {
+        assert!(forge_hint(Duration::ZERO, "esc").contains("Forging…"));
+        assert!(
+            forge_hint(Duration::from_millis(FORGE_VERB_MS as u64), "esc").contains("Hammering…")
+        );
+        // After every verb it returns to the first.
+        let wrap = FORGE_VERB_MS as u64 * FORGE_VERBS.len() as u64;
+        assert!(forge_hint(Duration::from_millis(wrap), "esc").contains("Forging…"));
+    }
+
+    #[test]
+    fn forge_frames_are_a_constant_display_width() {
+        use unicode_width::UnicodeWidthStr;
+        let w = FORGE_FRAMES[0].width();
+        assert!(w > 0);
+        for f in FORGE_FRAMES {
+            assert_eq!(f.width(), w, "frame {f:?} is not {w} columns wide");
+        }
+    }
+
+    #[test]
+    fn forge_hint_never_panics_over_a_long_turn() {
+        // Frame and verb indexing wrap, so a long turn must never panic.
+        for secs in [0u64, 1, 5, 60, 3600, 100_000] {
+            let _ = forge_hint(Duration::from_secs(secs), "esc");
+        }
     }
 }

@@ -2282,11 +2282,21 @@ async fn run_in(
             }
             let following = r.sync_shells();
             let toast = r.app.toasts.tick(std::time::Instant::now());
+            // Note when the turn became busy, for the forge animation; clear
+            // it when idle so the indicator restarts next turn.
+            if r.app.busy {
+                r.app.busy_since.get_or_insert_with(std::time::Instant::now);
+            } else {
+                r.app.busy_since = None;
+            }
             terminal.draw(|f| view::draw(f, &r.app))?;
-            let tick = match (following.then_some(SHELL_POLL), toast) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
+            // The forge hammer swings while a turn runs, even when no events
+            // arrive; the shell poll and toasts tick alongside it.
+            let anim = r.app.busy.then_some(view::FORGE_FRAME);
+            let tick = [following.then_some(SHELL_POLL), toast, anim]
+                .into_iter()
+                .flatten()
+                .min();
             let ev = match tick {
                 // The spinner moves while nothing else comes in.
                 Some(d) => match tokio::time::timeout(d, rx.recv()).await {
