@@ -5,6 +5,10 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+## 0.1.0 — 2026-11-21
+
+First public release.
+
 - **Claude Agent processes are capped, and can start ahead of a turn.**
   The global `claude_agent` setting (`max_processes`, `prewarm`, `spare`;
   ignored in project config) bounds every `claude` CodeSmith runs, 4 by
