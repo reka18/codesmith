@@ -62,6 +62,7 @@ mod parity_prompt;
 mod parity_tabs;
 #[cfg(test)]
 mod parity_ui;
+mod provider_pick;
 pub(crate) mod settings;
 mod stash;
 mod swap;
@@ -772,14 +773,16 @@ impl Runner {
             }
             "model" if self.idle_or_say() => {
                 if args.is_empty() {
-                    // The kept lists show at once; the local servers are
-                    // asked again meanwhile.
-                    let items = self.model_items();
-                    self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, "Models", items)));
-                    refresh_local_models(&self.loaded.config, self.tx.clone());
-                    swap::refresh(&self.loaded.config, self.tx.clone());
+                    self.open_model_picker();
                 } else {
                     self.set_model(args)?;
+                }
+            }
+            "provider" if self.idle_or_say() => {
+                if args.is_empty() {
+                    self.open_provider_picker();
+                } else {
+                    self.choose_provider(args.trim())?;
                 }
             }
             "variant" if self.idle_or_say() => self.set_variant(args)?,
@@ -913,14 +916,139 @@ impl Runner {
         }
     }
 
-    /// The model picker's items: favourites, then recent models, then the
-    /// rest.
+    /// The provider the session's model is on.
+    fn current_provider(&self) -> String {
+        provider_pick::provider_of(&self.app.header.model).to_string()
+    }
+
+    /// The model picker, for the current provider. The kept lists show at
+    /// once; local servers, a stale hosted list and Claude Code's list are
+    /// asked again meanwhile.
+    fn open_model_picker(&mut self) {
+        let pid = self.current_provider();
+        let items = self.model_items();
+        let title = format!("Models · {}", self.provider_name(&pid));
+        self.app.modal = Some(Modal::Picker(Picker::new(Pick::Model, &title, items)));
+        refresh_local_models(&self.loaded.config, self.tx.clone());
+        swap::refresh(&self.loaded.config, self.tx.clone());
+        refresh_hosted_models(&self.loaded.config, vec![pid.clone()], self.tx.clone());
+        if pid == codesmith_core::providers::claude_agent::ID {
+            refresh_claude_models(&self.loaded.config, self.tx.clone());
+        }
+    }
+
+    /// A provider's display name.
+    fn provider_name(&self, pid: &str) -> String {
+        self.loaded
+            .config
+            .provider(pid)
+            .and_then(|p| p.name)
+            .unwrap_or_else(|| pid.to_string())
+    }
+
+    /// The provider picker's rows, with each provider's state.
+    fn provider_items(&self) -> Vec<PickItem> {
+        let choices = codesmith_core::providers::signin::choices(
+            &self.loaded.config,
+            &codesmith_core::paths::auth_file(),
+            &codesmith_core::providers::process_env(),
+        );
+        let list = provider_pick::providers(&self.loaded.config, &choices);
+        provider_pick::provider_items(&list, &self.current_provider())
+    }
+
+    /// `/provider`: every provider and whether it is ready. The ready ones'
+    /// stale lists and the local servers are asked again meanwhile.
+    fn open_provider_picker(&mut self) {
+        let items = self.provider_items();
+        let ready: Vec<String> = items
+            .iter()
+            .filter(|i| i.detail.starts_with("ready"))
+            .map(|i| i.id.clone())
+            .collect();
+        self.app.modal = Some(Modal::Picker(Picker::new(
+            Pick::Provider,
+            "Providers",
+            items,
+        )));
+        refresh_local_models(&self.loaded.config, self.tx.clone());
+        refresh_hosted_models(&self.loaded.config, ready, self.tx.clone());
+    }
+
+    /// Switch to provider `pid`: its model used last, else its newest. A
+    /// provider that needs a sign-in opens the sign-in picker on it.
+    fn choose_provider(&mut self, pid: &str) -> Result<()> {
+        let choices = codesmith_core::providers::signin::choices(
+            &self.loaded.config,
+            &codesmith_core::paths::auth_file(),
+            &codesmith_core::providers::process_env(),
+        );
+        let list = provider_pick::providers(&self.loaded.config, &choices);
+        let Some(p) = list
+            .iter()
+            .find(|p| p.id == pid)
+            .or_else(|| list.iter().find(|p| p.id.eq_ignore_ascii_case(pid)))
+            .cloned()
+        else {
+            return Err(anyhow!("unknown provider {pid:?}; /provider lists them"));
+        };
+        match p.status {
+            provider_pick::Status::SignIn => {
+                self.open_login();
+                if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
+                    v.focus(&p.id);
+                }
+                return Ok(());
+            }
+            provider_pick::Status::Local(0) => {
+                refresh_local_models(&self.loaded.config, self.tx.clone());
+                return Err(anyhow!(
+                    "{} is not answering; start it, then try again",
+                    p.name
+                ));
+            }
+            _ => {}
+        }
+        let recent = self.models.read().recent;
+        match provider_pick::model_for(&self.loaded.config, &p.id, &recent) {
+            Some(spec) => {
+                let remembered =
+                    models::Model::parse(&spec).and_then(|m| self.models.resolve_variant(&m));
+                match remembered {
+                    Some(v) if self.set_model(&format!("{spec}#{v}")).is_ok() => {}
+                    _ => self.set_model(&spec)?,
+                }
+                self.app.notice(format!(
+                    "provider: {} · /model to pick another model",
+                    p.name
+                ));
+            }
+            None => {
+                // Nothing listed yet: fetch the list and let the user pick.
+                refresh_hosted_models(&self.loaded.config, vec![p.id.clone()], self.tx.clone());
+                self.app.input.set(format!("/model {}/", p.id));
+                self.app.notice(format!(
+                    "{} lists no models yet; type one after /model {}/",
+                    p.name, p.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The model picker's items: the current provider's models, favourites
+    /// and recent ones first, then a row to switch provider.
     fn model_items(&self) -> Vec<PickItem> {
         let prefs = self.models.read();
-        let mut items = model_items(&self.loaded.config, &self.app.header.model);
-        // The models the servers with a `swap` setting can load, last.
+        let pid = self.current_provider();
+        let mut items =
+            provider_pick::model_items(&self.loaded.config, &self.app.header.model, &pid);
+        // The models the server can load with a `swap` setting, last.
         let swaps = swap::items(&self.loaded.config, &items);
-        items.extend(swaps);
+        items.extend(swaps.into_iter().filter(|i| {
+            i.id.trim_start_matches(swap::PREFIX)
+                .starts_with(&format!("{pid}/"))
+        }));
         let rank = |id: &str| {
             let key = id.split('#').next().unwrap_or(id);
             if prefs.favorite.iter().any(|m| m.key() == key) {
@@ -949,6 +1077,10 @@ impl Runner {
                 .unwrap_or(usize::MAX)
         };
         items.sort_by_key(|i| (rank(&i.id), order(&i.id)));
+        items.push(provider_pick::other_providers_item(
+            &pid,
+            &self.provider_name(&pid),
+        ));
         items
     }
 
@@ -1107,6 +1239,8 @@ impl Runner {
                     }
                 }
             },
+            Pick::Model if id == provider_pick::OTHER_PROVIDERS => self.open_provider_picker(),
+            Pick::Provider if self.idle_or_say() => self.choose_provider(&id)?,
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => {
@@ -1122,7 +1256,12 @@ impl Runner {
             }
             Pick::DiffSource | Pick::DiffBase => self.app.diff_picked(kind, &id),
             // The app runs what the palette chose.
-            Pick::Command | Pick::Session | Pick::Fork | Pick::Agent | Pick::Model => {}
+            Pick::Command
+            | Pick::Session
+            | Pick::Fork
+            | Pick::Agent
+            | Pick::Model
+            | Pick::Provider => {}
         }
         Ok(())
     }
@@ -1840,11 +1979,17 @@ impl Runner {
                 }
             }
             Ev::LocalModels => {
-                let items = self.model_items();
-                if let Some(Modal::Picker(p)) = self.app.modal.as_mut() {
-                    if p.kind == Pick::Model {
-                        p.replace_items(items);
-                    }
+                let kind = match &self.app.modal {
+                    Some(Modal::Picker(p)) => Some(p.kind),
+                    _ => None,
+                };
+                let items = match kind {
+                    Some(Pick::Model) => Some(self.model_items()),
+                    Some(Pick::Provider) => Some(self.provider_items()),
+                    _ => None,
+                };
+                if let (Some(items), Some(Modal::Picker(p))) = (items, self.app.modal.as_mut()) {
+                    p.replace_items(items);
                 }
             }
             // An interrupted turn that finished anyway: already reloaded,
@@ -1933,75 +2078,103 @@ fn refresh_local_models(cfg: &config::Config, tx: UnboundedSender<Ev>) {
     });
 }
 
-/// Models for the picker: every configured model, the models the local
-/// servers listed when last asked, then the built-in providers without
-/// listed models (choosing one prefills `/model p/`).
-fn model_items(cfg: &config::Config, current: &str) -> Vec<PickItem> {
-    let mut items: Vec<PickItem> = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for (pid, p) in &cfg.providers {
-        let pname = p.name.clone().unwrap_or_else(|| pid.clone());
-        for (mid, m) in &p.models {
-            let spec = format!("{pid}/{mid}");
-            seen.insert(pid.clone());
-            items.push(PickItem {
-                current: spec == current,
-                detail: match (&m.name, m.limit.context) {
-                    (Some(n), Some(c)) => format!("{n} · {pname} · {}K context", c / 1000),
-                    (Some(n), None) => format!("{n} · {pname}"),
-                    (None, Some(c)) => format!("{pname} · {}K context", c / 1000),
-                    (None, None) => pname.clone(),
-                },
-                label: spec.clone(),
-                id: spec,
-            });
-        }
-    }
-    for pid in codesmith_core::providers::local::providers(cfg) {
-        let Some(p) = cfg.provider(&pid) else {
-            continue;
-        };
-        let pname = p.name.clone().unwrap_or_else(|| pid.clone());
-        for mid in cfg.list_models(&pid, &[]) {
-            let spec = format!("{pid}/{mid}");
-            if items.iter().any(|i| i.id == spec) || codesmith_core::providers::hidden(&pid, &mid) {
-                continue;
+/// How long one hosted provider's model list may take.
+const HOSTED_MODELS_WAIT: Duration = Duration::from_secs(10);
+
+/// Fetch the model lists of the hosted providers among `pids` whose kept
+/// list is stale (missing, a day old, or for another key), then refresh an
+/// open picker. Only providers with a key are asked; nothing runs while
+/// idle.
+fn refresh_hosted_models(cfg: &config::Config, pids: Vec<String>, tx: UnboundedSender<Ev>) {
+    use codesmith_core::providers::{hosted, live, oauth};
+    static RUNNING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let now = oauth::now_ms();
+    let due: Vec<String> = pids
+        .into_iter()
+        .filter(|p| hosted::hosted(p) && !cfg.provider_disabled(p))
+        .filter(|p| {
+            let acct = cfg.live_account(p).unwrap_or_default();
+            acct.starts_with("key:")
+                && acct != hosted::account(None)
+                && hosted::stale(live::load(p).as_ref(), &acct, now)
+        })
+        .filter(|p| {
+            let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+            if running.contains(p) {
+                return false;
             }
-            seen.insert(pid.clone());
-            let context = cfg.resolve_model(&spec).ok().and_then(|m| m.context);
-            items.push(PickItem {
-                current: spec == current,
-                detail: match context {
-                    Some(c) => format!("{pname} · local · {}K context", c / 1000),
-                    None => format!("{pname} · local"),
-                },
-                label: spec.clone(),
-                id: spec,
+            running.push(p.clone());
+            true
+        })
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    let cfg = cfg.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut set = tokio::task::JoinSet::new();
+        for pid in due {
+            let (cfg, client) = (cfg.clone(), client.clone());
+            set.spawn(async move {
+                let ok = match cfg.resolve_model(&format!("{pid}/_")) {
+                    Ok(m) => {
+                        let settings = cfg.provider(&pid).unwrap_or_default().settings;
+                        matches!(
+                            tokio::time::timeout(
+                                HOSTED_MODELS_WAIT,
+                                live::refresh(&client, &pid, &m.provider, &settings),
+                            )
+                            .await,
+                            Ok(Some(Ok(_)))
+                        )
+                    }
+                    Err(_) => false,
+                };
+                RUNNING
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|p| p != &pid);
+                ok
             });
         }
-    }
-    if !current.is_empty() && !items.iter().any(|i| i.current) {
-        items.insert(
-            0,
-            PickItem {
-                id: current.to_string(),
-                label: current.to_string(),
-                detail: "current".into(),
-                current: true,
-            },
-        );
-    }
-    for (id, name, ..) in config::BUILTIN {
-        if !seen.contains(*id) {
-            items.push(PickItem {
-                id: format!("{id}/"),
-                label: format!("{id}/…"),
-                detail: format!("{name} · type a model id"),
-                current: false,
-            });
+        let mut any = false;
+        while let Some(r) = set.join_next().await {
+            any |= r.unwrap_or(false);
         }
+        if any {
+            let _ = tx.send(Ev::LocalModels);
+        }
+    });
+}
+
+/// Ask Claude Code for its models again when its kept list is missing or a
+/// day old (no prompt is sent), then refresh an open picker.
+fn refresh_claude_models(cfg: &config::Config, tx: UnboundedSender<Ev>) {
+    use codesmith_core::providers::{claude_agent, hosted};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    let file = codesmith_ai::claude_agent::catalog::Catalog::file(&claude_agent::storage());
+    let fresh = std::fs::metadata(&file)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_millis() < hosted::MAX_AGE_MS as u128);
+    if fresh || RUNNING.swap(true, Ordering::SeqCst) {
+        return;
     }
-    items
+    let p = cfg.provider(claude_agent::ID).unwrap_or_default();
+    tokio::spawn(async move {
+        let state = tokio::time::timeout(
+            HOSTED_MODELS_WAIT * 3,
+            claude_agent::check(&claude_agent::connection(&p)),
+        )
+        .await;
+        RUNNING.store(false, Ordering::SeqCst);
+        if state.is_ok_and(|s| s.problem().is_none()) {
+            let _ = tx.send(Ev::LocalModels);
+        }
+    });
 }
 
 /// Close as on exit when the terminal hangs up.
@@ -2493,6 +2666,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("login", false),
     ("agent", true),
     ("model", true),
+    ("provider", true),
     ("variant", true),
     ("diff", false),
     ("editor", false),

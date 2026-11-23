@@ -1776,8 +1776,18 @@ pub fn check(protocol: Protocol, req: &Request) -> Result<(), Error> {
 impl Provider {
     /// Model ids the provider reports, sorted.
     pub async fn list_models(&self, client: &reqwest::Client) -> Result<Vec<String>, Error> {
+        let v = self.list_models_json(client).await?;
+        Ok(model_ids(self.protocol, &v))
+    }
+
+    /// The provider's model list as it answered: Gemini's `models`,
+    /// Anthropic's and OpenAI-compatible APIs' `data`, with whatever else
+    /// each model carries (names, context sizes, creation times).
+    pub async fn list_models_json(&self, client: &reqwest::Client) -> Result<Value, Error> {
         let rb = match self.protocol {
             Protocol::GoogleGemini => self.get(client, "models?pageSize=1000"),
+            // Anthropic lists 20 models a page unless asked for more.
+            Protocol::AnthropicMessages => self.get(client, "models?limit=1000"),
             _ => self.get(client, "models"),
         };
         let (client, req) = self.authorized(rb).await?;
@@ -1790,8 +1800,7 @@ impl Provider {
                 body: text.chars().take(2000).collect(),
             });
         }
-        let v: Value = serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))?;
-        Ok(model_ids(self.protocol, &v))
+        serde_json::from_str(&text).map_err(|e| Error::Decode(e.to_string()))
     }
 }
 

@@ -5,6 +5,20 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`/provider` switches provider; `/model` picks within it.** The
+  provider picker lists every provider as `ready`, `local` or `sign in`;
+  choosing a ready one switches to the model you used there last, else its
+  newest, and choosing one that needs a key opens the sign-in picker on
+  it. The model picker now lists only the current provider's models,
+  newest first, with a row to switch provider.
+- **Model lists come from each provider's API.** Anthropic, OpenAI,
+  Gemini, OpenRouter, Groq, DeepSeek, Mistral, xAI, Together, Fireworks
+  and Cerebras are asked for the models your key can use when a picker
+  opens and the kept list is over a day old (never while idle), so new
+  models appear without a CodeSmith update and can be run. Claude Code's
+  list refreshes the same way. Lists are kept per key fingerprint, never
+  the key; a failed request keeps the previous list.
+
 ## 0.2.0 — 2026-11-22
 
 - **The busy indicator is a forge.** While idle, the input box title shows

@@ -1,8 +1,9 @@
 //! Model lists a provider serves for the signed-in account (Modal's proxy,
-//! Copilot's `/models`), fetched by `codesmith models <provider>` and kept
-//! in the data folder's `live-models.json` (only you can read it). Model
-//! resolution reads the kept list, so no request is made unless asked:
-//! CodeSmith fetches nothing in the background.
+//! Copilot's `/models`, the hosted providers' APIs in [`super::hosted`]),
+//! fetched by `codesmith models <provider>` or when a model picker opens
+//! with a stale list, and kept in the data folder's `live-models.json`
+//! (only you can read it). Model resolution reads the kept list, so no
+//! request is made while idle.
 //!
 //! Each provider's raw list is kept as fetched, with the account it was
 //! fetched for (a fingerprint, never the key), and turned into catalog
@@ -91,6 +92,12 @@ pub fn derive(
     {
         return super::local::derive(provider, &raw);
     }
+    if kept["account"]
+        .as_str()
+        .is_some_and(|a| a.starts_with("key:"))
+    {
+        return super::hosted::derive(provider, &raw, templates);
+    }
     match provider {
         super::modal::ID => super::modal::derive(base, &super::modal::parse(&raw), templates),
         super::copilot::ID => {
@@ -160,6 +167,9 @@ pub async fn refresh(
             }
             .await,
         ),
+        id if super::hosted::hosted(id) => {
+            Some(super::hosted::refresh(client, &file(), provider_id, p).await)
+        }
         _ => {
             let kind = super::local::kind(provider_id, settings)?;
             Some(

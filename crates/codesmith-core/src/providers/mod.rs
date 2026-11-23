@@ -17,6 +17,7 @@ pub mod credentials;
 pub mod digitalocean;
 pub mod gateways;
 pub mod gitlab;
+pub mod hosted;
 pub mod live;
 pub mod local;
 pub mod modal;
