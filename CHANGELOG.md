@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.3.0 — 2026-11-22
 
 - **`/provider` switches provider; `/model` picks within it.** The
   provider picker lists every provider as `ready`, `local` or `sign in`;
