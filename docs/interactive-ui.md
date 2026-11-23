@@ -383,7 +383,8 @@ and `opencode` is used.
 | `/fork` | Fork the session: all of it, or before a prompt you pick, which comes back in the input (after anything typed there). The fork opens in a tab of its own. See [sessions](sessions.md#forking). |
 | `/undo`, `/redo` | Undo or redo the latest turn's file changes. See [sessions](sessions.md#undo-and-redo). |
 | `/agent [id]` | Switch agent, or pick one. As in OpenCode, an agent takes the model (and variant) it last had in this session, else its configured model, else the session's. |
-| `/model [provider/model]` | Switch model, or pick one. |
+| `/provider [name]` | Switch provider, or pick one; a provider that needs a key or sign-in opens the sign-in picker on it. |
+| `/model [provider/model]` | Switch model, or pick one of the current provider's. |
 | `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/login` | [Sign in](#signing-in-to-providers) to a provider, or sign out. |
@@ -457,14 +458,25 @@ one.
 
 ## Pickers
 
-`/model`, `/agent`, `/sessions` and `/themes` without arguments open a
-picker (and so do **ctrl+x m**, **a** and **l**). Type to filter. **↑/↓**,
-**ctrl+p/n** or **tab** move, **pgup/pgdn** jump, **home/end** go to the
-ends, **enter** chooses, and **esc** closes. The model picker
-lists the models configured under `providers`, the models found on running
-[local servers](configuration.md#local-model-discovery-ollama-lm-studio-vllm-llamacpp),
-and the current one, then a `provider/…` row for each other built-in
-provider, which fills in `/model provider/` for you to finish. To use any
+`/provider`, `/model`, `/agent`, `/sessions` and `/themes` without arguments
+open a picker (and so do **ctrl+x m**, **a** and **l**). Type to filter.
+**↑/↓**, **ctrl+p/n** or **tab** move, **pgup/pgdn** jump, **home/end** go to
+the ends, **enter** chooses, and **esc** closes.
+
+The **provider picker** lists every provider with where it stands: `ready`
+(with where its key or login comes from, and how many models it lists),
+`local` (a server on this machine, with the models it listed, or "not
+answering"), or `sign in`. The current provider comes first, then the ready
+ones, the local ones, and the rest. Choosing a ready provider switches to the
+model you used there last, else its newest; choosing one that needs a key or
+login opens the [sign-in picker](#signing-in-to-providers) on it.
+
+The **model picker** lists the current provider's models, newest first
+(favourites and recent ones ahead of the rest), and ends with a row that
+opens the provider picker. For a hosted provider the list is the one its own
+API gives your account ([kept for a day](configuration.md#model-lists-from-the-provider)),
+for a [local server](configuration.md#local-model-discovery-ollama-lm-studio-vllm-llamacpp)
+the models it serves, and for Claude Code the models it offers. To use any
 other model, type `/model provider/model`.
 
 For a provider with a [`swap`](configuration.md#swapping-the-servers-model-swap)

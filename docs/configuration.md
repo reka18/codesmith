@@ -368,6 +368,30 @@ gives up after ten seconds. The request sends a generic `User-Agent`
 
 `scripts/models-snapshot.py` rebuilds the bundled snapshot.
 
+### Model lists from the provider
+
+The model picker lists a hosted provider's models as its own API reports
+them for your account (Anthropic's and the OpenAI-compatible providers'
+`GET /models`, Gemini's `models.list`), so a model released after the
+bundled catalog shows up and runs. Each listed model keeps the catalog's
+details when the catalog knows it, and otherwise takes what the API says
+(its name, context size and release date). Embedding, speech, image and
+moderation models are left out.
+
+- **When it is asked.** Only when the model or provider picker opens and the
+  kept list is missing, more than a day old, or was fetched with another key,
+  and only for providers you have a key for. Nothing is fetched while
+  CodeSmith is idle. `codesmith models PROVIDER` asks every time.
+- **What is kept.** The list, in `live-models.json` in the data folder (only
+  you can read it), with a fingerprint of the key it was fetched with, never
+  the key itself. A failed request keeps the list from before; with no list,
+  the catalog's models show.
+- **Which providers.** `anthropic`, `openai`, `google`, `openrouter`, `groq`,
+  `deepseek`, `mistral`, `xai`, `together`, `fireworks` and `cerebras`.
+  Claude Code's models come from Claude Code itself, asked again when its
+  list is a day old (no prompt is sent); local servers are asked each time a
+  picker opens.
+
 ### Adding or overriding a provider
 
 ```jsonc

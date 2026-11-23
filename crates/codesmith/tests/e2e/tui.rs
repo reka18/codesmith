@@ -1456,3 +1456,31 @@ async fn auth_login_without_a_provider_picks_one_in_the_terminal() {
     assert_eq!(saved["fireworks"]["key"], PICKED_KEY);
     assert!(!ui.screen.contains(PICKED_KEY), "the key was echoed");
 }
+
+// `/provider` lists the providers with their state, and `/model` lists the
+// current provider's models with a row back to the providers.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_provider_and_model_pickers_list_by_provider() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("tab agents").await;
+    ui.send(b"/provider\r").await;
+    ui.wait_for("Providers").await;
+    ui.wait_for("ready · configured · 2 models").await;
+    // Esc alone, or the terminal reads it with the next key as alt+key.
+    ui.send(b"\x1b").await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ui.send(b"/model\r").await;
+    ui.wait_for("Models · fake").await;
+    ui.wait_for("fake/other").await;
+    ui.wait_for("Switch provider").await;
+    ui.send(b"\x1b").await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ui.send(b"/provider fake\r").await;
+    ui.wait_for("provider: fake").await;
+    ui.quit().await;
+}

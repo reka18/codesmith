@@ -178,6 +178,8 @@ pub enum Pick {
     /// A message to fork the session before ("" forks all of it).
     Fork,
     Model,
+    /// The provider picker (`/provider`).
+    Provider,
     Agent,
     Theme,
     /// The diff viewer's source chooser.
@@ -752,7 +754,8 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("undo", "undo the latest turn's file changes"),
     ("redo", "redo the latest undone turn"),
     ("agent", "switch agent"),
-    ("model", "switch model"),
+    ("provider", "switch provider, signing in if needed"),
+    ("model", "switch model within the provider"),
     (
         "variant",
         "cycle or pick the model variant (reasoning effort)",

@@ -155,7 +155,8 @@ automations, which never ask. See
 
 `codesmith models` lists the built-in and configured providers with their
 configured models. `codesmith models PROVIDER` asks that provider's API which
-models it offers. `--refresh` first fetches the
+models it offers, and keeps the answer for the
+[pickers](interactive-ui.md#pickers) and model resolution. `--refresh` first fetches the
 [model catalog](configuration.md#the-model-catalog-modelsdev) into the cache,
 even when background fetching is off.
 

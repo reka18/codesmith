@@ -158,6 +158,21 @@ impl LoginView {
             .collect()
     }
 
+    /// Open on provider `id`: its sign-in methods when it has any, else
+    /// selected in the list (with its note). `false` when it is not listed.
+    pub fn focus(&mut self, id: &str) -> bool {
+        let Some(choice) = self.choices.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        self.filter.clear();
+        self.sel = choice;
+        let c = &self.choices[choice];
+        if !c.methods.is_empty() || c.state.saved() {
+            self.stage = Stage::Methods { choice, sel: 0 };
+        }
+        true
+    }
+
     /// New states (after a sign-in or out), keeping the selection.
     pub fn refresh(&mut self, choices: Vec<Choice>, client_help: BTreeMap<String, String>) {
         self.choices = choices;

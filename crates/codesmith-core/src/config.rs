@@ -2389,9 +2389,16 @@ impl Config {
     }
 
     /// The account a provider's kept live list must have been fetched for:
-    /// a local provider's endpoint (see [`crate::providers::local`]).
+    /// a local provider's endpoint (see [`crate::providers::local`]), or a
+    /// hosted provider's key fingerprint (see [`crate::providers::hosted`]).
     pub fn live_account(&self, pid: &str) -> Option<String> {
         let p = self.provider(pid)?;
+        // A hosted provider's list is for the key it was fetched with.
+        if crate::providers::hosted::hosted(pid) {
+            return Some(crate::providers::hosted::account(
+                provider_key(pid, &p).as_deref(),
+            ));
+        }
         let kind = crate::providers::local::kind(pid, &p.settings)?;
         let root = crate::providers::local::root(kind, p.settings.base_url.as_deref()?)?;
         Some(crate::providers::local::account(&root))
