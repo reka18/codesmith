@@ -6,6 +6,7 @@
 # Environment:
 #   CODESMITH_VERSION      version to install, e.g. 0.1.0 (default: latest release)
 #   CODESMITH_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
+#   CODESMITH_NO_PROMPT    set to skip waiting for Enter after the banner
 #   CODESMITH_BASE_URL     where release files live (default: GitHub Releases;
 #                          useful for mirrors and testing)
 #
@@ -120,6 +121,85 @@ detect_target() {
     esac
 }
 
+# The banner shown after a successful install: the same text as
+# packaging/banner.txt (a test keeps the two equal). Coloured on a terminal
+# unless NO_COLOR is set; it waits for Enter only when someone is there to
+# press it (a terminal on stderr and /dev/tty, not CI or CODESMITH_NO_PROMPT).
+banner_text() {
+    cat <<'BANNER'
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   ⚒︎  CodeSmith forged successfully                         ║
+║                                                            ║
+║         ██████╗ ██████╗ ██████╗ ███████╗                   ║
+║        ██╔════╝██╔═══██╗██╔══██╗██╔════╝                   ║
+║        ██║     ██║   ██║██║  ██║█████╗                     ║
+║        ██║     ██║   ██║██║  ██║██╔══╝                     ║
+║        ╚██████╗╚██████╔╝██████╔╝███████╗                   ║
+║         ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝                   ║
+║                                                            ║
+║                 ███████╗███╗   ███╗██╗████████╗██╗  ██╗    ║
+║                 ██╔════╝████╗ ████║██║╚══██╔══╝██║  ██║    ║
+║                 ███████╗██╔████╔██║██║   ██║   ███████║    ║
+║                 ╚════██║██║╚██╔╝██║██║   ██║   ██╔══██║    ║
+║                 ███████║██║ ╚═╝ ██║██║   ██║   ██║  ██║    ║
+║                 ╚══════╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝    ║
+║                                                            ║
+║       🔥 Golden fire → mithril code. Ready to forge.       ║
+║                                                            ║
+║                [ Press Enter to continue ]                 ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+BANNER
+}
+
+banner() {
+    prompt=0
+    if [ -t 2 ] && [ -z "${CI:-}" ] && [ -z "${CODESMITH_NO_PROMPT:-}" ] \
+        && { : </dev/tty; } 2>/dev/null; then
+        prompt=1
+    fi
+    colour=0
+    if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+        colour=1
+    fi
+    esc=$(printf '\033')
+    n=0
+    banner_text | while IFS= read -r line; do
+        n=$((n + 1))
+        if [ "$prompt" = 0 ]; then
+            line=$(printf '%s\n' "$line" | sed 's/\[ Press Enter to continue \]/                           /')
+        fi
+        if [ "$colour" = 0 ]; then
+            printf '%s\n' "$line"
+            continue
+        fi
+        case $n in
+            3) c='1' ;;
+            5) c='1;38;5;226' ;; 6) c='1;38;5;220' ;; 7) c='1;38;5;214' ;;
+            8) c='1;38;5;208' ;; 9) c='1;38;5;202' ;; 10) c='1;38;5;196' ;;
+            12) c='1;38;5;255' ;; 13) c='1;38;5;254' ;; 14) c='1;38;5;253' ;;
+            15) c='1;38;5;189' ;; 16) c='1;38;5;153' ;; 17) c='1;38;5;117' ;;
+            19) c='38;5;214' ;;
+            21) c='2' ;;
+            *) c='' ;;
+        esac
+        frame="${esc}[38;5;240m"
+        reset="${esc}[0m"
+        case $line in
+            ║*║)
+                inner=${line#║}
+                inner=${inner%║}
+                printf '%s║%s%s%s%s║%s\n' "$frame" "$reset" "${c:+${esc}[${c}m}" "$inner" "$reset$frame" "$reset"
+                ;;
+            *) printf '%s%s%s\n' "$frame" "$line" "$reset" ;;
+        esac
+    done >&2
+    if [ "$prompt" = 1 ]; then
+        IFS= read -r _ </dev/tty || true
+    fi
+}
+
 main() {
     need uname
     need tar
@@ -164,6 +244,7 @@ main() {
         *":${INSTALL_DIR}:"*) ;;
         *) say "note: ${INSTALL_DIR} is not on your PATH; add it in your shell profile" ;;
     esac
+    banner
 }
 
 main "$@"

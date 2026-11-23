@@ -539,6 +539,11 @@ pub(crate) async fn command(
     match updater.upgrade(&target).await {
         Ok(()) => {
             writeln!(out, "Upgrade complete")?;
+            use std::io::IsTerminal;
+            let colour = std::io::stdout().is_terminal()
+                && std::env::var_os("NO_COLOR").is_none()
+                && std::env::var("TERM").map_or(true, |t| t != "dumb");
+            write!(out, "{}", banner(colour))?;
             Ok(())
         }
         Err(e) => {
@@ -546,6 +551,55 @@ pub(crate) async fn command(
             Err(e)
         }
     }
+}
+
+/// The banner every installer shows after a successful install
+/// (install.sh and the Homebrew formula carry the same text).
+pub(crate) const BANNER: &str = include_str!("../../../packaging/banner.txt");
+
+/// The banner as `codesmith upgrade` shows it: without the Enter prompt
+/// (nothing waits), coloured like install.sh's when `colour` is set.
+pub(crate) fn banner(colour: bool) -> String {
+    let plain = BANNER.replace("[ Press Enter to continue ]", &" ".repeat(27));
+    if !colour {
+        return plain;
+    }
+    const FRAME: &str = "\x1b[38;5;240m";
+    const RESET: &str = "\x1b[0m";
+    let mut out = String::new();
+    for (i, line) in plain.lines().enumerate() {
+        let c = match i + 1 {
+            3 => "1",
+            5 => "1;38;5;226",
+            6 => "1;38;5;220",
+            7 => "1;38;5;214",
+            8 => "1;38;5;208",
+            9 => "1;38;5;202",
+            10 => "1;38;5;196",
+            12 => "1;38;5;255",
+            13 => "1;38;5;254",
+            14 => "1;38;5;253",
+            15 => "1;38;5;189",
+            16 => "1;38;5;153",
+            17 => "1;38;5;117",
+            19 => "38;5;214",
+            _ => "",
+        };
+        match line.strip_prefix('║').and_then(|l| l.strip_suffix('║')) {
+            Some(inner) => {
+                let on = if c.is_empty() {
+                    String::new()
+                } else {
+                    format!("\x1b[{c}m")
+                };
+                out.push_str(&format!(
+                    "{FRAME}║{RESET}{on}{inner}{RESET}{FRAME}║{RESET}\n"
+                ));
+            }
+            None => out.push_str(&format!("{FRAME}{line}{RESET}\n")),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

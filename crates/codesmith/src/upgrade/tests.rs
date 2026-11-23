@@ -244,6 +244,7 @@ async fn oc_upgrade_detects_the_installation_method_and_resolves_the_latest_vers
     assert!(ok, "{out}");
     assert_eq!(fake.events, ["method", "latest", "upgrade 0.0.1-beta-new"]);
     assert!(out.contains("Upgrade complete"), "{out}");
+    assert!(out.contains("CodeSmith forged successfully"), "{out}");
 }
 
 #[tokio::test]
@@ -425,6 +426,7 @@ async fn oc_upgrade_reports_installation_failures_with_a_nonzero_exit_code() {
     assert!(out.contains("Upgrade failed"), "{out}");
     assert!(out.contains("Permission denied"), "{out}");
     assert!(!out.contains("Upgrade complete"), "{out}");
+    assert!(!out.contains("forged successfully"), "{out}");
 }
 
 // CodeSmith's own: package-manager installs name their command and never
@@ -1225,12 +1227,21 @@ fn install_sh_checks_the_signature_when_minisign_is_installed() {
     let (ok, err, dir) = run_install_sh(&server, &key, Some(good));
     assert!(ok && installed(&dir), "{err}");
     assert!(err.contains("signature ok"), "{err}");
+    assert!(err.contains("CodeSmith forged successfully"), "{err}");
+    assert!(
+        !err.contains("Press Enter"),
+        "no prompt without a terminal: {err}"
+    );
 
     let (ok, err, dir) = run_install_sh(&server, &key, Some("exit 1"));
     assert!(!ok && !installed(&dir), "{err}");
     assert!(
         err.contains("not signed by a CodeSmith release key"),
         "{err}"
+    );
+    assert!(
+        !err.contains("forged successfully"),
+        "no banner on failure: {err}"
     );
 
     let (ok, err, dir) = run_install_sh(
@@ -1497,4 +1508,110 @@ fn a_test_key_signature_verifies_only_where_that_key_is_listed() {
     ));
     let e = verify_sums(&other, sums, signature.as_bytes(), "2.0.0").unwrap_err();
     assert!(e.to_string().contains("not signed by"), "{e}");
+}
+
+// ------------------------------------------------------------ banner
+
+/// Terminal columns of a banner line: the fire emoji is two wide, the
+/// text-presentation selector after the hammer takes none.
+fn columns(line: &str) -> usize {
+    line.chars()
+        .map(|c| match c {
+            '\u{fe0e}' | '\u{fe0f}' => 0,
+            '🔥' => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
+#[test]
+fn the_banner_is_a_closed_box_every_line_the_same_width() {
+    let lines: Vec<&str> = BANNER.lines().collect();
+    assert_eq!(lines.len(), 23);
+    for l in &lines {
+        assert_eq!(columns(l), 62, "{l:?}");
+    }
+    assert!(lines[0].starts_with('╔') && lines[0].ends_with('╗'));
+    assert!(lines[22].starts_with('╚') && lines[22].ends_with('╝'));
+    for l in &lines[1..22] {
+        assert!(l.starts_with('║') && l.ends_with('║'), "{l:?}");
+    }
+    assert!(BANNER.contains("CodeSmith forged successfully"));
+    assert!(BANNER.contains("[ Press Enter to continue ]"));
+    // The hammer is drawn as text, one column wide like the TUI's.
+    assert!(BANNER.contains("⚒\u{fe0e}"));
+    assert!(BANNER.ends_with("╝\n"));
+}
+
+#[test]
+fn install_sh_carries_the_same_banner() {
+    let script = install_sh();
+    let start = script.find("<<'BANNER'\n").expect("banner heredoc") + "<<'BANNER'\n".len();
+    let end = start + script[start..].find("\nBANNER\n").unwrap() + 1;
+    assert_eq!(
+        &script[start..end],
+        BANNER,
+        "copy packaging/banner.txt into install.sh"
+    );
+    // Shown last, after the install succeeded.
+    let main = script.rfind("\nmain() {").unwrap();
+    let body = &script[main..];
+    assert!(body.find("say \"installed codesmith").unwrap() < body.find("    banner\n").unwrap());
+}
+
+#[test]
+fn the_homebrew_formula_carries_the_banner_without_the_prompt() {
+    let formula = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../packaging/homebrew/codesmith.rb"
+    ))
+    .unwrap();
+    let expected: String = banner(false)
+        .lines()
+        .map(|l| format!("      {l}\n"))
+        .collect();
+    assert!(formula.contains("  def caveats\n    <<~EOS\n"), "{formula}");
+    assert!(
+        formula.contains(&expected),
+        "copy packaging/banner.txt into the formula's caveats"
+    );
+    assert!(!formula.contains("Press Enter"));
+    // Nothing Ruby would interpolate in the heredoc.
+    assert!(!expected.contains("#{") && !expected.contains('\\'));
+}
+
+#[test]
+fn the_plain_banner_drops_the_prompt_and_keeps_the_box() {
+    let plain = banner(false);
+    assert!(!plain.contains("Press Enter"));
+    assert!(!plain.contains('\x1b'));
+    assert_eq!(plain.lines().count(), BANNER.lines().count());
+    for l in plain.lines() {
+        assert_eq!(columns(l), 62, "{l:?}");
+    }
+}
+
+#[test]
+fn the_coloured_banner_is_the_plain_one_with_colour_codes() {
+    let coloured = banner(true);
+    assert!(coloured.contains("\x1b[1;38;5;226m"), "fire on CODE");
+    assert!(coloured.contains("\x1b[1;38;5;117m"), "mithril on SMITH");
+    let mut stripped = String::new();
+    let mut chars = coloured.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for d in chars.by_ref() {
+                if d == 'm' {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(c);
+        }
+    }
+    assert_eq!(stripped, banner(false));
+    // Every colour is reset on the line it starts on.
+    for l in coloured.lines() {
+        assert!(l.ends_with("\x1b[0m"), "{l:?}");
+    }
 }
