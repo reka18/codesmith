@@ -57,7 +57,7 @@ pub fn convert(body: &str, content_type: &str, format: &str) -> String {
 /// The User-Agent sent first; some sites refuse unknown agents, so it reads
 /// like a browser while naming CodeSmith (as OpenCode's does).
 pub const USER_AGENT: &str =
-    "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; CodeSmith-User/1.0; +https://github.com/Skeptic-Dog-Software/codesmith";
+    "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; CodeSmith-User/1.0; +https://github.com/reka18/codesmith";
 /// The honest agent retried when Cloudflare answers with a browser challenge.
 pub const RETRY_USER_AGENT: &str = "codesmith";
 

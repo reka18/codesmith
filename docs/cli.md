@@ -318,6 +318,7 @@ an explicit `--token`. See [local server](local-server.md).
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
 | `debug model [provider/model[#variant]]` | What a model resolves to: provider, URL, protocol, limits, extra body, provider options (JSON), the selected variant, and every variant with its options. |
 | `debug prompt [-m MODEL] [--agent ID]` | The system prompt an agent would get here. |
+| `debug links [--check]` | Every outside page CodeSmith shows or opens (API key pages, setup and help pages). `--check` requests each one: a page that is gone fails the command, and one that moved, blocks scripts or had a server error is a warning. `scripts/release.sh` runs it before each release. |
 
 ## `codesmith upgrade`
 

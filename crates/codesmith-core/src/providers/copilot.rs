@@ -20,6 +20,17 @@ const METHOD: &str = "device";
 /// Added to each poll interval, as OpenCode does.
 const POLL_MARGIN: Duration = Duration::from_secs(3);
 
+/// GitHub's Copilot plans page, named when an account has no Copilot.
+macro_rules! copilot_plans_url {
+    () => {
+        "https://github.com/features/copilot/plans"
+    };
+}
+pub const PLANS_URL: &str = copilot_plans_url!();
+
+/// GitHub's page for registering an OAuth app (for the device login).
+pub const NEW_APP_URL: &str = "https://github.com/settings/applications/new";
+
 pub fn owns(input: &Input) -> bool {
     input.provider_id == ID
 }
@@ -67,7 +78,11 @@ pub fn entitlement_error(user: &Value) -> Option<&'static str> {
         return None;
     }
     Some(if user["can_signup_for_limited"] == true {
-        "This GitHub account is not signed up for GitHub Copilot. Sign up for Copilot Free at https://github.com/features/copilot/plans and connect again."
+        concat!(
+            "This GitHub account is not signed up for GitHub Copilot. Sign up for Copilot Free at ",
+            copilot_plans_url!(),
+            " and connect again."
+        )
     } else {
         "This GitHub account does not have GitHub Copilot access. It needs an active Copilot subscription or a seat assigned by an organization."
     })
@@ -245,7 +260,7 @@ pub fn client_id(
         .ok_or_else(|| {
             anyhow!(
                 "GitHub Copilot's device login needs the client id of a GitHub OAuth app, and CodeSmith ships none.\n\
-                 Register one at https://github.com/settings/applications/new (any homepage and callback URL), \
+                 Register one at {NEW_APP_URL} (any homepage and callback URL), \
                  tick \"Enable Device Flow\", and pass its client id with --client-id, \
                  settings.clientId on the github-copilot provider, or {CLIENT_ID_VAR}.\n\
                  Or skip the login: set COPILOT_GITHUB_TOKEN to a GitHub token with Copilot access."

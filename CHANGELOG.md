@@ -10,6 +10,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   `https://app.fireworks.ai/settings/users/api-keys`. Anthropic's entry
   points to its new console address (`platform.claude.com`), and Poe's to
   `poe.com/api/keys`.
+- **Releases check every outside link first.** `codesmith debug links`
+  lists each page CodeSmith shows or opens (API key pages, setup and help
+  pages), and `--check` requests them: a page that is gone stops a release,
+  and one that moved permanently prints its new address. A test keeps the
+  list in step with the code. The web fetch tool's user agent now names
+  the project's current address.
 
 ## 0.4.0 — 2026-11-23
 

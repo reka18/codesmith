@@ -14,6 +14,13 @@ pub const VERIFIED: &[&str] = &["anthropic", "claude-agent", "fireworks"];
 /// The project's repository.
 pub const REPO: &str = "https://github.com/reka18/codesmith";
 
+/// The contributing guide the warning points to.
+pub const CONTRIBUTING: &str = "https://github.com/reka18/codesmith/blob/main/CONTRIBUTING.md";
+
+/// The issue form for confirming a provider works.
+pub const ISSUE_FORM: &str =
+    "https://github.com/reka18/codesmith/issues/new?template=provider-verified.md";
+
 /// The tag shown beside an untested provider.
 pub const TAG: &str = "untested";
 
@@ -26,7 +33,7 @@ pub fn verified(pid: &str) -> bool {
 /// a title filled in.
 pub fn issue_url(pid: &str) -> String {
     format!(
-        "{REPO}/issues/new?template=provider-verified.md&title={}",
+        "{ISSUE_FORM}&title={}",
         encode(&format!("Provider verified: {pid}"))
     )
 }
@@ -40,7 +47,7 @@ pub fn warning(pid: &str, name: &str) -> Option<String> {
         "{name} hasn't been tested with CodeSmith yet, so it may not work as expected. \
 If it works for you, please confirm it in an issue: {}. \
 If it doesn't, a pull request that fixes it, following the project's patterns, \
-is welcome: see {REPO}/blob/main/CONTRIBUTING.md.",
+is welcome: see {CONTRIBUTING}.",
         issue_url(pid)
     ))
 }

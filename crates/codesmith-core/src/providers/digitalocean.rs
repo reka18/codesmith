@@ -60,6 +60,9 @@ impl Endpoints {
     }
 }
 
+/// DigitalOcean's page for registering an OAuth app (for its login).
+pub const APPS_URL: &str = "https://cloud.digitalocean.com/account/api/applications";
+
 pub fn client_id(
     flag: Option<&str>,
     settings: &super::Settings,
@@ -73,7 +76,7 @@ pub fn client_id(
         .ok_or_else(|| {
             anyhow!(
                 "DigitalOcean's browser login needs the client id of an OAuth application you register with DigitalOcean, and CodeSmith ships none.\n\
-                 Register one at https://cloud.digitalocean.com/account/api/applications with the callback URL http://localhost:{PORT}{CALLBACK_PATH}, \
+                 Register one at {APPS_URL} with the callback URL http://localhost:{PORT}{CALLBACK_PATH}, \
                  and pass its client id with --client-id, settings.clientId on the digitalocean provider, or {CLIENT_ID_VAR}.\n\
                  Or skip the login: create a model access key and run `codesmith auth login digitalocean`, or set DIGITALOCEAN_ACCESS_TOKEN."
             )
