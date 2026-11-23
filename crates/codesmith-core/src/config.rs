@@ -1901,9 +1901,12 @@ impl Config {
     /// Resolve `provider/model` or `provider/model#variant` (the first `/`
     /// splits; model ids may contain more).
     pub fn resolve_model(&self, spec: &str) -> Result<ModelRef> {
-        let (base, variant) = split_variant(spec);
+        // Spaces around the parts are not part of them (`anthropic/ opus`).
+        let (base, variant) = split_variant(spec.trim());
+        let variant = variant.map(str::trim).filter(|v| !v.is_empty());
         let (pid, mid) = base
             .split_once('/')
+            .map(|(p, m)| (p.trim(), m.trim()))
             .filter(|(p, m)| !p.is_empty() && !m.is_empty())
             .ok_or_else(|| anyhow!("model must be provider/model, got {spec:?}"))?;
         if self.provider_disabled(pid) {

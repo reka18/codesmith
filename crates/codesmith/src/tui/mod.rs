@@ -188,6 +188,8 @@ struct Runner {
     )>,
     /// The number the next login gets.
     login_seq: u64,
+    /// The provider the running login signs in to.
+    login_provider: Option<String>,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -863,10 +865,17 @@ impl Runner {
     }
 
     fn set_model(&mut self, spec: &str) -> Result<()> {
+        // Refused before anything is sent when it names no model the user
+        // can run; spacing, case and partial names are forgiven.
+        let resolved = codesmith_core::model_spec::resolve(&self.loaded.config, spec)?;
+        let spec = resolved.spec.as_str();
         let prev = self.model.replace(spec.to_string());
         if let Err(e) = self.reload() {
             self.model = prev;
             return Err(e);
+        }
+        if let Some(note) = &resolved.note {
+            self.app.notice(note.clone());
         }
         if let Some(m) = models::Model::parse(spec) {
             self.models.add_recent(&m);
@@ -1389,6 +1398,60 @@ impl Runner {
         }
     }
 
+    /// After signing in to `provider`: when no model was chosen (on the
+    /// command line, in this session, by the agent or in codesmith.json),
+    /// switch to the provider's newest model and save it as the default.
+    /// What changed, for the sign-in picker.
+    fn adopt_login(&mut self, provider: &str) -> Option<String> {
+        use codesmith_core::model_spec;
+        let data = codesmith_core::paths::data_dir();
+        let auto = model_spec::auto_model(&data);
+        let agent_model =
+            codesmith_core::agent::resolve(&self.loaded.config, &self.current_agent())
+                .and_then(|a| a.model)
+                .is_some();
+        if model_chosen(self.model.as_deref(), auto.as_deref(), agent_model) {
+            return None;
+        }
+        let access = model_spec::Access::current(&self.loaded.config);
+        let a = model_spec::adopt_login(
+            &self.loaded.config,
+            provider,
+            &access,
+            &codesmith_core::paths::config_dir(),
+            &data,
+        )?;
+        self.loaded.config.model = Some(a.spec.clone());
+        let saved = match &a.saved {
+            Ok(p) => format!("saved as the default in {}", p.display()),
+            Err(e) => format!("not saved as the default: {e}"),
+        };
+        if self.app.busy || self.session.is_none() {
+            let line = format!(
+                "{} is the default for new sessions ({saved}); /model {} switches now",
+                a.spec, a.spec
+            );
+            self.app.notice(line.clone());
+            return Some(line);
+        }
+        // Named, as a session that ran a turn keeps its own model
+        // otherwise; it matches what the login saved, so it still counts as
+        // the default for a later login.
+        let prev = self.model.replace(a.spec.clone());
+        match self.reload() {
+            Ok(()) => {
+                self.app.notice(format!("model: {} ({saved})", a.spec));
+                Some(format!("Now using {} ({saved}).", a.spec))
+            }
+            Err(e) => {
+                self.model = prev;
+                self.app
+                    .error(format!("could not switch to {}: {e:#}", a.spec));
+                None
+            }
+        }
+    }
+
     /// Carry out what the sign-in picker asked for.
     fn login_action(&mut self, out: login_view::Outcome) {
         use login_view::Outcome;
@@ -1429,6 +1492,7 @@ impl Runner {
         }
         self.login_seq += 1;
         let n = self.login_seq;
+        self.login_provider = Some(req.provider.clone());
         let (paste_tx, paste_rx) = tokio::sync::mpsc::channel(4);
         let tx = self.tx.clone();
         let send = move |e: LoginEv| {
@@ -1724,6 +1788,7 @@ impl Runner {
             Ev::Login(n, e) => {
                 if self.login.as_ref().is_some_and(|l| l.0 == n) {
                     let done = matches!(e, login_view::LoginEv::Done(_));
+                    let ok = matches!(e, login_view::LoginEv::Done(Ok(_)));
                     if done {
                         self.login = None;
                     }
@@ -1731,6 +1796,15 @@ impl Runner {
                         v.event(e);
                     }
                     if done {
+                        let provider = self.login_provider.take();
+                        // Signing in selects the provider, unless a model
+                        // was chosen.
+                        let adopted = provider.filter(|_| ok).and_then(|p| self.adopt_login(&p));
+                        if let (Some(line), Some(Modal::Login(v))) =
+                            (adopted, self.app.modal.as_mut())
+                        {
+                            v.add_note(&line);
+                        }
                         self.refresh_login();
                     }
                 }
@@ -2168,6 +2242,7 @@ async fn run_in(
         new_inherit: tui.new_inherit,
         new_here: false,
         login: None,
+        login_provider: None,
         login_seq: 0,
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
@@ -2432,4 +2507,37 @@ pub(crate) fn builtin(name: &str, args: &str) -> Option<&'static str> {
         .iter()
         .find(|(n, takes)| n.eq_ignore_ascii_case(name) && (*takes || args.is_empty()))
         .map(|(n, _)| *n)
+}
+
+/// Whether the session's model was chosen (on the command line, in this
+/// session, or by its agent) rather than left to the default; a model a
+/// login chose (`auto`) was not.
+fn model_chosen(session: Option<&str>, auto: Option<&str>, agent_model: bool) -> bool {
+    agent_model || session.is_some_and(|m| auto != Some(m))
+}
+
+#[cfg(test)]
+mod login_switch_tests {
+    use super::model_chosen;
+
+    #[test]
+    fn only_a_model_left_to_the_default_follows_a_login() {
+        assert!(!model_chosen(None, None, false));
+        assert!(!model_chosen(None, Some("claude-agent/opus"), false));
+        // The one an earlier login picked is still the default.
+        assert!(!model_chosen(
+            Some("claude-agent/opus"),
+            Some("claude-agent/opus"),
+            false
+        ));
+        // `-m`, /model, the model picker.
+        assert!(model_chosen(Some("openai/gpt-5"), None, false));
+        assert!(model_chosen(
+            Some("openai/gpt-5"),
+            Some("claude-agent/opus"),
+            false
+        ));
+        // The agent's own model.
+        assert!(model_chosen(None, None, true));
+    }
 }

@@ -178,7 +178,24 @@ fn cost_of(c: Option<crate::catalog::Cost>) -> Value {
 /// A provider `disabled_providers` names is left out.
 pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
     let catalog = config.models_dev.as_ref().map(|c| c.catalog());
-    let info = |pid: &str, id: &str| catalog.as_ref().and_then(|c| c.model(pid, id).cloned());
+    let claude_saved = std::sync::OnceLock::new();
+    let info = |pid: &str, id: &str| {
+        let c = catalog.as_ref()?;
+        if pid == crate::providers::claude_agent::ID {
+            // The model Claude Code resolves to, for its release date.
+            let saved = claude_saved.get_or_init(crate::providers::claude_agent::catalog);
+            return crate::providers::claude_agent::catalog_model(saved, id, c).map(|m| {
+                crate::catalog::Model {
+                    // Claude Code's own price and variants, not the API's.
+                    cost: Vec::new(),
+                    variants: Vec::new(),
+                    enabled: true,
+                    ..m.clone()
+                }
+            });
+        }
+        c.model(pid, id).cloned()
+    };
     let provider_name = |pid: &str| {
         config
             .providers
@@ -230,9 +247,15 @@ pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
             .collect();
     }
     let mut providers: Vec<String> = config.providers.keys().cloned().collect();
+    // A signed-in Claude Code runs models with no key, ahead of local
+    // servers, which may not be running.
+    let claude = crate::providers::claude_agent::ID;
+    let claude_code = crate::providers::claude_agent::signed_in(&crate::providers::process_env())
+        .then(|| claude.to_string());
     for id in config
         .keyed_catalog_providers()
         .into_iter()
+        .chain(claude_code)
         .chain(crate::providers::local::providers(config))
     {
         if !providers.contains(&id) {

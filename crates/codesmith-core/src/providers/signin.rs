@@ -249,6 +249,8 @@ pub fn state(id: &str, p: &ProviderConfig, file: &Path, env: &Env) -> State {
         return if claude_agent::available(env) {
             if claude_agent::catalog().models.is_empty() {
                 State::Ambient("Claude Code found · not checked yet".into())
+            } else if !claude_agent::signed_in_at(&claude_agent::storage()) {
+                State::Ambient("Claude Code found · not logged in (claude auth login)".into())
             } else {
                 // Nothing is saved here to sign out of: Claude Code
                 // keeps its own login (`claude auth logout`).

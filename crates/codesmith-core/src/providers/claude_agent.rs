@@ -115,7 +115,69 @@ pub async fn check(connection: &BTreeMap<String, String>) -> State {
         },
         Default::default(),
     );
-    registry.refresh(connection).await
+    let state = registry.refresh(connection).await;
+    record(&storage(), &state);
+    state
+}
+
+/// The file whose presence says the last check found Claude Code signed
+/// out (its model list is saved either way).
+const SIGNED_OUT: &str = "signed-out";
+
+/// Keep what a check found about the login: a signed-out Claude Code still
+/// lists its models, so the saved list alone does not say it is signed in.
+pub fn record(storage: &std::path::Path, state: &State) {
+    let marker = storage.join(SIGNED_OUT);
+    match state {
+        State::Ready { probe, .. }
+            if codesmith_ai::claude_agent::probe::is_logged_in(&probe.account) =>
+        {
+            let _ = std::fs::remove_file(&marker);
+        }
+        State::Ready { .. } => {
+            let _ = std::fs::create_dir_all(storage);
+            let _ = std::fs::write(&marker, b"");
+        }
+        // Not installed or would not start: nothing new about the login.
+        State::Missing | State::Failed(_) | State::Checking => {}
+    }
+}
+
+/// Whether the saved state in `storage` says Claude Code is signed in: a
+/// check listed its models and did not find it signed out.
+pub fn signed_in_at(storage: &std::path::Path) -> bool {
+    !storage.join(SIGNED_OUT).exists() && !Catalog::load(storage).models.is_empty()
+}
+
+/// Whether Claude Code can run models now without asking it: `claude` is
+/// found and its last check found it signed in. Reads no credential.
+pub fn signed_in(env: &super::Env) -> bool {
+    available(env) && signed_in_at(&storage())
+}
+
+/// The models.dev entry of a Claude Code model (the model it resolves
+/// to), for its release date: under the provider whose prices the login
+/// pays, else Anthropic's.
+pub fn catalog_model<'a>(
+    saved: &Catalog,
+    model: &str,
+    models: &'a crate::catalog::Catalog,
+) -> Option<&'a crate::catalog::Model> {
+    let m = saved.model(model)?;
+    let source = saved.price_source.as_deref().unwrap_or("anthropic");
+    let mut ids = catalog::price_ids(m);
+    // The catalog may list it only without its date (`claude-opus-4-5`).
+    let undated: Vec<String> = ids
+        .iter()
+        .filter_map(|id| {
+            let (head, date) = id.rsplit_once('-')?;
+            (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())).then(|| head.to_string())
+        })
+        .collect();
+    ids.extend(undated);
+    [source, "anthropic"]
+        .iter()
+        .find_map(|p| ids.iter().find_map(|id| models.model(p, id)))
 }
 
 /// What `codesmith auth login claude-agent` says after a check.

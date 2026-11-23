@@ -299,6 +299,144 @@ pub fn message(e: &Error) -> String {
     }
 }
 
+/// Where a failed request went, for naming the step that fixes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Target {
+    pub provider_id: String,
+    /// The provider's name (`LM Studio`), else its id.
+    pub provider_name: String,
+    pub base_url: String,
+    /// A server on this machine or network.
+    pub local: bool,
+    /// Whether the request carried a key.
+    pub has_key: bool,
+    /// For Anthropic while Claude Code is signed in: the Claude Code model
+    /// to switch to (`claude-agent/opus`).
+    pub claude_code: Option<String>,
+}
+
+impl Target {
+    /// The target of requests to `model`; `config` names the provider and
+    /// says whether Claude Code is signed in.
+    pub fn of(model: &crate::config::ModelRef, config: Option<&crate::config::Config>) -> Target {
+        let pid = model.provider_id.clone();
+        let provider_name = config
+            .and_then(|c| c.provider(&pid))
+            .and_then(|p| p.name)
+            // "LM Studio (local)": the sentence says it is a server.
+            .map(|n| n.trim_end_matches(" (local)").to_string())
+            .unwrap_or_else(|| pid.clone());
+        let claude_code = config.filter(|_| pid == "anthropic").and_then(|c| {
+            let access = crate::model_spec::Access::current(c);
+            crate::model_spec::claude_code_for(c, &model.model_id, &access)
+        });
+        Target {
+            provider_id: pid,
+            provider_name,
+            base_url: model.provider.base_url.clone(),
+            local: model.local,
+            has_key: model
+                .provider
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty()),
+            claude_code,
+        }
+    }
+}
+
+/// The scheme, host and port of the URL a transport error names.
+fn error_origin(m: &str) -> Option<String> {
+    let url = m.split_once("for url (")?.1.split(')').next()?;
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?;
+    Some(match u.port() {
+        Some(p) => format!("{}://{host}:{p}", u.scheme()),
+        None => format!("{}://{host}", u.scheme()),
+    })
+}
+
+/// The step that fixes `e`, when it is a missing or rejected login or a
+/// server that is not there, named for where the request went.
+pub fn advice(e: &Error, t: &Target) -> Option<String> {
+    let name = if t.provider_name.is_empty() {
+        t.provider_id.as_str()
+    } else {
+        t.provider_name.as_str()
+    };
+    let pid = t.provider_id.as_str();
+    let switch = "switch models with ctrl+x m";
+    if let Error::Transport(m) = e {
+        // A hosted provider refusing is reported in its own words
+        // (OpenCode's `toSessionError`); a local server is most likely
+        // just not started.
+        if !t.local || !m.to_lowercase().contains("connection refused") {
+            return None;
+        }
+        let url = Some(t.base_url.as_str())
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+            .or_else(|| error_origin(m))
+            .unwrap_or_else(|| "its configured URL".into());
+        return Some(format!(
+            "The {name} server isn't running at {url}; start it, or {switch}."
+        ));
+    }
+    let (status, body) = match e {
+        Error::Status { status, body } => (Some(*status), body.as_str()),
+        Error::Provider { message, .. } => (None, message.as_str()),
+        Error::Decode(body) => (None, body.as_str()),
+        _ => return None,
+    };
+    if classify(e) != Class::Authentication {
+        return None;
+    }
+    // Claude Code's own login failed: it is fixed there.
+    if pid == crate::providers::claude_agent::ID {
+        return Some(
+            "Claude Code isn't signed in. Run `claude auth login` in a terminal, then /login → Claude Pro/Max; or switch models with ctrl+x m.".into(),
+        );
+    }
+    let lower = body.to_lowercase();
+    let missing = !t.has_key
+        || [
+            "is required",
+            "missing",
+            "no api key",
+            "not provided",
+            "no auth",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+    let login = format!("`codesmith auth login {pid}`");
+    Some(match (&t.claude_code, missing) {
+        (Some(m), true) if pid == "anthropic" => format!(
+            "No Anthropic API key. You're signed into Claude Code — switch to {m}, or run {login}."
+        ),
+        (Some(m), false) if pid == "anthropic" => format!(
+            "Anthropic rejected the API key. You're signed into Claude Code — switch to {m}, or run {login} with a valid key."
+        ),
+        (_, true) => format!("No API key for {name}. Run {login}, or {switch}."),
+        _ if status == Some(403) => format!(
+            "{name} refused the request (HTTP 403): the key may not have access to this model. Run {login} with another key, or {switch}."
+        ),
+        _ => format!(
+            "{name} rejected the API key{}. Run {login} to sign in again, or {switch}.",
+            status.map(|s| format!(" (HTTP {s})")).unwrap_or_default()
+        ),
+    })
+}
+
+/// A provider failure as the session reports it: the step that fixes it
+/// first, when there is one ([`advice`]), then [`message`].
+pub fn explain(e: &Error, t: &Target) -> String {
+    let raw = message(e);
+    match advice(e, t) {
+        Some(a) => format!("{a}\n{raw}"),
+        None => raw,
+    }
+}
+
 /// Retries within one model step.
 pub const MAX_RETRIES: u32 = 10;
 /// Timed-out attempts already waited minutes, so they get fewer retries.
@@ -667,5 +805,192 @@ mod tests {
                 "quota is not a transient failure"
             );
         }
+    }
+}
+
+/// [`advice`]: provider failures named by the step that fixes them.
+#[cfg(test)]
+mod advice_tests {
+    use super::*;
+
+    fn anthropic(claude_code: Option<&str>, has_key: bool) -> Target {
+        Target {
+            provider_id: "anthropic".into(),
+            provider_name: "Anthropic".into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            local: false,
+            has_key,
+            claude_code: claude_code.map(str::to_string),
+        }
+    }
+
+    fn lmstudio() -> Target {
+        Target {
+            provider_id: "lmstudio".into(),
+            provider_name: "LM Studio".into(),
+            base_url: "http://127.0.0.1:1234/v1".into(),
+            local: true,
+            has_key: false,
+            claude_code: None,
+        }
+    }
+
+    const NO_KEY: &str = r#"{"type":"error","error":{"type":"authentication_error","message":"x-api-key header is required"}}"#;
+    const BAD_KEY: &str =
+        r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+    const REFUSED: &str = "error sending request for url (http://127.0.0.1:1234/v1/chat/completions): client error (Connect): tcp connect error: Connection refused (os error 61)";
+
+    fn status(s: u16, body: &str) -> Error {
+        Error::Status {
+            status: s,
+            body: body.into(),
+        }
+    }
+
+    // Regression: "HTTP 401: x-api-key header is required" was all a
+    // Claude Code user without an Anthropic key was told.
+    #[test]
+    fn a_missing_anthropic_key_with_claude_code_signed_in_names_both_fixes() {
+        let e = status(401, NO_KEY);
+        let t = anthropic(Some("claude-agent/opus"), false);
+        assert_eq!(
+            advice(&e, &t).as_deref(),
+            Some("No Anthropic API key. You're signed into Claude Code — switch to claude-agent/opus, or run `codesmith auth login anthropic`.")
+        );
+        // The summary leads; the raw error follows.
+        let full = explain(&e, &t);
+        let mut lines = full.lines();
+        assert!(lines.next().unwrap().starts_with("No Anthropic API key."));
+        assert_eq!(lines.next().unwrap(), e.to_string());
+    }
+
+    #[test]
+    fn a_rejected_anthropic_key_with_claude_code_signed_in_says_it_was_rejected() {
+        let a = advice(
+            &status(401, BAD_KEY),
+            &anthropic(Some("claude-agent/opus"), true),
+        )
+        .unwrap();
+        assert!(a.starts_with("Anthropic rejected the API key."), "{a}");
+        assert!(a.contains("claude-agent/opus"), "{a}");
+    }
+
+    #[test]
+    fn without_claude_code_a_missing_key_names_the_login_command() {
+        let a = advice(&status(401, NO_KEY), &anthropic(None, false)).unwrap();
+        assert_eq!(
+            a,
+            "No API key for Anthropic. Run `codesmith auth login anthropic`, or switch models with ctrl+x m."
+        );
+        // A key that was sent and refused.
+        let a = advice(&status(401, BAD_KEY), &anthropic(None, true)).unwrap();
+        assert_eq!(
+            a,
+            "Anthropic rejected the API key (HTTP 401). Run `codesmith auth login anthropic` to sign in again, or switch models with ctrl+x m."
+        );
+        // A 403 is about access, not the key's existence.
+        let a = advice(
+            &status(403, r#"{"error":{"type":"permission_error"}}"#),
+            &anthropic(None, true),
+        )
+        .unwrap();
+        assert!(a.contains("HTTP 403") && a.contains("access"), "{a}");
+    }
+
+    #[test]
+    fn other_providers_auth_failures_name_their_own_login() {
+        let t = Target {
+            provider_id: "openai".into(),
+            provider_name: "OpenAI".into(),
+            has_key: true,
+            ..Target::default()
+        };
+        let a = advice(&status(401, r#"{"error":{"code":"invalid_api_key"}}"#), &t).unwrap();
+        assert!(a.contains("`codesmith auth login openai`"), "{a}");
+        // An auth error inside a stream (no status).
+        let e = Error::Provider {
+            message: r#"{"error":{"type":"authentication_error"}}"#.into(),
+            retryable: false,
+        };
+        assert!(advice(&e, &t).unwrap().contains("rejected the API key"));
+        // Claude Code's own login.
+        let t = Target {
+            provider_id: "claude-agent".into(),
+            ..Target::default()
+        };
+        let a = advice(&status(401, "{}"), &t).unwrap();
+        assert!(a.contains("claude auth login"), "{a}");
+        // No name: the id.
+        let t = Target {
+            provider_id: "p".into(),
+            ..Target::default()
+        };
+        assert!(advice(&status(401, "{}"), &t)
+            .unwrap()
+            .contains("No API key for p."));
+    }
+
+    // Regression: a fresh install's local default whose server was not
+    // running reported only "Connection refused (os error 61)".
+    #[test]
+    fn a_refused_local_server_is_named_with_its_url() {
+        let e = Error::Transport(REFUSED.into());
+        assert_eq!(
+            advice(&e, &lmstudio()).as_deref(),
+            Some("The LM Studio server isn't running at http://127.0.0.1:1234/v1; start it, or switch models with ctrl+x m.")
+        );
+        let full = explain(&e, &lmstudio());
+        assert!(full.ends_with(&message(&e)), "{full}");
+        // No configured URL: the one the error names.
+        let t = Target {
+            base_url: String::new(),
+            ..lmstudio()
+        };
+        assert!(advice(&e, &t)
+            .unwrap()
+            .contains("at http://127.0.0.1:1234;"));
+        // Neither: still a sentence.
+        let bare = Error::Transport("tcp connect error: Connection refused".into());
+        assert!(advice(&bare, &t).unwrap().contains("its configured URL"));
+    }
+
+    #[test]
+    fn failures_with_no_step_to_name_keep_their_own_words() {
+        let hosted = Target {
+            provider_id: "fake".into(),
+            local: false,
+            ..lmstudio()
+        };
+        // A hosted provider refusing (OpenCode reports it as is).
+        let e = Error::Transport(REFUSED.into());
+        assert_eq!(advice(&e, &hosted), None);
+        assert_eq!(explain(&e, &hosted), message(&e));
+        for e in [
+            status(500, "internal"),
+            status(429, "rate limited"),
+            status(400, r#"{"error":{"type":"invalid_request_error"}}"#),
+            Error::Transport("dns error: failed to lookup address information".into()),
+            Error::Transport("operation timed out".into()),
+            Error::Decode("garbage".into()),
+            Error::Invalid("no images".into()),
+        ] {
+            assert_eq!(advice(&e, &lmstudio()), None, "{e}");
+            assert_eq!(
+                advice(&e, &anthropic(Some("claude-agent/opus"), false)),
+                None,
+                "{e}"
+            );
+            assert_eq!(explain(&e, &lmstudio()), message(&e));
+        }
+    }
+
+    // Retrying is unchanged: advice only words the final error.
+    #[test]
+    fn advice_does_not_change_what_is_retried() {
+        let auth = status(401, NO_KEY);
+        let mut p = Policy::default();
+        assert_eq!(p.next(&auth, Instant::now()), None);
+        let refused = Error::Transport(REFUSED.into());
+        assert!(Policy::default().next(&refused, Instant::now()).is_some());
     }
 }
