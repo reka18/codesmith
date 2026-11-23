@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.4.0 — 2026-11-23
 
 - **Claude Code tokens: Claude Code works over SSH with no password.**
   `/login`, then Claude Pro/Max, then *Claude Code token*: CodeSmith runs
