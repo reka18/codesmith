@@ -1492,7 +1492,7 @@ async fn auth_login_without_a_provider_picks_one_in_the_terminal() {
     };
     ui.wait_for("Provider to sign in to").await;
     ui.send(b"fireworks\r").await;
-    ui.wait_for("Create a key at https://fireworks.ai/account/api-keys")
+    ui.wait_for("Create a key at https://app.fireworks.ai/settings/users/api-keys")
         .await;
     ui.wait_for("Open it in the browser?").await;
     ui.send(b"n\r").await;

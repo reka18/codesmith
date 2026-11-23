@@ -61,7 +61,7 @@ pub fn client_id(
                 "Poe's browser login needs the client id of an OAuth client registered with Poe, and CodeSmith ships none.\n\
                  Register one with Poe (a public client using PKCE, scope apikey:create, redirect URI http://127.0.0.1/callback on any port) \
                  and pass its client id with --client-id, settings.clientId on the poe provider, or {CLIENT_ID_VAR}.\n\
-                 Or skip the login: create an API key at https://poe.com/api_key and run `codesmith auth login poe`, or set POE_API_KEY."
+                 Or skip the login: create an API key at https://poe.com/api/keys and run `codesmith auth login poe`, or set POE_API_KEY."
             )
         })
 }
