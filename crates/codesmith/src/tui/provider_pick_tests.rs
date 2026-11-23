@@ -167,11 +167,43 @@ fn provider_rows_put_the_current_then_ready_then_local_then_sign_in() {
     assert_eq!(ids, ["cur", "a", "b", "lm", "off", "needs"]);
     assert!(items[0].current);
     let detail = |id: &str| items.iter().find(|i| i.id == id).unwrap().detail.clone();
-    assert_eq!(detail("a"), "ready · 1 model");
-    assert_eq!(detail("b"), "ready · $B_KEY · 12 models");
-    assert_eq!(detail("lm"), "local · 3 models");
-    assert_eq!(detail("off"), "local · not answering");
-    assert_eq!(detail("needs"), "sign in");
+    assert_eq!(detail("a"), "ready · 1 model · untested");
+    assert_eq!(detail("b"), "ready · $B_KEY · 12 models · untested");
+    assert_eq!(detail("lm"), "local · 3 models · untested");
+    assert_eq!(detail("off"), "local · not answering · untested");
+    assert_eq!(detail("needs"), "sign in · untested");
+}
+
+#[test]
+fn only_the_tested_providers_carry_no_untested_tag() {
+    let list = vec![
+        prov("anthropic", "Anthropic", Status::Ready(String::new()), 3),
+        prov(
+            "claude-agent",
+            "Claude Code",
+            Status::Ready(String::new()),
+            3,
+        ),
+        prov("fireworks", "Fireworks", Status::SignIn, 0),
+        prov("groq", "Groq", Status::Ready(String::new()), 3),
+        prov("openai", "OpenAI", Status::SignIn, 0),
+        prov("ollama", "Ollama", Status::Local(2), 2),
+        prov("my-endpoint", "Mine", Status::Ready("configured".into()), 1),
+    ];
+    for item in provider_items(&list, "anthropic") {
+        let tested = ["anthropic", "claude-agent", "fireworks"].contains(&item.id.as_str());
+        assert_eq!(
+            !item.detail.ends_with(" · untested"),
+            tested,
+            "{}: {}",
+            item.id,
+            item.detail
+        );
+        assert_eq!(
+            item.detail.matches("untested").count(),
+            usize::from(!tested)
+        );
+    }
 }
 
 #[test]

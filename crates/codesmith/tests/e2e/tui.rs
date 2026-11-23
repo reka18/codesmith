@@ -399,8 +399,11 @@ async fn oc_a_manual_agent_switch_supersedes_the_cli_agent_after_its_commit() {
     let Some(mut ui) = Ui::start(&e, "--agent build --prompt 'say hello'") else {
         return;
     };
-    // The turn's footer: it is over.
-    ui.wait_for("Build · fake/m · ").await;
+    // The answer, then the idle prompt's hints (a running turn shows
+    // "esc to interrupt" there instead): it is over. The header names the
+    // agent and model too, so they alone don't tell.
+    ui.wait_for("Hello there.").await;
+    ui.wait_for("tab agents").await;
     ui.send(b"/agent plan\r").await;
     ui.wait_for("agent: plan").await;
     ui.send(b"first plan\r").await;
@@ -1588,5 +1591,37 @@ async fn the_effort_picker_offers_the_levels_the_api_listed() {
     ui.wait_for("model: anthropic/claude-plain").await;
     ui.send(b"/effort\r").await;
     ui.wait_for("has no effort levels").await;
+    ui.quit().await;
+}
+
+/// An untested provider is warned about once per run, on first use, with
+/// the links to confirm it works or fix it; switching models on it again
+/// doesn't repeat the warning.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untested_provider_is_warned_about_once() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    // Shown at start, after the welcome line.
+    ui.wait_for("/help for commands").await;
+    ui.wait_for("fake hasn't been tested").await;
+    ui.send(b"/model fake/other\r").await;
+    ui.wait_for("model: fake/other").await;
+    ui.send(b"/model fake/m\r").await;
+    ui.wait_for("model: fake/m").await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The screen as drawn (the stream repeats it on every redraw), with
+    // wrapped rows joined back.
+    let shown = ui.term.screen().contents();
+    let text: String = shown.lines().map(str::trim_end).collect();
+    assert_eq!(
+        text.matches("hasn't been tested with CodeSmith").count(),
+        1,
+        "{shown}"
+    );
+    assert!(text.contains("provider-verified.md"), "{shown}");
     ui.quit().await;
 }

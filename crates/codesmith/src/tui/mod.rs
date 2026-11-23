@@ -158,6 +158,8 @@ struct Runner {
     /// Run `claude setup-token` before the next frame, for this sign-in
     /// choice (see `create_token`).
     setup_token: Option<usize>,
+    /// The untested providers warned about in this run: each once.
+    warned: std::collections::HashSet<String>,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
     /// The open session tabs; the fields above from `app` to `jobs` are
@@ -265,9 +267,28 @@ impl Runner {
         if replay {
             self.app.set_entries(app::replay(&s.messages));
         }
+        self.warn_untested(&s.model.provider_id);
         self.learn_mentions();
         self.session_id = s.id.clone();
         self.session = Some(s);
+    }
+
+    /// Say once per run, on first using it, that a provider hasn't been
+    /// tested with CodeSmith (see `providers::verified`).
+    fn warn_untested(&mut self, pid: &str) {
+        if self.warned.contains(pid) {
+            return;
+        }
+        let name = self
+            .loaded
+            .config
+            .provider(pid)
+            .and_then(|p| p.name)
+            .unwrap_or_else(|| pid.to_string());
+        if let Some(w) = codesmith_core::providers::verified::warning(pid, &name) {
+            self.warned.insert(pid.to_string());
+            self.app.notice(format!("⚠︎ {w}"));
+        }
     }
 
     /// Look up the titles of the sessions the transcript mentions that
@@ -2541,6 +2562,7 @@ async fn run_in(
         suspend: false,
         edit: false,
         setup_token: None,
+        warned: Default::default(),
         diffs: settings::Diffs::default(),
         tabs,
         history: history::Store::default(),
@@ -2609,6 +2631,10 @@ async fn run_in(
         });
     }
     let first = r.make(opts.resume.clone())?;
+    // The untested-provider warning waits for the welcome line, which a
+    // new session shows only while its transcript is empty.
+    let pid = first.model.provider_id.clone();
+    let quiet = r.warned.insert(pid.clone());
     r.install(first, opts.resume.is_some());
     r.start_tabs(first_tab, opts.resume.is_some());
     if r.app.entries.is_empty() {
@@ -2618,6 +2644,10 @@ async fn run_in(
             r.cwd.display()
         ));
     }
+    if quiet {
+        r.warned.remove(&pid);
+    }
+    r.warn_untested(&pid);
     for f in mcp_failures {
         r.app.notice(f);
     }

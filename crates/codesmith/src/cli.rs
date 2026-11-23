@@ -2599,8 +2599,13 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         ));
     }
     for (i, c) in choices.iter().enumerate() {
+        let tag = if codesmith_core::providers::verified::verified(&c.id) {
+            String::new()
+        } else {
+            format!(" · {}", codesmith_core::providers::verified::TAG)
+        };
         eprintln!(
-            "  {:>2}. {:<30} {}",
+            "  {:>2}. {:<30} {}{tag}",
             i + 1,
             printable(&c.name),
             printable(&c.state.describe())
@@ -2611,6 +2616,9 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
     let c = pick_index(&answer, &ids)
         .map(|i| &choices[i])
         .ok_or_else(|| anyhow!("no provider {:?}", printable(&answer)))?;
+    if let Some(w) = codesmith_core::providers::verified::warning(&c.id, &printable(&c.name)) {
+        eprintln!("warning: {w}");
+    }
     if c.methods.is_empty() {
         return Err(anyhow!(
             "{}",
@@ -2718,6 +2726,14 @@ fn adopt_after_login(cwd: &std::path::Path, provider: &str) {
     }
 }
 
+/// Say on stderr that `provider` hasn't been tested with CodeSmith, when
+/// it hasn't (see `providers::verified`).
+fn warn_untested(provider: &str) {
+    if let Some(w) = codesmith_core::providers::verified::warning(provider, provider) {
+        eprintln!("warning: {w}");
+    }
+}
+
 async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
     use codesmith_core::auth;
     let file = paths::auth_file();
@@ -2763,6 +2779,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             fields,
             token,
         } => {
+            warn_untested(&provider);
             if token {
                 if provider != codesmith_core::providers::claude_agent::ID {
                     return Err(anyhow!("--token is for claude-agent (Claude Code)"));
@@ -2855,7 +2872,12 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 } else {
                     "—".into()
                 };
-                println!("{id:<12} {source}");
+                let tag = if codesmith_core::providers::verified::verified(&id) {
+                    String::new()
+                } else {
+                    format!(" · {}", codesmith_core::providers::verified::TAG)
+                };
+                println!("{id:<12} {source}{tag}");
             }
         }
         AuthCmd::Logout { provider } => {

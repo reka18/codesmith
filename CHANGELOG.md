@@ -5,6 +5,14 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## 0.4.0 — 2026-11-23
 
+- **Untested providers are marked.** Only Anthropic, Claude Code
+  (`claude-agent`) and Fireworks have been tested with CodeSmith. Every
+  other provider, custom and local ones too, is tagged `untested` in
+  `/provider`, `/login`, `codesmith auth login` and `codesmith auth list`,
+  and CodeSmith warns the first time a run uses one. The warning asks
+  anyone it works for to confirm it in an issue (a new *Provider verified*
+  template), and anyone it doesn't to send a fix; see the new
+  `CONTRIBUTING.md`.
 - **Claude Code tokens: Claude Code works over SSH with no password.**
   `/login`, then Claude Pro/Max, then *Claude Code token*: CodeSmith runs
   `claude setup-token`, saves the token it prints (owner-only, never shown)
