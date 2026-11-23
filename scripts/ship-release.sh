@@ -170,8 +170,14 @@ name=$(git config user.name) || die "git user.name is not set in $root"
 email=$(git config user.email) || die "git user.email is not set in $root"
 key=$(git config user.signingkey || true)
 
+# Over HTTPS with gh's token, not SSH: an SSH session has no key agent,
+# while gh's token is in the keychain unlocked above.
+gitgh() { git -c credential.helper= -c 'credential.helper=!gh auth git-credential' "$@"; }
+# gpg asks for its passphrase on this terminal (over SSH there is no GUI).
+if [ -t 0 ]; then GPG_TTY=$(tty); export GPG_TTY; fi
+
 tapdir=$(mktemp -d)
-gh repo clone "$tap" "$tapdir" -- --quiet || die "cannot clone $tap"
+gitgh clone --quiet "https://github.com/$tap.git" "$tapdir" || die "cannot clone $tap"
 scripts/update-homebrew.sh "$version" > "$tapdir/Formula/codesmith.rb.new" \
     || die "update-homebrew.sh failed"
 mv "$tapdir/Formula/codesmith.rb.new" "$tapdir/Formula/codesmith.rb"
@@ -181,7 +187,7 @@ else
     set -- -c "user.name=$name" -c "user.email=$email" -c commit.gpgsign=true
     [ -z "$key" ] || set -- "$@" -c "user.signingkey=$key"
     git -C "$tapdir" "$@" commit -q -am "codesmith $version"
-    git -C "$tapdir" push -q origin HEAD
+    gitgh -C "$tapdir" push -q origin HEAD
     say "formula updated to $version"
 fi
 rm -rf "$tapdir"
