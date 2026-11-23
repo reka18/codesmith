@@ -104,15 +104,18 @@ pub struct Choice {
 /// API-key pages of providers whose page is well known and stable. Others
 /// get a plain key prompt.
 pub const KEY_PAGES: &[(&str, &str)] = &[
-    ("anthropic", "https://console.anthropic.com/settings/keys"),
+    ("anthropic", "https://platform.claude.com/settings/keys"),
     ("openai", "https://platform.openai.com/api-keys"),
     ("google", "https://aistudio.google.com/app/apikey"),
     ("openrouter", "https://openrouter.ai/keys"),
     ("groq", "https://console.groq.com/keys"),
     ("mistral", "https://console.mistral.ai/api-keys"),
     ("deepseek", "https://platform.deepseek.com/api_keys"),
-    ("fireworks", "https://fireworks.ai/account/api-keys"),
-    ("poe", "https://poe.com/api_key"),
+    (
+        "fireworks",
+        "https://app.fireworks.ai/settings/users/api-keys",
+    ),
+    ("poe", "https://poe.com/api/keys"),
 ];
 
 pub fn key_page(id: &str) -> Option<&'static str> {

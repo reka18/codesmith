@@ -978,14 +978,14 @@ mod tests {
         assert!(f.contains("Paste an API key"), "{f}");
         // Fireworks has a well-known key page: offered, opened on Enter.
         assert!(
-            f.contains("Open the API key page (https://fireworks.ai/account/api-keys)"),
+            f.contains("Open the API key page (https://app.fireworks.ai/settings/users/api-keys)"),
             "{f}"
         );
         a.on_key(key(KeyCode::Down));
         assert_eq!(
             a.on_key(key(KeyCode::Enter)),
             Some(Action::Login(Outcome::OpenUrl(
-                "https://fireworks.ai/account/api-keys".into()
+                "https://app.fireworks.ai/settings/users/api-keys".into()
             )))
         );
         a.on_key(key(KeyCode::Up));

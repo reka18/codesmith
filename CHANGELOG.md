@@ -3,6 +3,14 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Fixed: `/login`'s *Open the API key page* for Fireworks opened a page
+  that no longer exists.** It now opens
+  `https://app.fireworks.ai/settings/users/api-keys`. Anthropic's entry
+  points to its new console address (`platform.claude.com`), and Poe's to
+  `poe.com/api/keys`.
+
 ## 0.4.0 — 2026-11-23
 
 - **Untested providers are marked.** Only Anthropic, Claude Code
