@@ -5,13 +5,19 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
-- **Claude Code works over SSH.** Claude Code keeps its login in the macOS
-  keychain, which is locked in an SSH session, so it reported "Not logged
-  in" though you were. When the session's model is Claude Code's and the
-  keychain is locked, CodeSmith now hands the terminal to macOS, which asks
-  for your Mac password (CodeSmith never sees it), then sends your prompt;
-  `codesmith run` does the same at a terminal. Where nothing can ask (piped
-  runs, ACP, the server), the error now names the locked keychain.
+- **Claude Code over SSH says why it can't sign in.** Claude Code keeps its
+  login in the macOS keychain, which is locked in an SSH session, so it
+  reported "Not logged in" though you were. CodeSmith now checks the
+  keychain when Claude Code says that, and tells you to run
+  `security unlock-keychain` instead.
+- **Installs end with a forge banner.** `install.sh`, Homebrew (as the
+  formula's caveats) and `codesmith upgrade` finish with the same
+  "CodeSmith forged successfully" box: CODE in fire colours, SMITH in
+  mithril. Any failure of `install.sh` or `codesmith upgrade` ends with
+  "CodeSmith forge failed" instead, in cooled embers and ash, after the
+  error. Both are plain under `NO_COLOR` or off a terminal, and `install.sh`
+  waits for Enter only when run from a terminal (not under `CI` or
+  `CODESMITH_NO_PROMPT`); an interrupt shows no banner.
 
 ## 0.3.0 — 2026-11-22
 

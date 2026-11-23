@@ -3576,17 +3576,6 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         asker,
         db,
     )?;
-    // Claude Code's login is in a keychain locked over SSH: macOS asks for
-    // the password here, at a terminal, rather than the turn failing.
-    if std::io::stdin().is_terminal()
-        && std::io::stderr().is_terminal()
-        && crate::keychain::needed(
-            session.model_spec.split('/').next().unwrap_or(""),
-            codesmith_ai::claude_agent::keychain_locked,
-        )
-    {
-        crate::keychain::unlock();
-    }
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if !json {

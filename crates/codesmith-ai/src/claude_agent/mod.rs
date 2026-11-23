@@ -44,7 +44,7 @@ pub const ID: &str = "claude-agent";
 
 /// What to do when Claude Code can't read its login because the macOS
 /// keychain it keeps the login in is locked, as it is in an SSH session.
-pub const LOCKED_KEYCHAIN: &str = "Claude Code can't read its login: your macOS keychain is locked in this session (as it is over SSH). Start CodeSmith in a terminal to be asked for your Mac password, or run `security unlock-keychain`; if it still fails, run `claude auth login`.";
+pub const LOCKED_KEYCHAIN: &str = "Claude Code can't read its login: your macOS keychain is locked in this session (as it is over SSH). Run `security unlock-keychain` in this terminal, then try again; if it still fails, run `claude auth login`.";
 
 /// Whether an error from Claude Code says it isn't signed in.
 pub fn not_signed_in(message: &str) -> bool {

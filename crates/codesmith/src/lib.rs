@@ -23,7 +23,6 @@
 
 mod acp;
 mod cli;
-mod keychain;
 mod render;
 mod serve;
 mod tui;
