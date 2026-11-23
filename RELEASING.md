@@ -144,6 +144,36 @@ signed. With the CodeSmith key pinned it proceeds; the draft it creates is
 unsigned and stays a draft until `sign-release.sh` has uploaded
 `SHA256SUMS.minisig`.
 
+## Signing and shipping in one run (Skeptic-Mac)
+
+When the macOS identity, the notary profile and the minisign key are all on
+Skeptic-Mac, one script does everything after `release.sh` has made the
+draft:
+
+```sh
+scripts/ship-release.sh v0.2.0
+```
+
+It works from the Mac's own terminal or over SSH, and can be run again
+after a failure; each step already done is skipped. It:
+
+1. unlocks the login keychain if it is locked, as it is over SSH (you are
+   asked for the Mac's login password); without that, `gh` cannot read its
+   token and sees no draft, and `notarytool` cannot read its profile;
+2. checks that `gh` can see the draft, finds the one `Developer ID
+   Application` identity and its Team ID, checks the `codesmith-notary`
+   profile and the minisign key, and takes the `BUILT-SHA256SUMS` hash from
+   `dist/<version>/` on this Mac, where `release.sh` built it (set
+   `CODESMITH_BUILT_SUMS_SHA256` when the build was elsewhere);
+3. runs `sign-macos.sh`, unless the draft's macOS checksums already differ
+   from the built ones, then `sign-release.sh` (minisign asks for the key's
+   password), unless the draft already has `SHA256SUMS.minisig`;
+4. asks before publishing (`CODESMITH_YES=1` skips the question);
+5. renders the formula from the published `SHA256SUMS` and pushes it to the
+   tap as a commit signed like this repository's.
+
+The sections below describe each script on its own, and the two-Mac setup.
+
 ## Signing the macOS binaries (skeptic-macmini)
 
 The Developer ID private key never leaves skeptic-macmini.
