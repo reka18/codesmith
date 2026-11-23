@@ -391,6 +391,16 @@ moderation models are left out.
   Claude Code's models come from Claude Code itself, asked again when its
   list is a day old (no prompt is sent); local servers are asked each time a
   picker opens.
+- **Effort levels.** Where the API says how a model reasons, `/effort`
+  offers what it says: Anthropic's `capabilities.effort` levels, and
+  OpenRouter's `reasoning.supported_efforts`. A model the API says does not
+  reason (Anthropic's `capabilities`, OpenRouter's `supported_parameters`,
+  Gemini's `thinking`) has no levels. One that reasons without levels named
+  (Gemini's models, OpenRouter's without an allowlist) keeps the catalog's,
+  or the protocol's defaults for a model the catalog lacks. OpenAI's,
+  Mistral's, xAI's and the other providers' lists say nothing about
+  reasoning, so their models keep the catalog's levels. Reasoning
+  `capabilities` in your config still win over all of these.
 
 ### Adding or overriding a provider
 
