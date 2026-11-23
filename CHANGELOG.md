@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.4.1 — 2026-11-23
 
 - **Fixed: `/login`'s *Open the API key page* for Fireworks opened a page
   that no longer exists.** It now opens
