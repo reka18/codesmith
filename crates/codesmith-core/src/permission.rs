@@ -856,8 +856,12 @@ pub fn base_rules() -> Vec<Rule> {
 /// naming the path does. `.env` files (not `.env.example`), Git
 /// credentials anywhere, and in the home folder `~/.ssh`, `~/.aws`,
 /// `~/.gnupg`, `~/.minisign`, `~/.netrc`, GitHub CLI, Docker and
-/// Kubernetes credentials, `~/.npmrc` and `~/.pypirc`; and CodeSmith's own
-/// saved keys (`auth.json`, `mcp-auth.json`) and global config file. Each
+/// Kubernetes credentials, `~/.npmrc` and `~/.pypirc`, Claude Code's
+/// login file (`~/.claude/.credentials.json`, or under
+/// `$CLAUDE_CONFIG_DIR`); CodeSmith's own saved keys (`auth.json`,
+/// `mcp-auth.json`, where a Claude Code token is kept) and global config
+/// file; and shell commands that read secrets out of the macOS keychain
+/// (`security find-generic-password` and the like). Each
 /// folder is named as written and as resolved, so a symlink to it, or a
 /// path through one, is caught by its real name.
 pub fn secret_guards() -> Vec<Rule> {
@@ -883,13 +887,42 @@ pub fn secret_guards() -> Vec<Rule> {
         .into_iter()
         .collect();
     configs = resolved(configs);
-    secret_guards_for(
+    let mut rules = secret_guards_for(
         &homes,
         &resolved(vec![crate::paths::data_dir()]),
         &configs,
         &resolved(gh),
-    )
+    );
+    // Claude Code's login file in another config folder.
+    let claude: Vec<std::path::PathBuf> = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .collect();
+    for d in resolved(claude) {
+        let r = Rule::new(
+            "read",
+            &format!(
+                "{}/.credentials.json",
+                d.display().to_string().trim_end_matches('/')
+            ),
+            Effect::Ask,
+        )
+        .into_guard();
+        if !rules.contains(&r) {
+            rules.push(r);
+        }
+    }
+    rules
 }
+
+/// `security` subcommands that print secrets or whole keychains.
+pub const KEYCHAIN_READS: &[&str] = &[
+    "find-generic-password",
+    "find-internet-password",
+    "dump-keychain",
+    "export",
+];
 
 /// [`secret_guards`] for the given home, data, config and extra GitHub CLI
 /// folders (each as written and resolved).
@@ -923,8 +956,18 @@ pub fn secret_guards_for(
             ".kube/config",
             ".npmrc",
             ".pypirc",
+            ".claude/.credentials.json",
         ] {
             rules.push(ask(&format!("{h}/{file}")));
+        }
+    }
+    // The macOS keychain holds Claude Code's login and much else; `security`
+    // prints a secret with `-w`, and dumps or exports whole keychains.
+    for verb in KEYCHAIN_READS {
+        for at in ["", "*/"] {
+            rules.push(
+                Rule::new("shell", &format!("{at}security {verb}*"), Effect::Ask).into_guard(),
+            );
         }
     }
     for g in gh {

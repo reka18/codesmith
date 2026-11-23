@@ -653,6 +653,12 @@ enum AuthCmd {
         /// `accountId=…` for Cloudflare (asked in the terminal otherwise).
         #[arg(long = "field", value_name = "KEY=VALUE")]
         fields: Vec<String>,
+        /// claude-agent: sign in with a Claude Code token instead of Claude
+        /// Code's keychain login (works over SSH). At a terminal, CodeSmith
+        /// runs `claude setup-token` and saves the token it prints;
+        /// otherwise the token is read from standard input.
+        #[arg(long)]
+        token: bool,
     },
     /// List providers with saved keys and where each provider's key comes from.
     List,
@@ -1001,6 +1007,8 @@ pub(crate) fn help(path: &[&str]) -> String {
 /// Parse the command line and run it; returns the exit code.
 pub async fn entry() -> i32 {
     let cli = Cli::parse();
+    // A saved Claude Code token is what Claude Code signs in with.
+    codesmith_core::providers::claude_agent::use_saved_token();
     let upgrading = matches!(cli.command, Some(Command::Upgrade { .. }));
     match run(cli).await {
         Ok(()) => 0,
@@ -2434,6 +2442,13 @@ pub(crate) async fn run_login(
                 .await?
                 .ok_or_else(|| anyhow!("Claude Code could not be checked"));
         }
+        // The token was taken from `claude setup-token` or pasted.
+        Kind::ClaudeToken { .. } => {
+            let key = key.ok_or_else(|| anyhow!("no token entered"))?;
+            let done = crate::claude_token::save(file, &key.0)?;
+            crate::claude_token::restart_claude_code().await;
+            return Ok(done);
+        }
         Kind::Browser { .. } | Kind::Device if provider == providers::copilot::ID => {
             PluginLogin { client_id, ..base }
         }
@@ -2463,8 +2478,43 @@ pub(crate) async fn run_login(
         .ok_or_else(|| anyhow!("{provider} has no such login"))
 }
 
+/// A Claude Code token for `codesmith auth login`: from `claude
+/// setup-token` run here when `create`, else (or when none was found)
+/// pasted at a terminal or read from standard input.
+fn read_token(create: bool) -> Result<String> {
+    let terminal = std::io::stdin().is_terminal();
+    if create && terminal {
+        if let Some(t) = crate::claude_token::create_on_terminal()? {
+            return Ok(t);
+        }
+        eprintln!("CodeSmith couldn't find the token in Claude Code's output; paste it instead.");
+    }
+    if terminal {
+        return read_secret(
+            "Claude Code token (paste the one `claude setup-token` printed; it is not shown): ",
+        );
+    }
+    let mut s = String::new();
+    std::io::stdin().take(8192).read_to_string(&mut s)?;
+    Ok(s)
+}
+
+/// `codesmith auth login claude-agent --token`.
+fn token_login(file: &std::path::Path) -> Result<String> {
+    let t = read_token(true)?;
+    crate::claude_token::save(file, &t)
+}
+
 /// Sign out of `provider`: its saved login removed.
 pub(crate) fn logout(file: &std::path::Path, provider: &str) -> Result<String> {
+    if provider == codesmith_core::providers::claude_agent::ID
+        && codesmith_core::providers::claude_agent::remove_token_in(file)?
+    {
+        return Ok(
+            "Removed your saved Claude Code token. Claude Code signs in with its own login again."
+                .into(),
+        );
+    }
     Ok(if codesmith_core::auth::remove_in(file, provider)? {
         format!("Removed the saved key for {provider}")
     } else {
@@ -2498,6 +2548,7 @@ pub(crate) fn login_guidance(choices: &[codesmith_core::providers::signin::Choic
                     format!("codesmith auth login {} --oauth", c.id)
                 }
                 Kind::ClaudeCode => "codesmith auth login claude-agent".into(),
+                Kind::ClaudeToken { .. } => "codesmith auth login claude-agent --token".into(),
                 Kind::AwsProfile => format!("codesmith auth login {} --profile <name>", c.id),
                 Kind::VertexProject => {
                     format!("codesmith auth login {} --project <id>", c.id)
@@ -2609,6 +2660,7 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         answers.insert(f.key.to_string(), a);
     }
     let key = match m.kind {
+        signin::Kind::ClaudeToken { create } => Some(Secret(read_token(create)?)),
         signin::Kind::Key => {
             if let Some(url) = c.key_page {
                 eprintln!("Create a key at {url}");
@@ -2623,7 +2675,9 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
     };
     // Claude Code's login is Claude Agent's, whichever entry offered it.
     let signed_in = match m.kind {
-        signin::Kind::ClaudeCode => codesmith_core::providers::claude_agent::ID.to_string(),
+        signin::Kind::ClaudeCode | signin::Kind::ClaudeToken { .. } => {
+            codesmith_core::providers::claude_agent::ID.to_string()
+        }
         _ => c.id.clone(),
     };
     let req = LoginRequest {
@@ -2679,8 +2733,10 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             register,
             cli,
             fields,
+            token,
         } => {
-            let flagged = profile.is_some()
+            let flagged = token
+                || profile.is_some()
                 || enterprise.is_some()
                 || project.is_some()
                 || location.is_some()
@@ -2705,7 +2761,17 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             register,
             cli,
             fields,
+            token,
         } => {
+            if token {
+                if provider != codesmith_core::providers::claude_agent::ID {
+                    return Err(anyhow!("--token is for claude-agent (Claude Code)"));
+                }
+                println!("{}", token_login(&file)?);
+                crate::claude_token::restart_claude_code().await;
+                adopt_after_login(cwd, &provider);
+                return Ok(());
+            }
             let login = PluginLogin {
                 profile,
                 enterprise,

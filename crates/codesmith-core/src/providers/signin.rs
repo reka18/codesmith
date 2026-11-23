@@ -29,6 +29,10 @@ pub enum Kind {
     /// Claude Code's own login (`claude auth login`): checked, never
     /// stored.
     ClaudeCode,
+    /// A Claude Code token from `claude setup-token`, saved and handed to
+    /// Claude Code. `create`: CodeSmith runs `claude setup-token` and takes
+    /// the token it prints; otherwise it is pasted.
+    ClaudeToken { create: bool },
     /// An AWS profile (Amazon Bedrock).
     AwsProfile,
     /// A Google Cloud project with Application Default Credentials.
@@ -118,6 +122,13 @@ pub fn key_page(id: &str) -> Option<&'static str> {
 /// The label of the Claude Code entry.
 pub const CLAUDE_CODE_LABEL: &str = "Claude Pro/Max: use your Claude Code login";
 
+/// The label of the Claude Code token entry (recommended: no keychain).
+pub const CLAUDE_TOKEN_LABEL: &str =
+    "Claude Pro/Max: Claude Code token (recommended; works over SSH)";
+
+/// The label of the entry for pasting a token made elsewhere.
+pub const CLAUDE_TOKEN_PASTE_LABEL: &str = "Claude Pro/Max: paste a Claude Code token";
+
 fn field(
     key: &'static str,
     title: &'static str,
@@ -149,8 +160,33 @@ pub fn methods(id: &str, p: &ProviderConfig, env: &Env) -> Vec<Method> {
         method(Kind::Key, "Paste an API key", fields)
     };
     match id {
-        "anthropic" => vec![key(), method(Kind::ClaudeCode, CLAUDE_CODE_LABEL, vec![])],
-        claude_agent::ID => vec![method(Kind::ClaudeCode, CLAUDE_CODE_LABEL, vec![])],
+        "anthropic" => vec![
+            key(),
+            method(
+                Kind::ClaudeToken { create: true },
+                CLAUDE_TOKEN_LABEL,
+                vec![],
+            ),
+            method(
+                Kind::ClaudeToken { create: false },
+                CLAUDE_TOKEN_PASTE_LABEL,
+                vec![],
+            ),
+            method(Kind::ClaudeCode, CLAUDE_CODE_LABEL, vec![]),
+        ],
+        claude_agent::ID => vec![
+            method(
+                Kind::ClaudeToken { create: true },
+                CLAUDE_TOKEN_LABEL,
+                vec![],
+            ),
+            method(
+                Kind::ClaudeToken { create: false },
+                CLAUDE_TOKEN_PASTE_LABEL,
+                vec![],
+            ),
+            method(Kind::ClaudeCode, CLAUDE_CODE_LABEL, vec![]),
+        ],
         chatgpt::ID => vec![
             method(Kind::Browser { paste: true }, chatgpt::LABEL, vec![]),
             key(),
@@ -246,11 +282,22 @@ fn note(id: &str) -> Option<String> {
 /// entry in `file` (as `codesmith auth list` reads them).
 pub fn state(id: &str, p: &ProviderConfig, file: &Path, env: &Env) -> State {
     if id == claude_agent::ID {
+        if let Some(t) = claude_agent::token_in(file) {
+            return State::Saved(claude_agent::describe_token(&t, super::oauth::now_ms()));
+        }
         return if claude_agent::available(env) {
             if claude_agent::catalog().models.is_empty() {
                 State::Ambient("Claude Code found · not checked yet".into())
             } else if !claude_agent::signed_in_at(&claude_agent::storage()) {
-                State::Ambient("Claude Code found · not logged in (claude auth login)".into())
+                // Over SSH its keychain login can't be read: a token can.
+                if codesmith_ai::claude_agent::keychain_locked() {
+                    State::Ambient(
+                        "Claude Code found · its keychain login is locked here: use a Claude Code token"
+                            .into(),
+                    )
+                } else {
+                    State::Ambient("Claude Code found · not logged in (claude auth login)".into())
+                }
             } else {
                 // Nothing is saved here to sign out of: Claude Code
                 // keeps its own login (`claude auth logout`).
@@ -444,8 +491,15 @@ mod tests {
         let kinds =
             |id: &str| -> Vec<Kind> { find(&c, id).methods.iter().map(|m| m.kind).collect() };
         assert_eq!(kinds("openai"), [Kind::Browser { paste: true }, Kind::Key]);
-        assert_eq!(kinds("anthropic"), [Kind::Key, Kind::ClaudeCode]);
-        assert_eq!(kinds("claude-agent"), [Kind::ClaudeCode]);
+        let token = [
+            Kind::ClaudeToken { create: true },
+            Kind::ClaudeToken { create: false },
+            Kind::ClaudeCode,
+        ];
+        let mut anthropic = vec![Kind::Key];
+        anthropic.extend(token);
+        assert_eq!(kinds("anthropic"), anthropic);
+        assert_eq!(kinds("claude-agent"), token);
         assert_eq!(kinds("xai"), [Kind::Device, Kind::Key]);
         assert_eq!(kinds("github-copilot"), [Kind::Device]);
         assert_eq!(

@@ -421,8 +421,17 @@ pub fn describe_login(id: &str, stored: Option<&Value>, settings: &Settings) -> 
             Some(format!("project {project} in {location}, {creds}"))
         }
         gitlab::ID => gitlab::stored_instance(stored).map(|i| format!("saved GitLab login ({i})")),
-        claude_agent::ID => claude_agent::available(&process_env())
-            .then(|| "Claude Code's own login (claude auth login)".into()),
+        claude_agent::ID => match stored.filter(|s| s["type"] == "token") {
+            Some(s) => Some(claude_agent::describe_token(
+                &claude_agent::Token {
+                    token: String::new(),
+                    created: s["created"].as_u64().unwrap_or(0),
+                },
+                oauth::now_ms(),
+            )),
+            None => claude_agent::available(&process_env())
+                .then(|| "Claude Code's own login (claude auth login)".into()),
+        },
         digitalocean::ID => {
             let s = stored?;
             (s["type"] == "oauth").then(|| {

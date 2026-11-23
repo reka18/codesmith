@@ -147,10 +147,18 @@ usually holds credentials:
 - in the home folder: everything under `~/.ssh`, `~/.aws`, `~/.gnupg` and
   `~/.minisign`, and `~/.netrc`, `~/.config/gh/hosts.yml` (and
   `$XDG_CONFIG_HOME/gh/hosts.yml`), `~/.docker/config.json`,
-  `~/.kube/config`, `~/.npmrc` and `~/.pypirc`;
+  `~/.kube/config`, `~/.npmrc` and `~/.pypirc`, and Claude Code's login
+  file `~/.claude/.credentials.json` (or the one under
+  `$CLAUDE_CONFIG_DIR`);
 - CodeSmith's own saved keys, `auth.json` and `mcp-auth.json` (and their
-  backups) in the data folder, and the global `codesmith.json` or
-  `codesmith.jsonc`.
+  backups) in the data folder, where a Claude Code token is kept too, and
+  the global `codesmith.json` or `codesmith.jsonc`.
+
+Shell commands that read secrets out of the macOS keychain ask the same
+way: `security find-generic-password`, `security find-internet-password`,
+`security dump-keychain` and `security export`, by any path, inside `sh
+-c` or `$(…)` too. The keychain holds Claude Code's login among much else,
+and these print it.
 
 These guards are a floor under every other rule. A blanket allow (`read
 *`, `* *`, `~/*`), whether in the config, an agent's rules or an

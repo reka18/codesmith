@@ -393,9 +393,11 @@ pub fn advice(e: &Error, t: &Target) -> Option<String> {
     }
     // Claude Code's own login failed: it is fixed there.
     if pid == crate::providers::claude_agent::ID {
-        return Some(
-            "Claude Code isn't signed in. Run `claude auth login` in a terminal, then /login → Claude Pro/Max; or switch models with ctrl+x m.".into(),
-        );
+        return Some(codesmith_ai::claude_agent::login_hint(
+            "Claude Code isn't signed in. Run `claude auth login` in a terminal, then /login → Claude Pro/Max; or switch models with ctrl+x m.",
+            codesmith_ai::claude_agent::saved_token().is_some(),
+            codesmith_ai::claude_agent::keychain_locked,
+        ));
     }
     let lower = body.to_lowercase();
     let missing = !t.has_key

@@ -131,7 +131,11 @@ impl Failures {
                     format!("Anthropic returned HTTP {s}.")
                 }
             ),
-            _ => result,
+            _ => super::login_hint(
+                &result,
+                super::saved_token().is_some(),
+                super::keychain_locked,
+            ),
         };
         let limited = self.code.as_deref() == Some("rate_limit")
             || (self.rejected.is_some() && status == Some(429));

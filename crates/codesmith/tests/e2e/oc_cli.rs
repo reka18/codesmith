@@ -566,3 +566,84 @@ async fn a_failed_upgrade_ends_with_the_failure_banner() {
     assert_eq!(other.code, Some(1));
     assert!(!other.stderr.contains("forge failed"), "{}", other.both());
 }
+
+// CodeSmith's own: a Claude Code token signs Claude Code in without the
+// keychain. Piped in, it is saved owner-only, listed with its end date
+// (never the token), and signed out of.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_claude_code_token_is_saved_listed_and_removed() {
+    let token = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-xyzAA";
+    let e = Env::new();
+    let out = e
+        .run_with_stdin(
+            &["auth", "login", "claude-agent", "--token"],
+            &format!("{token}\n"),
+        )
+        .await;
+    out.ok();
+    assert!(
+        out.stdout.contains("Saved your Claude Code token"),
+        "{}",
+        out.both()
+    );
+    assert!(!out.both().contains(token), "the token is never printed");
+    let file = e.data.join("codesmith/auth.json");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["claude-agent"]["type"], "token");
+    assert_eq!(saved["claude-agent"]["token"], token);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    let list = e.run(&["auth", "list"]).await;
+    assert!(
+        list.both().contains("Claude Code token · until"),
+        "{}",
+        list.both()
+    );
+    assert!(!list.both().contains(token));
+
+    let out = e.run(&["auth", "logout", "claude-agent"]).await;
+    out.ok();
+    assert!(
+        out.stdout.contains("Removed your saved Claude Code token"),
+        "{}",
+        out.both()
+    );
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved.get("claude-agent").is_none());
+}
+
+// A pasted value that isn't a Claude Code token is refused, and nothing
+// is saved; --token is only for Claude Code.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_claude_code_token_is_refused() {
+    let e = Env::new();
+    let out = e
+        .run_with_stdin(
+            &["auth", "login", "claude-agent", "--token"],
+            "sk-proj-openai-key\n",
+        )
+        .await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    assert!(
+        out.stderr.contains("isn't a Claude Code token"),
+        "{}",
+        out.both()
+    );
+    assert!(!e.data.join("codesmith/auth.json").exists());
+    let out = e
+        .run_with_stdin(&["auth", "login", "openai", "--token"], "x\n")
+        .await;
+    assert_eq!(out.code, Some(1));
+    assert!(
+        out.stderr.contains("--token is for claude-agent"),
+        "{}",
+        out.both()
+    );
+}

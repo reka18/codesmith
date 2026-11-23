@@ -1440,9 +1440,38 @@ async fn the_sign_in_picker_reports_a_missing_claude_code() {
     ui.wait_for("Claude Pro/Max (Claude Code)").await;
     ui.send(b"\r").await;
     ui.wait_for("use your Claude Code login").await;
+    // Past the two token entries to Claude Code's own login.
+    for _ in 0..2 {
+        ui.send(b"\x1b[B").await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
     ui.send(b"\r").await;
     ui.wait_for("Claude Code is not installed").await;
     ui.wait_for("claude auth login").await;
+}
+
+// The token entry with no Claude Code: the terminal is handed over and
+// taken back, the error says to install it, and a token can be pasted.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_token_entry_without_claude_code_says_so_and_takes_a_paste() {
+    let Some(path) = no_claude_path() else {
+        return;
+    };
+    let e = Env::new();
+    e.config("http://127.0.0.1:9/v1", json!({}));
+    let Some(mut ui) = Ui::start_with(&e, "", &[path]) else {
+        return;
+    };
+    ui.wait_for("fake/m").await;
+    ui.send(b"/login\r").await;
+    ui.wait_for("type to filter").await;
+    ui.send(b"claude").await;
+    ui.wait_for("Claude Pro/Max (Claude Code)").await;
+    ui.send(b"\r").await;
+    ui.wait_for("works over SSH").await;
+    ui.send(b"\r").await;
+    ui.wait_for("isn't installed").await;
+    ui.wait_for("paste the token").await;
 }
 
 // `codesmith auth login` in a terminal, without a provider: the numbered

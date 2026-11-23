@@ -5,6 +5,19 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Claude Code tokens: Claude Code works over SSH with no password.**
+  `/login`, then Claude Pro/Max, then *Claude Code token*: CodeSmith runs
+  `claude setup-token`, saves the token it prints (owner-only, never shown)
+  and hands it to Claude Code, so it no longer needs its keychain login,
+  which an SSH session can't open. The token lasts a year and can only
+  send requests; CodeSmith warns before it expires, and Sign out removes
+  it. `codesmith auth login claude-agent --token` does the same from the
+  command line. Without a token, Claude Code's "Not logged in" over SSH now
+  says the keychain is locked and points to the token.
+- **Agents can't read the keychain or Claude Code's login unasked.** Shell
+  commands that print keychain secrets (`security find-generic-password`
+  and the like) and reads of `~/.claude/.credentials.json` now ask, like
+  other secret files, and "always" doesn't lift it.
 - **`/effort` picks the reasoning effort.** It lists the current model's
   effort levels with the provider's default first, and `/effort high` sets
   one directly. It is offered only for models that have levels, and the

@@ -22,6 +22,7 @@
 #![allow(clippy::needless_doctest_main)]
 
 mod acp;
+mod claude_token;
 mod cli;
 mod render;
 mod serve;
