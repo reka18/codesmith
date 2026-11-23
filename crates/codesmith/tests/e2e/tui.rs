@@ -1530,3 +1530,63 @@ async fn the_provider_and_model_pickers_list_by_provider() {
     ui.wait_for("provider: fake").await;
     ui.quit().await;
 }
+
+/// `/effort` offers the levels the provider's API listed for the model
+/// (kept in `live-models.json`), and says so for a model without any.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_effort_picker_offers_the_levels_the_api_listed() {
+    let e = Env::new();
+    let m = Model::start(Script::new()).await;
+    let key = "sk-ant-e2e-effort";
+    e.config(
+        &m.url,
+        json!({
+            "model": "anthropic/claude-future-9",
+            "providers": {
+                "fake": {"protocol": "openai-chat", "settings": {"baseURL": m.url, "apiKey": "k"},
+                         "models": {"m": {}}},
+                "anthropic": {"settings": {"baseURL": m.url, "apiKey": key}}
+            }
+        }),
+    );
+    let data = e.data.join("codesmith");
+    std::fs::create_dir_all(&data).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    std::fs::write(
+        data.join("live-models.json"),
+        json!({"anthropic": {
+            "account": codesmith_core::providers::hosted::account(Some(key)),
+            "baseURL": m.url,
+            "fetched": now,
+            "models": [
+                {"id": "claude-future-9", "kind": "chat", "reasoning": true,
+                 "efforts": ["low", "high", "xhigh"]},
+                {"id": "claude-plain", "kind": "chat", "reasoning": false}
+            ]
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("tab agents").await;
+    ui.send(b"/effort\r").await;
+    ui.wait_for("Effort · anthropic/claude-future-9").await;
+    ui.wait_for("the provider's default").await;
+    ui.wait_for("very thorough").await;
+    ui.send(b"\x1b").await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ui.send(b"/effort xhigh\r").await;
+    ui.wait_for("model: anthropic/claude-future-9#xhigh").await;
+    ui.send(b"/effort max\r").await;
+    ui.wait_for("it offers low, high, xhigh, or default").await;
+    ui.send(b"/model anthropic/claude-plain\r").await;
+    ui.wait_for("model: anthropic/claude-plain").await;
+    ui.send(b"/effort\r").await;
+    ui.wait_for("has no effort levels").await;
+    ui.quit().await;
+}

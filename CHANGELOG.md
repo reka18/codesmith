@@ -18,6 +18,22 @@ All notable changes to CodeSmith are listed here. Versions follow
   commands that print keychain secrets (`security find-generic-password`
   and the like) and reads of `~/.claude/.credentials.json` now ask, like
   other secret files, and "always" doesn't lift it.
+- **`/effort` picks the reasoning effort.** It lists the current model's
+  effort levels with the provider's default first, and `/effort high` sets
+  one directly. It is offered only for models that have levels, and the
+  levels come from the provider's API where it lists them: Anthropic's
+  `capabilities.effort` and OpenRouter's `reasoning.supported_efforts`
+  replace the catalog's guesses, so a model gets exactly the levels it
+  accepts. A model the API says doesn't reason (Anthropic, OpenRouter,
+  Gemini) offers none.
+- **Installs end with a forge banner.** `install.sh`, Homebrew (as the
+  formula's caveats) and `codesmith upgrade` finish with the same
+  "CodeSmith forged successfully" box: CODE in fire colours, SMITH in
+  mithril. Any failure of `install.sh` or `codesmith upgrade` ends with
+  "CodeSmith forge failed" instead, in cooled embers and ash, after the
+  error. Both are plain under `NO_COLOR` or off a terminal, and `install.sh`
+  waits for Enter only when run from a terminal (not under `CI` or
+  `CODESMITH_NO_PROMPT`); an interrupt shows no banner.
 
 ## 0.3.0 — 2026-11-22
 

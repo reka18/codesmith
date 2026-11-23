@@ -9,6 +9,12 @@
 //! said about it (name, context size, release time), so a model released
 //! after the catalog snapshot is listed and runs.
 //!
+//! Where the API says how a model reasons, its effort levels come from
+//! there too: Anthropic's `capabilities.effort` (and `capabilities.thinking`),
+//! OpenRouter's `reasoning.supported_efforts`, Gemini's `thinking`. A model
+//! the API says does not reason has no effort levels; one it says reasons
+//! without naming levels keeps the catalog's (or the protocol's defaults).
+//!
 //! Nothing is fetched while idle: the TUI asks again when a model or
 //! provider picker opens and the kept list is missing, older than
 //! [`MAX_AGE_MS`], or for another account, and `codesmith models PROVIDER`
@@ -98,7 +104,8 @@ pub fn chat_ids(raw: &[Value]) -> Vec<String> {
 }
 
 /// A provider's answer as kept entries: `{"id", "kind", "name"?,
-/// "context"?, "output"?, "released"?}`, one per model id, in the answer's
+/// "context"?, "output"?, "released"?, "reasoning"?, "efforts"?}`, one per
+/// model id, in the answer's
 /// order. Anything that is not a model with a usable id is skipped.
 pub fn normalize(v: &Value) -> Vec<Value> {
     let list = v["models"]
@@ -133,6 +140,12 @@ pub fn normalize(v: &Value) -> Vec<Value> {
         }
         if let Some(r) = released(obj) {
             e.insert("released".into(), json!(r));
+        }
+        if let Some(r) = reasoning(obj) {
+            e.insert("reasoning".into(), json!(r.supported));
+            if !r.efforts.is_empty() {
+                e.insert("efforts".into(), json!(r.efforts));
+            }
         }
         e.insert("id".into(), json!(id));
         out.push(Value::Object(e));
@@ -290,6 +303,177 @@ fn kind(id: &str, m: &Map<String, Value>) -> &'static str {
     "chat"
 }
 
+/// How a model reasons, as its API says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiReasoning {
+    pub supported: bool,
+    /// The effort levels, lowest first; empty when the API names none.
+    pub efforts: Vec<String>,
+}
+
+/// Effort levels from lowest to highest; others sort after them.
+const EFFORT_ORDER: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// At most this many effort levels are kept for one model.
+const MAX_EFFORTS: usize = 16;
+
+/// An effort level name: short, lower-case letters, digits, `-` and `_`.
+fn effort_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 24
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        && s != "default"
+        && s != "supported"
+}
+
+/// `levels` deduplicated, the known ones lowest first, then the others in
+/// the API's order.
+fn ordered(levels: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in levels {
+        if effort_name(&l) && !out.contains(&l) && out.len() < MAX_EFFORTS {
+            out.push(l);
+        }
+    }
+    let rank = |l: &String| {
+        EFFORT_ORDER
+            .iter()
+            .position(|k| k == l)
+            .unwrap_or(EFFORT_ORDER.len())
+    };
+    out.sort_by_key(rank);
+    out
+}
+
+/// What the API says about the model's reasoning, if anything.
+pub fn reasoning(m: &Map<String, Value>) -> Option<ApiReasoning> {
+    // Anthropic: `capabilities.effort` names each level it supports, and
+    // `capabilities.thinking` whether the model thinks at all.
+    if let Some(caps) = m.get("capabilities").and_then(Value::as_object) {
+        let supported =
+            |v: Option<&Value>| v.and_then(|v| v.get("supported")).and_then(Value::as_bool);
+        let effort = caps.get("effort").and_then(Value::as_object);
+        let thinking = supported(caps.get("thinking"));
+        if effort.is_some() || thinking.is_some() {
+            let efforts = match effort {
+                Some(e) if supported(Some(&Value::Object(e.clone()))) == Some(true) => ordered(
+                    e.iter()
+                        .filter(|(k, v)| *k != "supported" && supported(Some(v)) == Some(true))
+                        .map(|(k, _)| k.clone()),
+                ),
+                _ => vec![],
+            };
+            let on = !efforts.is_empty() || thinking == Some(true);
+            return Some(ApiReasoning {
+                supported: on,
+                efforts,
+            });
+        }
+    }
+    // OpenRouter: a `reasoning` object for models that reason, with the
+    // levels allowed (highest first; null for any).
+    if let Some(r) = m.get("reasoning").and_then(Value::as_object) {
+        let mandatory = r.get("mandatory").and_then(Value::as_bool) == Some(true);
+        let efforts = r
+            .get("supported_efforts")
+            .and_then(Value::as_array)
+            .map(|a| {
+                ordered(
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .filter(|e| !(mandatory && *e == "none"))
+                        .map(str::to_string),
+                )
+            })
+            .unwrap_or_default();
+        return Some(ApiReasoning {
+            supported: true,
+            efforts,
+        });
+    }
+    // OpenRouter without a `reasoning` object: whether the parameters it
+    // takes include reasoning ones.
+    if let Some(params) = m.get("supported_parameters").and_then(Value::as_array) {
+        let reasons = params.iter().any(|p| {
+            matches!(
+                p.as_str(),
+                Some("reasoning" | "reasoning_effort" | "include_reasoning")
+            )
+        });
+        return Some(ApiReasoning {
+            supported: reasons,
+            efforts: vec![],
+        });
+    }
+    // Gemini: whether the model thinks.
+    if m.contains_key("supportedGenerationMethods") {
+        if let Some(t) = m.get("thinking").and_then(Value::as_bool) {
+            return Some(ApiReasoning {
+                supported: t,
+                efforts: vec![],
+            });
+        }
+    }
+    None
+}
+
+/// The package whose reasoning controls a hosted provider's API describes,
+/// for spelling its effort levels.
+fn reasoning_package(pid: &str) -> Option<&'static str> {
+    Some(match pid {
+        "anthropic" => "@opencode/ai/providers/anthropic",
+        "openrouter" => "@opencode/ai/providers/openrouter",
+        "google" => "@opencode/ai/providers/google",
+        _ => return None,
+    })
+}
+
+/// Apply what the API said about a model's reasoning to it: no levels for
+/// a model that does not reason, the API's levels when it names them, and
+/// otherwise the template's (or the protocol's defaults for a model the
+/// catalog lacks).
+fn apply_reasoning(pid: &str, e: &Value, m: &mut crate::catalog::Model) {
+    use crate::catalog::variant;
+    let Some(supported) = e["reasoning"].as_bool() else {
+        return;
+    };
+    if !supported {
+        m.variants.clear();
+        m.reasoning = variant::Reasoning::default();
+        return;
+    }
+    let Some(package) = reasoning_package(pid) else {
+        return;
+    };
+    let efforts: Vec<String> = e["efforts"]
+        .as_array()
+        .map(|a| ordered(a.iter().filter_map(Value::as_str).map(str::to_string)))
+        .unwrap_or_default();
+    if efforts.is_empty() && !m.variants.is_empty() {
+        return;
+    }
+    m.reasoning = variant::Reasoning {
+        supported: true,
+        effort: (!efforts.is_empty()).then(|| efforts.clone()),
+        ..Default::default()
+    };
+    let supports = if efforts.is_empty() {
+        variant::default_supports()
+    } else {
+        variant::supports(&m.reasoning)
+    };
+    let id = m.id.clone();
+    let target = variant::Target {
+        package: Some(package),
+        provider_id: pid,
+        model_id: &id,
+        output: m.limit.output as i64,
+    };
+    m.variants = variant::resolve(&target, &supports);
+    m.package = Some(package.to_string());
+}
+
 /// A kept list as catalog models: the catalog's model where it knows the
 /// id, else one built from what the API said.
 pub fn derive(
@@ -308,6 +492,7 @@ pub fn derive(
             if kind != "chat" {
                 m.kind = kind.to_string();
             }
+            apply_reasoning(pid, e, &mut m);
             out.push(m);
             continue;
         }
@@ -326,6 +511,7 @@ pub fn derive(
         if let Some(r) = e["released"].as_i64() {
             m.time.released = r;
         }
+        apply_reasoning(pid, e, &mut m);
         out.push(m);
     }
     out
