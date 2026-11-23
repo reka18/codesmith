@@ -5,6 +5,15 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+## 0.2.0 — 2026-11-22
+
+- **The busy indicator is a forge.** While idle, the input box title shows
+  a cold steel hammer. When a turn starts, the hammer heats over 1.5 s
+  through dark blue and purple to crimson, orange and white, then becomes
+  an ember that flares and cools (`· • ✦ ✶ ✷ ✸`) along steel's heat
+  colours, while a hot band runs along a rotating smithing verb
+  (Forging, Tempering, Quenching, …). Light themes use a darker ramp;
+  `NO_COLOR` keeps the motion without the colour. A busy tab shows `✶`.
 - **Model specs are forgiving, and checked before anything is sent.**
   Spaces around the provider, model and variant are dropped
   (`anthropic/ opus` is `anthropic/opus`), providers and models are found
