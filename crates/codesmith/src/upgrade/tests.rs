@@ -1228,6 +1228,7 @@ fn install_sh_checks_the_signature_when_minisign_is_installed() {
     assert!(ok && installed(&dir), "{err}");
     assert!(err.contains("signature ok"), "{err}");
     assert!(err.contains("CodeSmith forged successfully"), "{err}");
+    assert!(!err.contains("forge failed"), "{err}");
     assert!(
         !err.contains("Press Enter"),
         "no prompt without a terminal: {err}"
@@ -1241,8 +1242,9 @@ fn install_sh_checks_the_signature_when_minisign_is_installed() {
     );
     assert!(
         !err.contains("forged successfully"),
-        "no banner on failure: {err}"
+        "no success banner on failure: {err}"
     );
+    assert!(err.contains("CodeSmith forge failed"), "{err}");
 
     let (ok, err, dir) = run_install_sh(
         &server,
@@ -1512,51 +1514,98 @@ fn a_test_key_signature_verifies_only_where_that_key_is_listed() {
 
 // ------------------------------------------------------------ banner
 
-/// Terminal columns of a banner line: the fire emoji is two wide, the
-/// text-presentation selector after the hammer takes none.
+/// Terminal columns of a banner line: the emoji are two wide, the
+/// text-presentation selector after the symbol takes none.
 fn columns(line: &str) -> usize {
     line.chars()
         .map(|c| match c {
             '\u{fe0e}' | '\u{fe0f}' => 0,
-            '🔥' => 2,
+            '🔥' | '💥' => 2,
             _ => 1,
         })
         .sum()
 }
 
+const BANNERS: [(&str, &str, &str); 2] = [
+    (
+        BANNER_OK,
+        "⚒\u{fe0e}  CodeSmith forged successfully",
+        "[ Press Enter to continue ]",
+    ),
+    (
+        BANNER_FAILED,
+        "⚠\u{fe0e}  CodeSmith forge failed",
+        "[ Press Enter to exit ]",
+    ),
+];
+
 #[test]
-fn the_banner_is_a_closed_box_every_line_the_same_width() {
-    let lines: Vec<&str> = BANNER.lines().collect();
-    assert_eq!(lines.len(), 23);
-    for l in &lines {
-        assert_eq!(columns(l), 62, "{l:?}");
+fn each_banner_is_a_closed_box_every_line_the_same_width() {
+    for (text, title, prompt) in BANNERS {
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 23);
+        for l in &lines {
+            assert_eq!(columns(l), 62, "{l:?}");
+        }
+        assert!(lines[0].starts_with('╔') && lines[0].ends_with('╗'));
+        assert!(lines[22].starts_with('╚') && lines[22].ends_with('╝'));
+        for l in &lines[1..22] {
+            assert!(l.starts_with('║') && l.ends_with('║'), "{l:?}");
+        }
+        // Symbols are drawn as text, one column wide like the TUI's.
+        assert!(lines[2].contains(title), "{}", lines[2]);
+        assert!(lines[20].contains(prompt), "{}", lines[20]);
+        assert_eq!(lines[1].trim_matches('║').trim(), "");
+        assert!(text.ends_with("╝\n"));
     }
-    assert!(lines[0].starts_with('╔') && lines[0].ends_with('╗'));
-    assert!(lines[22].starts_with('╚') && lines[22].ends_with('╝'));
-    for l in &lines[1..22] {
-        assert!(l.starts_with('║') && l.ends_with('║'), "{l:?}");
-    }
-    assert!(BANNER.contains("CodeSmith forged successfully"));
-    assert!(BANNER.contains("[ Press Enter to continue ]"));
-    // The hammer is drawn as text, one column wide like the TUI's.
-    assert!(BANNER.contains("⚒\u{fe0e}"));
-    assert!(BANNER.ends_with("╝\n"));
 }
 
 #[test]
-fn install_sh_carries_the_same_banner() {
+fn the_banners_share_the_lettering_and_differ_in_their_words() {
+    let ok: Vec<&str> = BANNER_OK.lines().collect();
+    let failed: Vec<&str> = BANNER_FAILED.lines().collect();
+    for n in [
+        0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 21, 22,
+    ] {
+        assert_eq!(ok[n], failed[n], "line {}", n + 1);
+    }
+    assert!(failed[18].contains("The anvil cracked"));
+    assert!(ok[18].contains("Golden fire"));
+}
+
+/// The text of install.sh's heredoc number `index` (0: ok, 1: failed).
+fn install_sh_banner(script: &str, index: usize) -> String {
+    let open = "<<'BANNER'\n";
+    let mut rest = script;
+    for _ in 0..index {
+        rest = &rest[rest.find(open).unwrap() + open.len()..];
+    }
+    let start = rest.find(open).expect("banner heredoc") + open.len();
+    let end = start + rest[start..].find("\nBANNER\n").unwrap() + 1;
+    rest[start..end].to_string()
+}
+
+#[test]
+fn install_sh_carries_the_same_banners() {
     let script = install_sh();
-    let start = script.find("<<'BANNER'\n").expect("banner heredoc") + "<<'BANNER'\n".len();
-    let end = start + script[start..].find("\nBANNER\n").unwrap() + 1;
     assert_eq!(
-        &script[start..end],
-        BANNER,
+        install_sh_banner(&script, 0),
+        BANNER_OK,
         "copy packaging/banner.txt into install.sh"
     );
-    // Shown last, after the install succeeded.
+    assert_eq!(
+        install_sh_banner(&script, 1),
+        BANNER_FAILED,
+        "copy packaging/banner-failed.txt into install.sh"
+    );
+    // The success banner comes last, after the install; the failure one
+    // from the exit trap, set before anything can fail.
     let main = script.rfind("\nmain() {").unwrap();
     let body = &script[main..];
-    assert!(body.find("say \"installed codesmith").unwrap() < body.find("    banner\n").unwrap());
+    assert!(
+        body.find("say \"installed codesmith").unwrap() < body.find("    banner ok\n").unwrap()
+    );
+    assert!(body.find("trap finish EXIT").unwrap() < body.find("need uname").unwrap());
 }
 
 #[test]
@@ -1566,7 +1615,7 @@ fn the_homebrew_formula_carries_the_banner_without_the_prompt() {
         "/../../packaging/homebrew/codesmith.rb"
     ))
     .unwrap();
-    let expected: String = banner(false)
+    let expected: String = banner(Ending::Ok, false)
         .lines()
         .map(|l| format!("      {l}\n"))
         .collect();
@@ -1581,23 +1630,24 @@ fn the_homebrew_formula_carries_the_banner_without_the_prompt() {
 }
 
 #[test]
-fn the_plain_banner_drops_the_prompt_and_keeps_the_box() {
-    let plain = banner(false);
-    assert!(!plain.contains("Press Enter"));
-    assert!(!plain.contains('\x1b'));
-    assert_eq!(plain.lines().count(), BANNER.lines().count());
-    for l in plain.lines() {
-        assert_eq!(columns(l), 62, "{l:?}");
+fn the_plain_banners_drop_the_prompt_and_keep_the_box() {
+    for (ending, text) in [(Ending::Ok, BANNER_OK), (Ending::Failed, BANNER_FAILED)] {
+        let plain = banner(ending, false);
+        assert!(!plain.contains("Press Enter"));
+        assert!(!plain.contains('\x1b'));
+        assert_eq!(plain.lines().count(), text.lines().count());
+        for (got, want) in plain.lines().zip(text.lines()) {
+            if !want.contains("Press Enter") {
+                assert_eq!(got, want);
+            }
+            assert_eq!(columns(got), 62, "{got:?}");
+        }
     }
 }
 
-#[test]
-fn the_coloured_banner_is_the_plain_one_with_colour_codes() {
-    let coloured = banner(true);
-    assert!(coloured.contains("\x1b[1;38;5;226m"), "fire on CODE");
-    assert!(coloured.contains("\x1b[1;38;5;117m"), "mithril on SMITH");
-    let mut stripped = String::new();
-    let mut chars = coloured.chars().peekable();
+fn strip_colour(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             for d in chars.by_ref() {
@@ -1606,12 +1656,34 @@ fn the_coloured_banner_is_the_plain_one_with_colour_codes() {
                 }
             }
         } else {
-            stripped.push(c);
+            out.push(c);
         }
     }
-    assert_eq!(stripped, banner(false));
-    // Every colour is reset on the line it starts on.
-    for l in coloured.lines() {
-        assert!(l.ends_with("\x1b[0m"), "{l:?}");
+    out
+}
+
+#[test]
+fn the_coloured_banners_are_the_plain_ones_with_colour_codes() {
+    let ok = banner(Ending::Ok, true);
+    assert!(ok.contains("\x1b[1;38;5;226m"), "fire on CODE");
+    assert!(ok.contains("\x1b[1;38;5;117m"), "mithril on SMITH");
+    let failed = banner(Ending::Failed, true);
+    assert!(failed.contains("\x1b[1;38;5;88m"), "cooled embers on CODE");
+    assert!(failed.contains("\x1b[1;38;5;240m"), "ash on SMITH");
+    assert!(
+        !failed.contains("\x1b[1;38;5;226m"),
+        "no golden fire on failure"
+    );
+    for (ending, coloured) in [(Ending::Ok, &ok), (Ending::Failed, &failed)] {
+        assert_eq!(strip_colour(coloured), banner(ending, false));
+        // Every colour is reset on the line it starts on.
+        for l in coloured.lines() {
+            assert!(l.ends_with("\x1b[0m"), "{l:?}");
+        }
     }
+}
+
+#[test]
+fn colour_needs_a_terminal() {
+    assert!(!colour_for(false));
 }
