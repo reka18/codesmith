@@ -1092,10 +1092,11 @@ async fn model_list_server(
     (format!("http://{addr}/v1"), hits)
 }
 
-// The model picker lists what the local servers serve (as `codesmith
-// models` does), asking them again each time it opens.
+// The provider picker lists what the local servers serve (as `codesmith
+// models` does), asking them each time it opens; switching to one, the
+// model picker lists its models and asks again.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_model_picker_lists_discovered_local_models() {
+async fn the_pickers_list_discovered_local_models() {
     let e = Env::new();
     let m = Model::start(Script::new()).await;
     let (url, hits) = model_list_server(&["qwen-discovered"]).await;
@@ -1117,24 +1118,40 @@ async fn the_model_picker_lists_discovered_local_models() {
     let Some(mut ui) = Ui::start(&e, "") else {
         return;
     };
+    let hits_at_least = |n: usize| {
+        let hits = hits.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while hits.load(std::sync::atomic::Ordering::SeqCst) < n {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+    };
     ui.wait_for("fake/m").await;
-    ui.send(b"/model\r").await;
-    ui.wait_for("omlx/qwen-discovered").await;
-    ui.wait_for("oMLX · local").await;
-    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // The provider picker asks the server, then shows what it serves.
+    ui.send(b"/provider\r").await;
+    ui.wait_for("local · 1 model").await;
+    assert!(
+        hits_at_least(1).await,
+        "opening the provider picker did not ask"
+    );
     // Esc closes the picker (alone, not as the start of a sequence).
     ui.send(b"\x1b").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // Opened again, it asks again.
+    // Switching provider picks its model; the model picker lists it.
+    ui.send(b"/provider omlx\r").await;
+    ui.wait_for("model: omlx/qwen-discovered").await;
+    let before = hits.load(std::sync::atomic::Ordering::SeqCst);
     ui.send(b"/model\r").await;
+    ui.wait_for("Models · oMLX").await;
     ui.wait_for("omlx/qwen-discovered").await;
-    let asked = tokio::time::timeout(Duration::from_secs(5), async {
-        while hits.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    assert!(asked.is_ok(), "the second open did not ask again");
+    assert!(
+        hits_at_least(before + 1).await,
+        "opening the model picker did not ask again"
+    );
     ui.send(b"\x1b").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     ui.quit().await;
