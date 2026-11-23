@@ -164,6 +164,7 @@ impl State {
             State::Ready { probe, .. } if !probe::is_logged_in(&probe.account) => {
                 Some(super::login_hint(
                     "Claude Code is not logged in. Run `claude auth login` in a terminal.",
+                    super::saved_token().is_some(),
                     super::keychain_locked,
                 ))
             }

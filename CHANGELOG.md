@@ -5,19 +5,19 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
-- **Claude Code over SSH says why it can't sign in.** Claude Code keeps its
-  login in the macOS keychain, which is locked in an SSH session, so it
-  reported "Not logged in" though you were. CodeSmith now checks the
-  keychain when Claude Code says that, and tells you to run
-  `security unlock-keychain` instead.
-- **Installs end with a forge banner.** `install.sh`, Homebrew (as the
-  formula's caveats) and `codesmith upgrade` finish with the same
-  "CodeSmith forged successfully" box: CODE in fire colours, SMITH in
-  mithril. Any failure of `install.sh` or `codesmith upgrade` ends with
-  "CodeSmith forge failed" instead, in cooled embers and ash, after the
-  error. Both are plain under `NO_COLOR` or off a terminal, and `install.sh`
-  waits for Enter only when run from a terminal (not under `CI` or
-  `CODESMITH_NO_PROMPT`); an interrupt shows no banner.
+- **Claude Code tokens: Claude Code works over SSH with no password.**
+  `/login`, then Claude Pro/Max, then *Claude Code token*: CodeSmith runs
+  `claude setup-token`, saves the token it prints (owner-only, never shown)
+  and hands it to Claude Code, so it no longer needs its keychain login,
+  which an SSH session can't open. The token lasts a year and can only
+  send requests; CodeSmith warns before it expires, and Sign out removes
+  it. `codesmith auth login claude-agent --token` does the same from the
+  command line. Without a token, Claude Code's "Not logged in" over SSH now
+  says the keychain is locked and points to the token.
+- **Agents can't read the keychain or Claude Code's login unasked.** Shell
+  commands that print keychain secrets (`security find-generic-password`
+  and the like) and reads of `~/.claude/.credentials.json` now ask, like
+  other secret files, and "always" doesn't lift it.
 
 ## 0.3.0 — 2026-11-22
 

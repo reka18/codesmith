@@ -252,7 +252,7 @@ from `settings.apiKey` in config.
 | `digitalocean` | per model: OpenAI Chat, Responses or Anthropic Messages | `DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean --oauth`; see [DigitalOcean](#digitalocean) |
 | `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
 | `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) |
-| `claude-agent` | your installed Claude Code | none: Claude Code's own login; see [Claude Agent](#claude-agent-your-claude-code-login) |
+| `claude-agent` | your installed Claude Code | a Claude Code token (recommended, works over SSH) or Claude Code's own login; see [Claude Agent](#claude-agent-your-claude-code-login) |
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables
@@ -1128,14 +1128,39 @@ the Claude Agent SDK uses: one long-running process per session, which
 stops after five minutes idle and resumes its Claude session next time (at
 most four processes at once by default; see
 [Claude Code processes](#claude-code-processes-claude_agent)).
-Any login Claude Code has works (a subscription, an API key, a cloud
-account). CodeSmith never reads, stores or passes a credential for it:
+Claude Code signs in one of two ways.
+
+**A Claude Code token (recommended).** `/login`, then Claude Pro/Max, then
+*Claude Code token*: CodeSmith runs `claude setup-token` on your terminal,
+you approve it in the browser, and CodeSmith saves the token it prints and
+hands it to Claude Code as `CLAUDE_CODE_OAUTH_TOKEN` every time it starts
+`claude`. It works where Claude Code's own login can't be read, such as
+over SSH, where the macOS keychain is locked, and nothing asks for a
+password.
+
+- The token is for your Claude subscription, lasts a year and can only
+  send requests to Claude (Claude Code's own limit on such tokens).
+- It is kept in CodeSmith's `auth.json`, readable only by you, never
+  printed or logged; the agent's tools ask before reading that file (see
+  [secret files](permissions.md#secret-files)).
+- While it is saved, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are not
+  passed to Claude Code, since Claude Code would use them first.
+- CodeSmith warns two weeks before it expires. *Paste a Claude Code token*
+  saves one made elsewhere, and Sign out in `/login` removes it.
+
+**Claude Code's own login.** Any login Claude Code has works (a
+subscription, an API key, a cloud account), and CodeSmith never reads,
+stores or passes it. On macOS it is in the keychain, which an SSH session
+can't open: there, use a token.
 
 ```sh
-claude auth login                       # in a terminal, once
-codesmith auth login claude-agent       # checks Claude Code and saves its models; saves no key
-codesmith models claude-agent           # the same check, then the model list
-codesmith -m claude-agent/sonnet#high   # efforts are the variants Claude Code lists
+codesmith auth login claude-agent --token   # runs claude setup-token, saves the token
+echo "$TOKEN" | codesmith auth login claude-agent --token   # or saves one piped in
+codesmith auth logout claude-agent          # removes the saved token
+claude auth login                           # or: Claude Code's own login, once
+codesmith auth login claude-agent           # checks Claude Code and saves its models
+codesmith models claude-agent               # the same check, then the model list
+codesmith -m claude-agent/sonnet#high       # efforts are the variants Claude Code lists
 ```
 
 What Claude sees:

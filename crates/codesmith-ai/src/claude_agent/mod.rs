@@ -7,9 +7,11 @@
 //! session, Claude Code's own system prompt with CodeSmith's instructions
 //! appended, and CodeSmith's tools offered as the tools of an in-process
 //! MCP server, so CodeSmith runs every tool call itself, with its own
-//! permission checks (see [`tools`]). The login is Claude Code's: CodeSmith
-//! never reads, stores or passes a credential for it, and tells Claude Code
-//! it is CodeSmith that drives it.
+//! permission checks (see [`tools`]). Claude Code signs in with its own
+//! login (CodeSmith never reads, stores or passes it), or with a Claude
+//! Code token the user saved in CodeSmith (see [`token`]), handed to it as
+//! `CLAUDE_CODE_OAUTH_TOKEN`; CodeSmith tells Claude Code it is CodeSmith
+//! that drives it.
 //!
 //! Claude Code keeps its own transcript; [`history`] keeps it in step with
 //! CodeSmith's history, which stays the source of truth.
@@ -28,6 +30,7 @@ pub mod query;
 pub mod registry;
 mod session;
 pub mod store;
+pub mod token;
 pub mod tools;
 
 use crate::{Error, EventStream, Interaction, Provider, Request, ToolChoice};
@@ -44,7 +47,10 @@ pub const ID: &str = "claude-agent";
 
 /// What to do when Claude Code can't read its login because the macOS
 /// keychain it keeps the login in is locked, as it is in an SSH session.
-pub const LOCKED_KEYCHAIN: &str = "Claude Code can't read its login: your macOS keychain is locked in this session (as it is over SSH). Run `security unlock-keychain` in this terminal, then try again; if it still fails, run `claude auth login`.";
+pub const LOCKED_KEYCHAIN: &str = "Claude Code can't read its login: your Mac keychain, where it keeps it, is locked in this session (as it is over SSH). Sign in with a Claude Code token instead, which works over SSH: /login, then Claude Pro/Max, then Claude Code token.";
+
+/// What to do when Claude Code refuses the saved token.
+pub const TOKEN_REJECTED: &str = "Claude Code didn't accept your saved Claude Code token: it may have expired or been revoked. Make a new one: /login, then Claude Pro/Max, then Claude Code token.";
 
 /// Whether an error from Claude Code says it isn't signed in.
 pub fn not_signed_in(message: &str) -> bool {
@@ -59,14 +65,73 @@ pub fn not_signed_in(message: &str) -> bool {
     .any(|k| m.contains(k))
 }
 
-/// Claude Code's sign-in error, or what to do instead when the cause is a
-/// locked keychain (`locked` is asked only for a sign-in error).
-pub fn login_hint(message: &str, locked: impl FnOnce() -> bool) -> String {
+/// Whether an error from Claude Code says its credential was refused.
+fn refused(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    not_signed_in(message)
+        || [
+            "oauth 401",
+            "401",
+            "authentication_error",
+            "invalid bearer",
+            "token has expired",
+            "revoked",
+        ]
+        .iter()
+        .any(|k| m.contains(k))
+}
+
+/// Claude Code's sign-in error, or what to do instead: a refused saved
+/// token says so; otherwise a locked keychain (`locked` is asked only for
+/// a sign-in error) points to the token.
+pub fn login_hint(message: &str, token_saved: bool, locked: impl FnOnce() -> bool) -> String {
+    if token_saved {
+        return if refused(message) {
+            TOKEN_REJECTED.to_string()
+        } else {
+            message.to_string()
+        };
+    }
     if not_signed_in(message) && locked() {
         LOCKED_KEYCHAIN.to_string()
     } else {
         message.to_string()
     }
+}
+
+/// Credentials Claude Code ranks above a `claude setup-token` token (its
+/// documented precedence): left out when the saved token is given, so the
+/// token is what signs in.
+pub const OUTRANKS_TOKEN: &[&str] = &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"];
+
+type TokenSource = fn() -> Option<String>;
+static TOKEN_SOURCE: OnceLock<TokenSource> = OnceLock::new();
+
+/// Where the saved Claude Code token comes from (CodeSmith's auth file;
+/// set once at start).
+pub fn set_token_source(f: TokenSource) {
+    let _ = TOKEN_SOURCE.set(f);
+}
+
+/// The saved Claude Code token, if there is one.
+pub fn saved_token() -> Option<String> {
+    TOKEN_SOURCE.get().and_then(|f| f())
+}
+
+/// `env` with `token` as Claude Code's credential: set in
+/// [`token::VAR`], with the credentials that would outrank it removed.
+/// Unchanged without a token.
+pub fn with_token(
+    mut env: BTreeMap<String, String>,
+    token: Option<&str>,
+) -> BTreeMap<String, String> {
+    if let Some(t) = token.filter(|t| !t.is_empty()) {
+        for k in OUTRANKS_TOKEN {
+            env.remove(*k);
+        }
+        env.insert(token::VAR.into(), t.to_string());
+    }
+    env
 }
 
 /// Whether the default macOS keychain is locked, so Claude Code can't read
@@ -231,7 +296,7 @@ impl Io {
     pub fn real() -> Io {
         Io {
             which: Arc::new(|| which(&process_env())),
-            env: Arc::new(process_env),
+            env: Arc::new(|| with_token(process_env(), saved_token().as_deref())),
             storage: storage_dir(),
             observe: None,
             recheck: true,
@@ -458,10 +523,12 @@ mod keychain_tests {
     use super::*;
     use std::cell::Cell;
 
+    const SIGNED_OUT: &str = "Not logged in · Run `claude auth login` in a terminal";
+
     #[test]
     fn sign_in_errors_are_recognised_in_any_case() {
         for m in [
-            "Not logged in · Run `claude auth login` in a terminal",
+            SIGNED_OUT,
             "NOT LOGGED IN",
             "Claude Code isn't signed in. Run …",
             "Invalid API key · Please run /login",
@@ -474,41 +541,83 @@ mod keychain_tests {
     }
 
     #[test]
-    fn a_locked_keychain_replaces_the_sign_in_advice() {
-        let got = login_hint(
-            "Not logged in · Run `claude auth login` in a terminal",
-            || true,
-        );
+    fn a_locked_keychain_points_to_the_token() {
+        let got = login_hint(SIGNED_OUT, false, || true);
         assert_eq!(got, LOCKED_KEYCHAIN);
-        assert!(got.contains("security unlock-keychain"));
-        // Signing in again is still named, for a login that is really gone.
-        assert!(got.contains("claude auth login"));
+        assert!(got.contains("Claude Code token"), "{got}");
+        assert!(!got.contains("security "), "no command to type: {got}");
     }
 
     #[test]
     fn an_unlocked_keychain_keeps_claude_codes_message() {
-        let m = "Not logged in · Run `claude auth login` in a terminal";
-        assert_eq!(login_hint(m, || false), m);
+        assert_eq!(login_hint(SIGNED_OUT, false, || false), SIGNED_OUT);
     }
 
     #[test]
-    fn the_keychain_is_asked_only_about_sign_in_errors() {
+    fn the_keychain_is_asked_only_about_sign_in_errors_without_a_token() {
         let asked = Cell::new(false);
+        let ask = || {
+            asked.set(true);
+            true
+        };
         let m = "Anthropic returned HTTP 500.";
-        assert_eq!(
-            login_hint(m, || {
-                asked.set(true);
-                true
-            }),
-            m
-        );
+        assert_eq!(login_hint(m, false, ask), m);
         assert!(!asked.get(), "no `security` run for other errors");
+        let asked = Cell::new(false);
+        let _ = login_hint(SIGNED_OUT, true, || {
+            asked.set(true);
+            true
+        });
+        assert!(!asked.get(), "a saved token makes the keychain irrelevant");
+    }
+
+    #[test]
+    fn a_refused_token_says_to_make_a_new_one() {
+        for m in [
+            SIGNED_OUT,
+            "OAuth 401: keeping the user-supplied CLAUDE_CODE_OAUTH_TOKEN instead of adopting the stored credential.",
+            "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}",
+            "OAuth token has expired",
+        ] {
+            assert_eq!(login_hint(m, true, || false), TOKEN_REJECTED, "{m}");
+        }
+        let other = "Anthropic is overloaded (529).";
+        assert_eq!(login_hint(other, true, || false), other);
+    }
+
+    #[test]
+    fn the_token_replaces_credentials_that_would_outrank_it() {
+        let mut env = BTreeMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-api".to_string());
+        env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), "bearer".to_string());
+        env.insert("PATH".to_string(), "/bin".to_string());
+        let got = with_token(env.clone(), Some("sk-ant-oat01-x"));
+        assert_eq!(
+            got.get(token::VAR).map(String::as_str),
+            Some("sk-ant-oat01-x")
+        );
+        assert!(!got.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!got.contains_key("ANTHROPIC_AUTH_TOKEN"));
+        assert_eq!(got.get("PATH").map(String::as_str), Some("/bin"));
+        // Without a saved token the environment is left alone.
+        assert_eq!(with_token(env.clone(), None), env);
+        assert_eq!(with_token(env.clone(), Some("")), env);
+    }
+
+    #[test]
+    fn the_launch_environment_keeps_the_token() {
+        let launch = query::Launch {
+            env: with_token(BTreeMap::new(), Some("sk-ant-oat01-y")),
+            ..Default::default()
+        };
+        assert_eq!(
+            launch.environment().get(token::VAR).map(String::as_str),
+            Some("sk-ant-oat01-y")
+        );
     }
 
     #[test]
     fn checking_the_keychain_never_prompts_or_hangs() {
-        // The answer depends on the session (locked over SSH); it must come
-        // back at once either way, with no dialog.
         let started = std::time::Instant::now();
         let _ = keychain_locked();
         assert!(started.elapsed() < Duration::from_secs(10));

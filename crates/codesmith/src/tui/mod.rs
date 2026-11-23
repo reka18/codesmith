@@ -154,6 +154,9 @@ struct Runner {
     suspend: bool,
     /// `prompt.editor`: edit the prompt in `$EDITOR` before the next frame.
     edit: bool,
+    /// Run `claude setup-token` before the next frame, for this sign-in
+    /// choice (see `create_token`).
+    setup_token: Option<usize>,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
     /// The open session tabs; the fields above from `app` to `jobs` are
@@ -1596,9 +1599,14 @@ impl Runner {
         use login_view::Outcome;
         match out {
             Outcome::Login(req) => self.start_login(req),
+            Outcome::SetupToken { choice } => self.setup_token = Some(choice),
             Outcome::Logout(id) => {
                 let r = crate::cli::logout(&codesmith_core::paths::auth_file(), &id)
                     .map_err(|e| format!("{e:#}"));
+                // Claude Code's next turn signs in without the token.
+                if id == codesmith_core::providers::claude_agent::ID {
+                    tokio::spawn(crate::claude_token::restart_claude_code());
+                }
                 self.refresh_login();
                 if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
                     v.signed_out(r);
@@ -1670,6 +1678,62 @@ impl Runner {
             send(LoginEv::Done(r));
         });
         self.login = Some((n, task, paste_tx));
+    }
+
+    /// Hand the terminal to `claude setup-token` and save the token it
+    /// prints; when it printed none CodeSmith could read, ask for it to be
+    /// pasted in the sign-in picker.
+    async fn create_token(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        cursor: settings::Cursor,
+        choice: usize,
+    ) {
+        pause_input(true);
+        let made = tokio::task::spawn_blocking(|| {
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+            ratatui::restore();
+            crate::claude_token::create_on_terminal()
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow!("{e}")));
+        let _ = ratatui::crossterm::terminal::enable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste
+        );
+        if let Some(c) = cursor_style(cursor) {
+            let _ = execute!(std::io::stdout(), c);
+        }
+        let _ = terminal.clear();
+        pause_input(false);
+        let file = codesmith_core::paths::auth_file();
+        match made.map(|t| t.map(|t| crate::claude_token::save(&file, &t))) {
+            Ok(Some(Ok(done))) => {
+                crate::claude_token::restart_claude_code().await;
+                self.app.modal = None;
+                self.refresh_login();
+                self.app.notice(done);
+            }
+            Ok(Some(Err(e))) | Err(e) => {
+                self.app.error(format!("{e:#}"));
+                self.ask_token(choice);
+            }
+            Ok(None) => {
+                self.app.notice(
+                    "CodeSmith couldn't find the token in Claude Code's output. Paste it in the sign-in picker.",
+                );
+                self.ask_token(choice);
+            }
+        }
+    }
+
+    /// Show the sign-in picker asking for a pasted Claude Code token.
+    fn ask_token(&mut self, choice: usize) {
+        if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
+            v.ask_token(choice);
+        }
     }
 
     /// Edit the prompt in the external editor, the terminal handed to it
@@ -2403,6 +2467,7 @@ async fn run_in(
         theme_before: None,
         suspend: false,
         edit: false,
+        setup_token: None,
         diffs: settings::Diffs::default(),
         tabs,
         history: history::Store::default(),
@@ -2517,6 +2582,9 @@ async fn run_in(
     r.apply_theme();
     spawn_hangup(tx.clone());
     spawn_input(tx);
+    if let Some(warn) = crate::claude_token::expiry_warning() {
+        r.app.notice(warn);
+    }
     let result: Result<()> = async {
         loop {
             r.watch_all();
@@ -2569,6 +2637,9 @@ async fn run_in(
             }
             if std::mem::take(&mut r.edit) {
                 r.edit_prompt(&mut terminal, tui.cursor).await;
+            }
+            if let Some(choice) = r.setup_token.take() {
+                r.create_token(&mut terminal, tui.cursor, choice).await;
             }
         }
         Ok(())

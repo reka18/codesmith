@@ -2,10 +2,16 @@
 //! `plugin/provider/claude-agent`; the runtime is
 //! [`codesmith_ai::claude_agent`]).
 //!
-//! The login is Claude Code's (`claude auth login`). CodeSmith never reads,
-//! stores or passes a credential for it: `codesmith auth login claude-agent`
-//! only checks that Claude Code is installed and signed in, and saves the
-//! models it lists. No key is taken from config or CodeSmith's saved keys.
+//! Claude Code signs in one of two ways:
+//!
+//! - **A Claude Code token** (recommended): a one-year token from
+//!   `claude setup-token`, saved in CodeSmith's `auth.json` (owner-only)
+//!   and handed to Claude Code as `CLAUDE_CODE_OAUTH_TOKEN`. It works where
+//!   the macOS keychain is locked, as over SSH, and can only make model
+//!   requests. It is the one Claude Code credential CodeSmith keeps.
+//! - **Claude Code's own login** (`claude auth login`), in the macOS
+//!   keychain or Claude Code's own file: CodeSmith only checks it, never
+//!   reads, stores or passes it.
 
 use super::{Input, Route};
 use crate::config::Cost;
@@ -16,6 +22,79 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub const ID: &str = codesmith_ai::claude_agent::ID;
+
+/// The saved Claude Code token's entry in `auth.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Token {
+    pub token: String,
+    /// When it was saved, in milliseconds since the epoch (it lasts a year
+    /// from when `claude setup-token` made it, about then).
+    pub created: u64,
+}
+
+/// The token saved in the auth file at `path`, if any.
+pub fn token_in(path: &std::path::Path) -> Option<Token> {
+    let e = crate::auth::entry_in(path, ID)?;
+    if e["type"] != "token" {
+        return None;
+    }
+    let token = e["token"].as_str().filter(|t| !t.is_empty())?.to_string();
+    Some(Token {
+        token,
+        created: e["created"].as_u64().unwrap_or(0),
+    })
+}
+
+/// Save a Claude Code token (checked first) in the auth file at `path`.
+pub fn save_token_in(path: &std::path::Path, input: &str, now_ms: u64) -> anyhow::Result<Token> {
+    let token = codesmith_ai::claude_agent::token::validate(input).map_err(anyhow::Error::msg)?;
+    crate::auth::set_entry_in(
+        path,
+        ID,
+        json!({"type": "token", "token": token, "created": now_ms}),
+    )?;
+    Ok(Token {
+        token,
+        created: now_ms,
+    })
+}
+
+/// Remove the saved token; false when there was none.
+pub fn remove_token_in(path: &std::path::Path) -> anyhow::Result<bool> {
+    if token_in(path).is_none() {
+        return Ok(false);
+    }
+    crate::auth::remove_in(path, ID)
+}
+
+/// The saved token from the default auth file (the runtime's token
+/// source, see [`codesmith_ai::claude_agent::set_token_source`]).
+pub fn saved_token() -> Option<String> {
+    token_in(&crate::paths::auth_file()).map(|t| t.token)
+}
+
+/// Hand the saved token to Claude Code from now on.
+pub fn use_saved_token() {
+    codesmith_ai::claude_agent::set_token_source(saved_token);
+}
+
+/// How the saved token stands, for the sign-in list: when it expires,
+/// and a warning when that is close.
+pub fn describe_token(t: &Token, now_ms: u64) -> String {
+    use codesmith_ai::claude_agent::token;
+    let when = chrono::DateTime::from_timestamp_millis(token::expires(t.created) as i64)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "in a year".into());
+    if t.created == 0 {
+        "Claude Code token".into()
+    } else if token::expires(t.created) <= now_ms {
+        format!("Claude Code token · expired {when}: make a new one")
+    } else if token::expiring(t.created, now_ms) {
+        format!("Claude Code token · expires {when}: make a new one soon")
+    } else {
+        format!("Claude Code token · until {when}")
+    }
+}
 
 /// Where the provider keeps its records and model list (the runtime's
 /// folder, in CodeSmith's data folder).

@@ -50,6 +50,11 @@ pub enum Outcome {
     Paste(Secret),
     /// Stop the login that is waiting.
     Cancel,
+    /// Run `claude setup-token` on the terminal for this choice, then save
+    /// the token it prints (or ask for it to be pasted).
+    SetupToken {
+        choice: usize,
+    },
 }
 
 /// One answer asked for.
@@ -257,10 +262,28 @@ impl LoginView {
         }
     }
 
+    /// Ask for a Claude Code token to be pasted for `choice` (after
+    /// `claude setup-token` printed none CodeSmith could read). False when
+    /// the choice has no such method.
+    pub fn ask_token(&mut self, choice: usize) -> bool {
+        let Some(m) = self.choices.get(choice).and_then(|c| {
+            c.methods
+                .iter()
+                .position(|m| m.kind == (Kind::ClaudeToken { create: false }))
+        }) else {
+            return false;
+        };
+        let _ = self.pick_method(choice, m);
+        true
+    }
+
     /// Start method `m` of `choice`: ask what it needs, or run it.
     fn pick_method(&mut self, choice: usize, m: usize) -> Outcome {
         let c = &self.choices[choice];
         let method = &c.methods[m];
+        if method.kind == (Kind::ClaudeToken { create: true }) {
+            return Outcome::SetupToken { choice };
+        }
         let mut inputs = Vec::new();
         let help = match method.kind {
             Kind::Browser { .. } | Kind::Device => self.client_help.get(&c.id).cloned(),
@@ -273,6 +296,16 @@ impl LoginView {
                 placeholder: "from the provider's developer settings".into(),
                 required: true,
                 secret: false,
+                value: String::new(),
+            });
+        }
+        if method.kind == (Kind::ClaudeToken { create: false }) {
+            inputs.push(Input {
+                key: "key".into(),
+                title: "Claude Code token".into(),
+                placeholder: "paste the token `claude setup-token` printed; it is not shown".into(),
+                required: true,
+                secret: true,
                 value: String::new(),
             });
         }
@@ -327,11 +360,14 @@ impl LoginView {
             }
         }
         let provider = match method.kind {
-            Kind::ClaudeCode => codesmith_core::providers::claude_agent::ID.to_string(),
+            Kind::ClaudeCode | Kind::ClaudeToken { .. } => {
+                codesmith_core::providers::claude_agent::ID.to_string()
+            }
             _ => c.id.clone(),
         };
         let label = match method.kind {
             Kind::ClaudeCode => "Checking Claude Code…".to_string(),
+            Kind::ClaudeToken { .. } => "Saving the token…".to_string(),
             Kind::Key => "Saving the key…".to_string(),
             _ => method.label.clone(),
         };
@@ -1021,7 +1057,10 @@ mod tests {
         a.on_key(key(KeyCode::Enter));
         let f = frame(&a);
         assert!(f.contains(signin::CLAUDE_CODE_LABEL), "{f}");
-        a.on_key(key(KeyCode::Down));
+        // Past the API key and the two token entries.
+        for _ in 0..3 {
+            a.on_key(key(KeyCode::Down));
+        }
         let Some(Action::Login(Outcome::Login(req))) = a.on_key(key(KeyCode::Enter)) else {
             panic!("no login")
         };
@@ -1042,6 +1081,50 @@ mod tests {
         assert!(!frame(&a).contains("Now using"));
     }
 
+    #[test]
+    fn the_claude_code_token_entry_runs_setup_token_then_takes_a_paste() {
+        let (mut a, _d) = picker();
+        type_text(&mut a, "anthropic");
+        a.on_key(key(KeyCode::Enter));
+        let f = frame(&a);
+        assert!(f.contains(signin::CLAUDE_TOKEN_LABEL), "{f}");
+        assert!(f.contains("works over SSH"), "{f}");
+        a.on_key(key(KeyCode::Down));
+        // The first token entry hands the terminal to `claude setup-token`.
+        let Some(Action::Login(Outcome::SetupToken { choice })) = a.on_key(key(KeyCode::Enter))
+        else {
+            panic!("no setup-token")
+        };
+        // When no token could be read from it, the token is pasted, unseen.
+        assert!(view_mut(&mut a).ask_token(choice));
+        let f = frame(&a);
+        assert!(f.contains("Claude Code token"), "{f}");
+        let token = "sk-ant-oat01-SECRET-TOKEN-0123456789abcdefghijklmnopqrstuvwxyz";
+        a.on_paste(token);
+        assert!(
+            !frame(&a).contains("SECRET-TOKEN"),
+            "the token is never shown"
+        );
+        let Some(Action::Login(Outcome::Login(req))) = a.on_key(key(KeyCode::Enter)) else {
+            panic!("no login")
+        };
+        assert_eq!(req.provider, "claude-agent");
+        assert_eq!(req.kind, Kind::ClaudeToken { create: false });
+        assert_eq!(req.key.as_ref().map(|k| k.0.as_str()), Some(token));
+        assert!(frame(&a).contains("Saving the token"));
+    }
+
+    #[test]
+    fn a_provider_without_token_entries_asks_for_no_token() {
+        let (mut a, _d) = picker();
+        type_text(&mut a, "copilot");
+        a.on_key(key(KeyCode::Enter));
+        let Stage::Methods { choice, .. } = view(&a).stage else {
+            panic!("no methods")
+        };
+        assert!(!view_mut(&mut a).ask_token(choice));
+    }
+
     // Regression: signing in to Claude Code only said so, and the session
     // kept the model it had.
     #[test]
@@ -1049,7 +1132,10 @@ mod tests {
         let (mut a, _d) = picker();
         type_text(&mut a, "anthropic");
         a.on_key(key(KeyCode::Enter));
-        a.on_key(key(KeyCode::Down));
+        // Past the API key and the two token entries.
+        for _ in 0..3 {
+            a.on_key(key(KeyCode::Down));
+        }
         let Some(Action::Login(Outcome::Login(_))) = a.on_key(key(KeyCode::Enter)) else {
             panic!("no login")
         };
