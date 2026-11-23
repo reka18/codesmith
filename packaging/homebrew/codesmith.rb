@@ -35,6 +35,36 @@ class Codesmith < Formula
     bin.install "codesmith"
   end
 
+  # The banner every installer shows (packaging/banner.txt, without the
+  # Enter prompt: Homebrew shows caveats after it has finished).
+  def caveats
+    <<~EOS
+      ╔════════════════════════════════════════════════════════════╗
+      ║                                                            ║
+      ║   ⚒︎  CodeSmith forged successfully                         ║
+      ║                                                            ║
+      ║         ██████╗ ██████╗ ██████╗ ███████╗                   ║
+      ║        ██╔════╝██╔═══██╗██╔══██╗██╔════╝                   ║
+      ║        ██║     ██║   ██║██║  ██║█████╗                     ║
+      ║        ██║     ██║   ██║██║  ██║██╔══╝                     ║
+      ║        ╚██████╗╚██████╔╝██████╔╝███████╗                   ║
+      ║         ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝                   ║
+      ║                                                            ║
+      ║                 ███████╗███╗   ███╗██╗████████╗██╗  ██╗    ║
+      ║                 ██╔════╝████╗ ████║██║╚══██╔══╝██║  ██║    ║
+      ║                 ███████╗██╔████╔██║██║   ██║   ███████║    ║
+      ║                 ╚════██║██║╚██╔╝██║██║   ██║   ██╔══██║    ║
+      ║                 ███████║██║ ╚═╝ ██║██║   ██║   ██║  ██║    ║
+      ║                 ╚══════╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝    ║
+      ║                                                            ║
+      ║       🔥 Golden fire → mithril code. Ready to forge.       ║
+      ║                                                            ║
+      ║                                                            ║
+      ║                                                            ║
+      ╚════════════════════════════════════════════════════════════╝
+    EOS
+  end
+
   test do
     assert_match version.to_s, shell_output("#{bin}/codesmith --version")
   end

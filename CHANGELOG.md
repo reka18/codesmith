@@ -3,6 +3,17 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Installs end with a forge banner.** `install.sh`, Homebrew (as the
+  formula's caveats) and `codesmith upgrade` finish with the same
+  "CodeSmith forged successfully" box: CODE in fire colours, SMITH in
+  mithril. Any failure of `install.sh` or `codesmith upgrade` ends with
+  "CodeSmith forge failed" instead, in cooled embers and ash, after the
+  error. Both are plain under `NO_COLOR` or off a terminal, and `install.sh`
+  waits for Enter only when run from a terminal (not under `CI` or
+  `CODESMITH_NO_PROMPT`); an interrupt shows no banner.
+
 ## 0.3.0 — 2026-11-22
 
 - **`/provider` switches provider; `/model` picks within it.** The

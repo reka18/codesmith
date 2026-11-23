@@ -6,6 +6,7 @@
 # Environment:
 #   CODESMITH_VERSION      version to install, e.g. 0.1.0 (default: latest release)
 #   CODESMITH_INSTALL_DIR  where to put the binary (default: ~/.local/bin)
+#   CODESMITH_NO_PROMPT    set to skip waiting for Enter after the banner
 #   CODESMITH_BASE_URL     where release files live (default: GitHub Releases;
 #                          useful for mirrors and testing)
 #
@@ -120,7 +121,143 @@ detect_target() {
     esac
 }
 
+# The banners shown when an install ends: `ok` after a successful one,
+# `failed` after any failure. They are the same text as
+# packaging/banner.txt and packaging/banner-failed.txt (a test keeps them
+# equal). Coloured on a terminal unless NO_COLOR is set; they wait for
+# Enter only when someone is there to press it (a terminal on stderr and
+# /dev/tty, not CI or CODESMITH_NO_PROMPT).
+banner_text() {
+    if [ "$1" = ok ]; then
+        cat <<'BANNER'
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   ⚒︎  CodeSmith forged successfully                         ║
+║                                                            ║
+║         ██████╗ ██████╗ ██████╗ ███████╗                   ║
+║        ██╔════╝██╔═══██╗██╔══██╗██╔════╝                   ║
+║        ██║     ██║   ██║██║  ██║█████╗                     ║
+║        ██║     ██║   ██║██║  ██║██╔══╝                     ║
+║        ╚██████╗╚██████╔╝██████╔╝███████╗                   ║
+║         ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝                   ║
+║                                                            ║
+║                 ███████╗███╗   ███╗██╗████████╗██╗  ██╗    ║
+║                 ██╔════╝████╗ ████║██║╚══██╔══╝██║  ██║    ║
+║                 ███████╗██╔████╔██║██║   ██║   ███████║    ║
+║                 ╚════██║██║╚██╔╝██║██║   ██║   ██╔══██║    ║
+║                 ███████║██║ ╚═╝ ██║██║   ██║   ██║  ██║    ║
+║                 ╚══════╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝    ║
+║                                                            ║
+║       🔥 Golden fire → mithril code. Ready to forge.       ║
+║                                                            ║
+║                [ Press Enter to continue ]                 ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+BANNER
+    else
+        cat <<'BANNER'
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   ⚠︎  CodeSmith forge failed                                ║
+║                                                            ║
+║         ██████╗ ██████╗ ██████╗ ███████╗                   ║
+║        ██╔════╝██╔═══██╗██╔══██╗██╔════╝                   ║
+║        ██║     ██║   ██║██║  ██║█████╗                     ║
+║        ██║     ██║   ██║██║  ██║██╔══╝                     ║
+║        ╚██████╗╚██████╔╝██████╔╝███████╗                   ║
+║         ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝                   ║
+║                                                            ║
+║                 ███████╗███╗   ███╗██╗████████╗██╗  ██╗    ║
+║                 ██╔════╝████╗ ████║██║╚══██╔══╝██║  ██║    ║
+║                 ███████╗██╔████╔██║██║   ██║   ███████║    ║
+║                 ╚════██║██║╚██╔╝██║██║   ██║   ██╔══██║    ║
+║                 ███████║██║ ╚═╝ ██║██║   ██║   ██║  ██║    ║
+║                 ╚══════╝╚═╝     ╚═╝╚═╝   ╚═╝   ╚═╝  ╚═╝    ║
+║                                                            ║
+║      💥 The anvil cracked. Check the logs and retry.       ║
+║                                                            ║
+║                  [ Press Enter to exit ]                   ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+BANNER
+    fi
+}
+
+# The colour of line N of banner $1, as an SGR parameter list.
+banner_colour() {
+    case "$1:$2" in
+        *:3) [ "$1" = ok ] && echo '1' || echo '1;38;5;196' ;;
+        ok:5) echo '1;38;5;226' ;; ok:6) echo '1;38;5;220' ;; ok:7) echo '1;38;5;214' ;;
+        ok:8) echo '1;38;5;208' ;; ok:9) echo '1;38;5;202' ;; ok:10) echo '1;38;5;196' ;;
+        ok:12) echo '1;38;5;255' ;; ok:13) echo '1;38;5;254' ;; ok:14) echo '1;38;5;253' ;;
+        ok:15) echo '1;38;5;189' ;; ok:16) echo '1;38;5;153' ;; ok:17) echo '1;38;5;117' ;;
+        ok:19) echo '38;5;214' ;;
+        failed:5) echo '1;38;5;203' ;; failed:6) echo '1;38;5;196' ;; failed:7) echo '1;38;5;160' ;;
+        failed:8) echo '1;38;5;124' ;; failed:9) echo '1;38;5;88' ;; failed:10) echo '1;38;5;88' ;;
+        failed:12) echo '1;38;5;250' ;; failed:13) echo '1;38;5;248' ;; failed:14) echo '1;38;5;246' ;;
+        failed:15) echo '1;38;5;244' ;; failed:16) echo '1;38;5;242' ;; failed:17) echo '1;38;5;240' ;;
+        failed:19) echo '38;5;196' ;;
+        *:21) echo '2' ;;
+    esac
+}
+
+banner() {
+    kind=$1
+    prompt=0
+    if [ -t 2 ] && [ -z "${CI:-}" ] && [ -z "${CODESMITH_NO_PROMPT:-}" ] \
+        && { : </dev/tty; } 2>/dev/null; then
+        prompt=1
+    fi
+    colour=0
+    if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+        colour=1
+    fi
+    esc=$(printf '\033')
+    frame="${esc}[38;5;240m"
+    reset="${esc}[0m"
+    n=0
+    empty=''
+    banner_text "$kind" | while IFS= read -r line; do
+        n=$((n + 1))
+        [ "$n" = 2 ] && empty=$line
+        # Without a prompt, the prompt's row is left empty.
+        [ "$n" = 21 ] && [ "$prompt" = 0 ] && line=$empty
+        if [ "$colour" = 0 ]; then
+            printf '%s\n' "$line"
+            continue
+        fi
+        c=$(banner_colour "$kind" "$n")
+        case $line in
+            ║*║)
+                inner=${line#║}
+                inner=${inner%║}
+                printf '%s║%s%s%s%s║%s\n' "$frame" "$reset" "${c:+${esc}[${c}m}" "$inner" "$reset$frame" "$reset"
+                ;;
+            *) printf '%s%s%s\n' "$frame" "$line" "$reset" ;;
+        esac
+    done >&2
+    if [ "$prompt" = 1 ]; then
+        IFS= read -r _ </dev/tty || true
+    fi
+}
+
+# On exit: remove the download folder and, after any failure but an
+# interrupt, show the failure banner.
+tmp=''
+interrupted=0
+finish() {
+    status=$?
+    trap - EXIT
+    [ -n "$tmp" ] && rm -rf "$tmp"
+    if [ "$status" != 0 ] && [ "$interrupted" = 0 ]; then
+        banner failed
+    fi
+    exit "$status"
+}
+
 main() {
+    trap finish EXIT
+    trap 'interrupted=1; exit 130' INT TERM
     need uname
     need tar
     need mkdir
@@ -136,8 +273,6 @@ main() {
     file="${name}.tar.gz"
 
     tmp=$(mktemp -d 2>/dev/null || mktemp -d -t codesmith)
-    trap 'rm -rf "$tmp"' EXIT
-    trap 'exit 1' INT TERM
 
     say "downloading ${file}"
     fetch "${base}/${file}" "${tmp}/${file}" || die "download failed: ${base}/${file}"
@@ -164,6 +299,7 @@ main() {
         *":${INSTALL_DIR}:"*) ;;
         *) say "note: ${INSTALL_DIR} is not on your PATH; add it in your shell profile" ;;
     esac
+    banner ok
 }
 
 main "$@"

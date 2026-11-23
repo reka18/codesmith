@@ -1001,6 +1001,7 @@ pub(crate) fn help(path: &[&str]) -> String {
 /// Parse the command line and run it; returns the exit code.
 pub async fn entry() -> i32 {
     let cli = Cli::parse();
+    let upgrading = matches!(cli.command, Some(Command::Upgrade { .. }));
     match run(cli).await {
         Ok(()) => 0,
         Err(e) => {
@@ -1009,6 +1010,14 @@ pub async fn entry() -> i32 {
                 "\x1b[31merror:\x1b[0m {}",
                 crate::render::safe(&format!("{e:#}"))
             );
+            // An upgrade is an install: it ends with the failure banner.
+            if upgrading {
+                let colour = crate::upgrade::colour_for(std::io::stderr().is_terminal());
+                eprint!(
+                    "{}",
+                    crate::upgrade::banner(crate::upgrade::Ending::Failed, colour)
+                );
+            }
             1
         }
     }

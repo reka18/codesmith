@@ -539,6 +539,9 @@ pub(crate) async fn command(
     match updater.upgrade(&target).await {
         Ok(()) => {
             writeln!(out, "Upgrade complete")?;
+            use std::io::IsTerminal;
+            let colour = colour_for(std::io::stdout().is_terminal());
+            write!(out, "{}", banner(Ending::Ok, colour))?;
             Ok(())
         }
         Err(e) => {
@@ -546,6 +549,92 @@ pub(crate) async fn command(
             Err(e)
         }
     }
+}
+
+/// The banners every installer shows when it ends (install.sh and the
+/// Homebrew formula carry the same text).
+pub(crate) const BANNER_OK: &str = include_str!("../../../packaging/banner.txt");
+pub(crate) const BANNER_FAILED: &str = include_str!("../../../packaging/banner-failed.txt");
+
+/// Which way an install ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ending {
+    Ok,
+    Failed,
+}
+
+/// Whether a stream gets colour: a terminal, without `NO_COLOR`, and not a
+/// dumb one.
+pub(crate) fn colour_for(terminal: bool) -> bool {
+    terminal
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").map_or(true, |t| t != "dumb")
+}
+
+/// The banner as CodeSmith shows it: with the Enter prompt's row left
+/// empty (nothing waits), coloured like install.sh's when `colour` is set.
+pub(crate) fn banner(ending: Ending, colour: bool) -> String {
+    let text = match ending {
+        Ending::Ok => BANNER_OK,
+        Ending::Failed => BANNER_FAILED,
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    const FRAME: &str = "\x1b[38;5;240m";
+    const RESET: &str = "\x1b[0m";
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let n = i + 1;
+        let line = if n == 21 { lines[1] } else { line };
+        if !colour {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let c = match (ending, n) {
+            (Ending::Ok, 3) => "1",
+            (Ending::Failed, 3) => "1;38;5;196",
+            (Ending::Ok, 5) => "1;38;5;226",
+            (Ending::Ok, 6) => "1;38;5;220",
+            (Ending::Ok, 7) => "1;38;5;214",
+            (Ending::Ok, 8) => "1;38;5;208",
+            (Ending::Ok, 9) => "1;38;5;202",
+            (Ending::Ok, 10) => "1;38;5;196",
+            (Ending::Ok, 12) => "1;38;5;255",
+            (Ending::Ok, 13) => "1;38;5;254",
+            (Ending::Ok, 14) => "1;38;5;253",
+            (Ending::Ok, 15) => "1;38;5;189",
+            (Ending::Ok, 16) => "1;38;5;153",
+            (Ending::Ok, 17) => "1;38;5;117",
+            (Ending::Ok, 19) => "38;5;214",
+            (Ending::Failed, 5) => "1;38;5;203",
+            (Ending::Failed, 6) => "1;38;5;196",
+            (Ending::Failed, 7) => "1;38;5;160",
+            (Ending::Failed, 8) => "1;38;5;124",
+            (Ending::Failed, 9 | 10) => "1;38;5;88",
+            (Ending::Failed, 12) => "1;38;5;250",
+            (Ending::Failed, 13) => "1;38;5;248",
+            (Ending::Failed, 14) => "1;38;5;246",
+            (Ending::Failed, 15) => "1;38;5;244",
+            (Ending::Failed, 16) => "1;38;5;242",
+            (Ending::Failed, 17) => "1;38;5;240",
+            (Ending::Failed, 19) => "38;5;196",
+            _ => "",
+        };
+        match line.strip_prefix('║').and_then(|l| l.strip_suffix('║')) {
+            Some(inner) => {
+                let on = if c.is_empty() {
+                    String::new()
+                } else {
+                    format!("\x1b[{c}m")
+                };
+                out.push_str(&format!(
+                    "{FRAME}║{RESET}{on}{inner}{RESET}{FRAME}║{RESET}\n"
+                ));
+            }
+            None => out.push_str(&format!("{FRAME}{line}{RESET}\n")),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

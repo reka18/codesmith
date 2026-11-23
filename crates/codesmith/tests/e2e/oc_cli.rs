@@ -541,3 +541,28 @@ async fn claude_code_login_reports_a_missing_claude_code() {
     );
     assert!(!e.data.join("codesmith/auth.json").exists());
 }
+
+// CodeSmith's own: a failed `codesmith upgrade` ends with the failure
+// banner, after the error, plain off a terminal; other commands don't.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_upgrade_ends_with_the_failure_banner() {
+    let e = Env::new();
+    let out = e.run(&["upgrade", "not-a-version"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.both());
+    let err = &out.stderr;
+    let error = err.find("Invalid version").expect("the error");
+    let banner = err.find("CodeSmith forge failed").expect("the banner");
+    assert!(error < banner, "{err}");
+    assert!(err.contains("The anvil cracked"), "{err}");
+    assert!(!err.contains("Press Enter"), "nothing waits: {err}");
+    assert!(err.trim_end().ends_with('╝'), "{err}");
+    assert!(
+        !err[banner..].contains('\x1b'),
+        "no colour off a terminal: {err}"
+    );
+    assert!(!out.stdout.contains("forged successfully"));
+
+    let other = e.run(&["session", "export", "ses_missing"]).await;
+    assert_eq!(other.code, Some(1));
+    assert!(!other.stderr.contains("forge failed"), "{}", other.both());
+}
