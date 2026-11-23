@@ -833,8 +833,10 @@ async fn a_subagents_activity_is_drawn_in_its_row() {
     };
     ui.wait_for("asked by the general subagent · Run the check")
         .await;
-    assert!(plain(&ui.screen).contains("General Subagent — Run the check"));
+    // The row sits under the permission dialog on a short screen: look
+    // for it once the dialog is answered.
     ui.send(b"y").await;
+    ui.wait_for("General Subagent — Run the check").await;
     ui.wait_for("Delegated fine.").await;
     // The row's ending is usually drawn before the answer, but under load
     // it can land in a later frame: wait for it if it isn't there yet.
