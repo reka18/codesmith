@@ -161,9 +161,12 @@ impl State {
                 "Claude Code is not installed. Install it, then run `claude auth login`. ({SETUP_URL})"
             )),
             State::Failed(m) => Some(m.clone()),
-            State::Ready { probe, .. } if !probe::is_logged_in(&probe.account) => Some(
-                "Claude Code is not logged in. Run `claude auth login` in a terminal.".into(),
-            ),
+            State::Ready { probe, .. } if !probe::is_logged_in(&probe.account) => {
+                Some(super::login_hint(
+                    "Claude Code is not logged in. Run `claude auth login` in a terminal.",
+                    super::keychain_locked,
+                ))
+            }
             _ => None,
         }
     }
