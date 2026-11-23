@@ -1104,9 +1104,18 @@ fn release_sh_writes_the_manifest_the_signing_scripts_check() {
 mod release_sh {
     use super::*;
 
+    /// `cargo`: the link check answers as `$STUB_LINKS` says (passing by
+    /// default); anything else but `zigbuild --help` fails.
     const CARGO: &str = r#"#!/bin/sh
 echo "cargo $*" >> "$STUB_LOG"
 [ "$*" = "zigbuild --help" ] && exit 0
+case "$*" in
+    *"debug links --check"*)
+        [ "${STUB_LINKS:-ok}" = ok ] && exit 0
+        echo "BROKEN  https://gone.example/keys  (x API key page): 404"
+        exit 1
+        ;;
+esac
 exit 1
 "#;
     const RUSTUP: &str = r#"#!/bin/sh
@@ -1165,6 +1174,21 @@ printf '%s\n' aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-mus
         let out = cmd.output().unwrap();
         let text = String::from_utf8_lossy(&out.stderr).into_owned();
         (out.status.success(), text)
+    }
+
+    fn release(w: &World, args: &[&str], env: &[(&str, &str)]) -> (bool, String) {
+        let mut cmd = w.command("release.sh", args);
+        cmd.current_dir(w.repo())
+            .env("HOME", w.path("home"))
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .envs(env.iter().copied());
+        let out = cmd.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status.success(), text)
+    }
+
+    fn checked_links(w: &World) -> bool {
+        w.log().lines().any(|l| l.contains("debug links --check"))
     }
 
     fn nothing_built_or_created(w: &World) {
@@ -1243,5 +1267,67 @@ printf '%s\n' aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-mus
         let (ok, err) = draft_upload(&w);
         assert!(!ok && err.contains("no release key"), "{err}");
         nothing_built_or_created(&w);
+    }
+
+    #[test]
+    fn a_broken_outside_link_stops_an_upload_before_building() {
+        let Some(w) = world() else { return };
+        git(&w, &["tag", "v2.0.0"]);
+        let (ok, err) = release(
+            &w,
+            &["2.0.0", "--draft-upload"],
+            &[("STUB_LINKS", "broken")],
+        );
+        assert!(!ok && err.contains("outside links are broken"), "{err}");
+        assert!(
+            err.contains("https://gone.example/keys"),
+            "the report is shown: {err}"
+        );
+        assert!(checked_links(&w));
+        nothing_built_or_created(&w);
+    }
+
+    #[test]
+    fn a_dry_run_reports_broken_links_and_goes_on() {
+        let Some(w) = world() else { return };
+        let (ok, err) = release(&w, &["2.0.0"], &[("STUB_LINKS", "broken")]);
+        // It goes on to build (where the cargo stand-in fails).
+        assert!(!ok, "{err}");
+        assert!(err.contains("an upload would stop here"), "{err}");
+        assert!(
+            w.log().lines().any(|l| l.starts_with("cargo build")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn links_that_answer_let_the_build_start() {
+        let Some(w) = world() else { return };
+        git(&w, &["tag", "v2.0.0"]);
+        let (ok, err) = release(&w, &["2.0.0", "--draft-upload"], &[]);
+        assert!(!ok, "{err}");
+        assert!(checked_links(&w), "{err}");
+        assert!(!err.contains("outside links are broken"), "{err}");
+        assert!(
+            w.log().lines().any(|l| l.starts_with("cargo build")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn skipping_the_link_check_is_said_and_runs_nothing() {
+        let Some(w) = world() else { return };
+        git(&w, &["tag", "v2.0.0"]);
+        let (_, err) = release(
+            &w,
+            &["2.0.0", "--draft-upload"],
+            &[("STUB_LINKS", "broken"), ("CODESMITH_SKIP_LINKS", "1")],
+        );
+        assert!(err.contains("outside links not checked"), "{err}");
+        assert!(!checked_links(&w), "{}", w.log());
+        assert!(
+            w.log().lines().any(|l| l.starts_with("cargo build")),
+            "{err}"
+        );
     }
 }

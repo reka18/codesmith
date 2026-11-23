@@ -39,6 +39,9 @@
 #   CODESMITH_REPO               GitHub repo (default reka18/codesmith)
 #   MACOSX_DEPLOYMENT_TARGET     oldest macOS the binaries run on (default 11.0)
 #   CODESMITH_SKIP_DOCKER=1      don't run the Linux binaries in containers
+#   CODESMITH_SKIP_LINKS=1       don't check the outside links the binary shows
+#                                (codesmith debug links --check; a broken one
+#                                stops a --draft-upload)
 #
 # One-time setup (Apple Silicon Mac with Xcode or its command line tools):
 #
@@ -142,6 +145,23 @@ if [ "$mode" = upload ]; then
     git rev-parse -q --verify "refs/tags/${tag}" >/dev/null || die "no tag ${tag}; tag and push it first (RELEASING.md)"
     [ "$(git rev-parse HEAD)" = "$(git rev-parse "${tag}^{commit}")" ] || die "HEAD is not at ${tag}"
     gh auth status >/dev/null 2>&1 || die "gh is not logged in: gh auth login"
+fi
+
+# ---------------------------------------------------------------- links
+
+# Every outside page the binary shows or opens (API key pages, setup and
+# help pages) must still be there: a provider that moved a page would ship
+# a dead link. Gone pages stop an upload; a dry run only reports them.
+# Pages that moved permanently, block scripts or had a server error are
+# warnings to look at. CODESMITH_SKIP_LINKS=1 skips this (offline).
+if [ "${CODESMITH_SKIP_LINKS:-}" = 1 ]; then
+    printf 'release: note: CODESMITH_SKIP_LINKS=1, outside links not checked\n' >&2
+else
+    say "outside links"
+    if ! cargo run --locked -q -p codesmith -- debug links --check >&2; then
+        [ "$mode" = upload ] && die "outside links are broken (above); fix them, or set CODESMITH_SKIP_LINKS=1 when offline"
+        printf 'release: warning: outside links are broken (above); an upload would stop here\n' >&2
+    fi
 fi
 
 # ---------------------------------------------------------------- build

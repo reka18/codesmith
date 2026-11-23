@@ -24,6 +24,7 @@
 mod acp;
 mod claude_token;
 mod cli;
+mod links;
 mod render;
 mod serve;
 mod tui;

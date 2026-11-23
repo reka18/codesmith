@@ -113,7 +113,14 @@ scripts/release.sh 0.2.0                  # dry run: build, test, package; no Gi
 scripts/release.sh 0.2.0 --draft-upload   # the same, then create the draft release
 ```
 
-It checks the version against `Cargo.toml`, builds the four targets, and
+It checks the version against `Cargo.toml`, then checks every outside page
+the binary shows or opens (`codesmith debug links --check`: the API key pages
+in `/login`, setup and help pages). A page that is gone (404, 410, no answer)
+stops a `--draft-upload`; a dry run only reports it. A page that moved
+permanently, blocks scripts (401, 403, 429) or had a server error is a
+warning to look at: a move prints the new address to list instead, in
+`crates/codesmith/src/links.rs` or wherever the link is defined.
+`CODESMITH_SKIP_LINKS=1` skips the check, for building offline. It then builds the four targets, and
 smoke-tests them: `--version` for the macOS binaries, `file` must call the
 Linux ones static, and with Docker they run in containers (with no network).
 It then packages into `dist/<version>/`, writes `SHA256SUMS`, renders the

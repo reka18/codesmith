@@ -814,6 +814,13 @@ enum Debug {
     Agents,
     /// List the plugins compiled into this binary and whether config enables them.
     Plugins,
+    /// List every outside page CodeSmith shows or opens; with --check,
+    /// request each and fail when one is gone (run before each release).
+    Links {
+        /// Request each link and report the ones that moved or are gone.
+        #[arg(long)]
+        check: bool,
+    },
     /// Show what a model resolves to: provider, URL, limits, extra body,
     /// provider options and variants.
     Model {
@@ -1501,6 +1508,9 @@ async fn run(cli: Cli) -> Result<()> {
             show,
             json,
         }) => trust_cmd(&cwd, target, list, revoke, distrust, show, json),
+        Some(Command::Debug {
+            what: Debug::Links { check },
+        }) => crate::links::run(check).await,
         Some(Command::Debug { what }) => debug(cwd, what),
         Some(Command::Upgrade {
             target,
@@ -1627,6 +1637,7 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 }
             }
         }
+        Debug::Links { .. } => unreachable!("handled before debug()"),
         Debug::Plugins => {
             let loaded = config::load(&cwd)?;
             let reg = codesmith_core::plugin::active();
