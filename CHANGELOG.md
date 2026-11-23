@@ -5,6 +5,14 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **`/effort` picks the reasoning effort.** It lists the current model's
+  effort levels with the provider's default first, and `/effort high` sets
+  one directly. It is offered only for models that have levels, and the
+  levels come from the provider's API where it lists them: Anthropic's
+  `capabilities.effort` and OpenRouter's `reasoning.supported_efforts`
+  replace the catalog's guesses, so a model gets exactly the levels it
+  accepts. A model the API says doesn't reason (Anthropic, OpenRouter,
+  Gemini) offers none.
 - **Installs end with a forge banner.** `install.sh`, Homebrew (as the
   formula's caveats) and `codesmith upgrade` finish with the same
   "CodeSmith forged successfully" box: CODE in fire colours, SMITH in

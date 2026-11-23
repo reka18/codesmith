@@ -180,6 +180,8 @@ pub enum Pick {
     Model,
     /// The provider picker (`/provider`).
     Provider,
+    /// The effort picker (`/effort`).
+    Effort,
     Agent,
     Theme,
     /// The diff viewer's source chooser.
@@ -610,6 +612,7 @@ const HELP_COMMANDS: &str = "/new            start a new session
 /agent [id]     switch agent (build, plan, …)
 /model [p/m]    switch model (p/m#variant picks a variant)
 /variant [name] cycle the model's variants (reasoning effort), or pick one
+/effort [level] pick the model's reasoning effort, where its provider offers it
 /themes [name]  pick a theme (/theme too); /themes dark|light|system sets the mode
 /compact        summarize older history now
 /clear          clear the screen (the session is kept)
@@ -759,6 +762,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     (
         "variant",
         "cycle or pick the model variant (reasoning effort)",
+    ),
+    (
+        "effort",
+        "pick the reasoning effort, where the provider offers it",
     ),
     ("compact", "summarize older history now"),
     (

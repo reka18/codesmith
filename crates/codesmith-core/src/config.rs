@@ -1783,7 +1783,7 @@ pub const BUILTIN: &[(&str, &str, Protocol, &str, &[&str])] = &[
     ),
 ];
 
-fn builtin(id: &str) -> Option<ProviderConfig> {
+pub(crate) fn builtin(id: &str) -> Option<ProviderConfig> {
     let (_, name, protocol, url, env) = BUILTIN.iter().find(|b| b.0 == id)?;
     Some(ProviderConfig {
         name: Some(name.to_string()),

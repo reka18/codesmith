@@ -27,6 +27,7 @@ mod diff_tree;
 mod diff_view;
 mod dirs;
 mod editor;
+mod effort;
 mod export_view;
 mod external;
 mod fit;
@@ -786,6 +787,13 @@ impl Runner {
                 }
             }
             "variant" if self.idle_or_say() => self.set_variant(args)?,
+            "effort" if self.idle_or_say() => {
+                if args.trim().is_empty() {
+                    self.open_effort_picker();
+                } else {
+                    self.set_effort(args);
+                }
+            }
             "compact" if self.idle_or_say() => {
                 let Some(mut s) = self.session.take() else {
                     return Ok(());
@@ -913,6 +921,67 @@ impl Runner {
         match next {
             Some(v) => self.set_model(&format!("{base}#{v}")),
             None => self.set_model(&base),
+        }
+    }
+
+    /// The session model without its variant, the variant, and the model's
+    /// effort levels as its provider lists them now.
+    fn effort_levels(&self) -> Option<(String, Option<String>, Vec<String>)> {
+        let spec = &self.session.as_ref()?.model_spec;
+        let (base, current) = config::split_variant(spec);
+        let variants = self
+            .loaded
+            .config
+            .resolve_model(base)
+            .map(|m| m.variants)
+            .unwrap_or_default();
+        Some((
+            base.to_string(),
+            current.map(str::to_string),
+            effort::levels(&variants),
+        ))
+    }
+
+    /// The effort picker's rows.
+    fn effort_items(&self) -> Vec<PickItem> {
+        match self.effort_levels() {
+            Some((_, current, levels)) if !levels.is_empty() => {
+                effort::items(&levels, current.as_deref())
+            }
+            _ => vec![],
+        }
+    }
+
+    /// `/effort`: pick the model's effort level, for a model that has any.
+    /// A stale hosted list is asked again meanwhile, so the levels are the
+    /// provider's own.
+    fn open_effort_picker(&mut self) {
+        let Some((base, _, levels)) = self.effort_levels() else {
+            return;
+        };
+        let pid = self.current_provider();
+        refresh_hosted_models(&self.loaded.config, vec![pid], self.tx.clone());
+        if levels.is_empty() {
+            self.app.notice(effort::no_levels(&base));
+            return;
+        }
+        let items = self.effort_items();
+        let title = format!("Effort · {base}");
+        self.app.modal = Some(Modal::Picker(Picker::new(Pick::Effort, &title, items)));
+    }
+
+    /// `/effort LEVEL` (or `default`).
+    fn set_effort(&mut self, arg: &str) {
+        let Some((base, _, levels)) = self.effort_levels() else {
+            return;
+        };
+        match effort::choose(&base, &levels, arg) {
+            Ok(spec) => {
+                if let Err(e) = self.set_model(&spec) {
+                    self.app.error(format!("{e:#}"));
+                }
+            }
+            Err(why) => self.app.notice(why),
         }
     }
 
@@ -1241,6 +1310,7 @@ impl Runner {
             },
             Pick::Model if id == provider_pick::OTHER_PROVIDERS => self.open_provider_picker(),
             Pick::Provider if self.idle_or_say() => self.choose_provider(&id)?,
+            Pick::Effort if self.idle_or_say() => self.set_effort(&id),
             // A provider without listed models: let the user type the model.
             Pick::Model if id.ends_with('/') => self.app.input.set(format!("/model {id}")),
             Pick::Model if self.idle_or_say() => {
@@ -1261,7 +1331,8 @@ impl Runner {
             | Pick::Fork
             | Pick::Agent
             | Pick::Model
-            | Pick::Provider => {}
+            | Pick::Provider
+            | Pick::Effort => {}
         }
         Ok(())
     }
@@ -1986,6 +2057,8 @@ impl Runner {
                 let items = match kind {
                     Some(Pick::Model) => Some(self.model_items()),
                     Some(Pick::Provider) => Some(self.provider_items()),
+                    // An effort picker emptied by a newer list stays as it was.
+                    Some(Pick::Effort) => Some(self.effort_items()).filter(|i| !i.is_empty()),
                     _ => None,
                 };
                 if let (Some(items), Some(Modal::Picker(p))) = (items, self.app.modal.as_mut()) {
@@ -2668,6 +2741,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("model", true),
     ("provider", true),
     ("variant", true),
+    ("effort", true),
     ("diff", false),
     ("editor", false),
 ];

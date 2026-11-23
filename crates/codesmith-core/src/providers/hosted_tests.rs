@@ -513,3 +513,319 @@ fn a_huge_answer_is_capped_and_fast() {
         started.elapsed()
     );
 }
+
+// ------------------------------------------------------------ reasoning
+
+/// An Anthropic model as `GET /v1/models` lists it, with the effort
+/// levels named in `levels` supported.
+fn anthropic_model(id: &str, levels: &[&str], thinking: bool) -> Value {
+    let mut effort = serde_json::Map::new();
+    for l in ["low", "medium", "high", "xhigh", "max"] {
+        effort.insert(l.into(), json!({"supported": levels.contains(&l)}));
+    }
+    effort.insert("supported".into(), json!(!levels.is_empty()));
+    json!({
+        "type": "model", "id": id, "display_name": id,
+        "max_input_tokens": 1_000_000, "max_tokens": 128_000,
+        "capabilities": {
+            "batch": {"supported": true},
+            "effort": effort,
+            "thinking": {"supported": thinking, "types": {
+                "adaptive": {"supported": thinking}, "enabled": {"supported": thinking}}}
+        }
+    })
+}
+
+fn obj(v: &Value) -> &Map<String, Value> {
+    v.as_object().unwrap()
+}
+
+fn variant_ids(m: &crate::catalog::Model) -> Vec<&str> {
+    m.variants.iter().map(|v| v.id.as_str()).collect()
+}
+
+#[test]
+fn anthropic_effort_levels_are_the_supported_ones_lowest_first() {
+    let r = reasoning(obj(&anthropic_model("c", &["max", "low", "high"], true))).unwrap();
+    assert!(r.supported);
+    assert_eq!(r.efforts, ["low", "high", "max"]);
+}
+
+#[test]
+fn anthropic_thinking_without_effort_reasons_with_no_levels() {
+    let r = reasoning(obj(&anthropic_model("c", &[], true))).unwrap();
+    assert_eq!(
+        r,
+        ApiReasoning {
+            supported: true,
+            efforts: vec![]
+        }
+    );
+    let r = reasoning(obj(&anthropic_model("c", &[], false))).unwrap();
+    assert!(!r.supported, "no thinking and no effort: does not reason");
+}
+
+#[test]
+fn anthropic_levels_only_count_when_effort_is_supported() {
+    let mut m = anthropic_model("c", &["low", "high"], true);
+    m["capabilities"]["effort"]["supported"] = json!(false);
+    assert!(reasoning(obj(&m)).unwrap().efforts.is_empty());
+}
+
+#[test]
+fn openrouter_efforts_are_reordered_lowest_first() {
+    let m = json!({"id": "x/y", "reasoning": {"supported_efforts": ["high", "medium", "low", "minimal"],
+                   "mandatory": false}, "supported_parameters": ["reasoning"]});
+    assert_eq!(
+        reasoning(obj(&m)).unwrap().efforts,
+        ["minimal", "low", "medium", "high"]
+    );
+}
+
+#[test]
+fn openrouter_mandatory_reasoning_drops_none() {
+    let m = json!({"id": "x/y", "reasoning": {"supported_efforts": ["high", "low", "none"], "mandatory": true}});
+    assert_eq!(reasoning(obj(&m)).unwrap().efforts, ["low", "high"]);
+    let m = json!({"id": "x/y", "reasoning": {"supported_efforts": ["high", "low", "none"], "mandatory": false}});
+    assert_eq!(reasoning(obj(&m)).unwrap().efforts, ["none", "low", "high"]);
+}
+
+#[test]
+fn openrouter_without_an_allowlist_reasons_with_no_levels() {
+    let m = json!({"id": "x/y", "reasoning": {"supported_efforts": null, "mandatory": false}});
+    assert_eq!(
+        reasoning(obj(&m)).unwrap(),
+        ApiReasoning {
+            supported: true,
+            efforts: vec![]
+        }
+    );
+}
+
+#[test]
+fn openrouter_parameters_say_whether_a_model_reasons() {
+    let m = json!({"id": "x/y", "supported_parameters": ["temperature", "tools"]});
+    assert!(!reasoning(obj(&m)).unwrap().supported);
+    let m = json!({"id": "x/y", "supported_parameters": ["include_reasoning"]});
+    assert!(reasoning(obj(&m)).unwrap().supported);
+}
+
+#[test]
+fn gemini_thinking_says_whether_a_model_reasons() {
+    let m = json!({"name": "models/gemini-9", "supportedGenerationMethods": ["generateContent"], "thinking": true});
+    assert!(reasoning(obj(&m)).unwrap().supported);
+    let m = json!({"name": "models/gemini-9", "supportedGenerationMethods": ["generateContent"], "thinking": false});
+    assert!(!reasoning(obj(&m)).unwrap().supported);
+    let m = json!({"name": "models/gemini-9", "supportedGenerationMethods": ["generateContent"]});
+    assert_eq!(reasoning(obj(&m)), None);
+}
+
+#[test]
+fn apis_that_say_nothing_about_reasoning_give_none() {
+    for m in [
+        json!({"id": "gpt-9", "object": "model", "created": 1, "owned_by": "openai"}),
+        json!({"id": "mistral-9", "capabilities": {"completion_chat": true, "vision": false}}),
+        json!({"id": "llama", "context_window": 8192}),
+    ] {
+        assert_eq!(reasoning(obj(&m)), None, "{m}");
+    }
+}
+
+#[test]
+fn odd_level_names_are_dropped_and_the_list_is_capped() {
+    let mut levels: Vec<Value> = [
+        "HIGH",
+        "",
+        "default",
+        "a b",
+        "low\u{7}",
+        &"x".repeat(40),
+        "high",
+        "high",
+    ]
+    .iter()
+    .map(|s| json!(s))
+    .collect();
+    levels.extend((0..100).map(|i| json!(format!("level-{i}"))));
+    levels.push(json!(5));
+    let m = json!({"id": "x/y", "reasoning": {"supported_efforts": levels}});
+    let got = reasoning(obj(&m)).unwrap().efforts;
+    assert_eq!(got[0], "high");
+    assert_eq!(got.len(), MAX_EFFORTS);
+    assert!(got.iter().all(|l| effort_name(l)), "{got:?}");
+}
+
+#[test]
+fn normalize_keeps_reasoning_and_levels() {
+    let raw = normalize(&json!({"data": [
+        anthropic_model("claude-a", &["low", "medium", "high"], true),
+        anthropic_model("claude-b", &[], false),
+        {"id": "claude-c"}
+    ]}));
+    assert_eq!(entry(&raw, "claude-a")["reasoning"], true);
+    assert_eq!(
+        entry(&raw, "claude-a")["efforts"],
+        json!(["low", "medium", "high"])
+    );
+    assert_eq!(entry(&raw, "claude-b")["reasoning"], false);
+    assert!(entry(&raw, "claude-b").get("efforts").is_none());
+    assert!(entry(&raw, "claude-c").get("reasoning").is_none());
+    // Anthropic's limits are kept too.
+    assert_eq!(entry(&raw, "claude-a")["context"], 1_000_000);
+    assert_eq!(entry(&raw, "claude-a")["output"], 128_000);
+}
+
+#[test]
+fn derive_spells_the_apis_levels_for_a_model_the_catalog_lacks() {
+    let raw = normalize(
+        &json!({"data": [anthropic_model("claude-future-9", &["low", "high", "xhigh"], true)]}),
+    );
+    let m = &derive("anthropic", &raw, &[])[0];
+    assert_eq!(variant_ids(m), ["low", "high", "xhigh"]);
+    let high = m.variants.iter().find(|v| v.id == "high").unwrap();
+    let settings = high.settings.as_ref().unwrap();
+    assert_eq!(settings["effort"], "high");
+    assert_eq!(
+        m.reasoning.effort.as_deref(),
+        Some(&["low".to_string(), "high".into(), "xhigh".into()][..])
+    );
+}
+
+#[test]
+fn derive_puts_the_apis_levels_over_the_catalogs() {
+    let mut t = template("claude-x", "Claude X", 200_000);
+    t.variants = ["low", "medium", "high", "max"]
+        .iter()
+        .map(|id| crate::catalog::Variant {
+            id: id.to_string(),
+            settings: None,
+            body: None,
+            headers: None,
+        })
+        .collect();
+    let raw = normalize(&json!({"data": [anthropic_model("claude-x", &["medium", "high"], true)]}));
+    let m = &derive("anthropic", &raw, &[t.clone()])[0];
+    assert_eq!(variant_ids(m), ["medium", "high"]);
+    // A model the API says does not reason loses the catalog's levels.
+    let raw = normalize(&json!({"data": [anthropic_model("claude-x", &[], false)]}));
+    assert!(derive("anthropic", &raw, &[t.clone()])[0]
+        .variants
+        .is_empty());
+    // Reasoning without named levels keeps the catalog's.
+    let raw = normalize(&json!({"data": [anthropic_model("claude-x", &[], true)]}));
+    assert_eq!(
+        variant_ids(&derive("anthropic", &raw, &[t.clone()])[0]),
+        ["low", "medium", "high", "max"]
+    );
+    // Saying nothing keeps them too.
+    let raw = normalize(&json!({"data": [{"id": "claude-x"}]}));
+    assert_eq!(
+        variant_ids(&derive("anthropic", &raw, &[t])[0]),
+        ["low", "medium", "high", "max"]
+    );
+}
+
+#[test]
+fn derive_gives_openrouter_models_the_listed_levels_as_reasoning_objects() {
+    let raw = normalize(&json!({"data": [
+        {"id": "z/think", "reasoning": {"supported_efforts": ["high", "low"]}, "supported_parameters": ["reasoning"]},
+        {"id": "z/plain", "supported_parameters": ["tools"]}
+    ]}));
+    let models = derive("openrouter", &raw, &[]);
+    let think = models.iter().find(|m| m.id == "z/think").unwrap();
+    assert_eq!(variant_ids(think), ["low", "high"]);
+    let low = &think.variants[0];
+    assert_eq!(low.settings.as_ref().unwrap()["reasoning"]["effort"], "low");
+    let plain = models.iter().find(|m| m.id == "z/plain").unwrap();
+    assert!(plain.variants.is_empty());
+}
+
+#[test]
+fn a_reasoning_model_the_catalog_lacks_gets_the_protocols_default_levels() {
+    let raw = normalize(&json!({"models": [
+        {"name": "models/gemini-9-pro", "supportedGenerationMethods": ["generateContent"], "thinking": true},
+        {"name": "models/gemini-9-lite", "supportedGenerationMethods": ["generateContent"], "thinking": false}
+    ]}));
+    let models = derive("google", &raw, &[]);
+    assert_eq!(variant_ids(&models[0]), ["low", "medium", "high"]);
+    assert!(models[1].variants.is_empty());
+}
+
+#[test]
+fn providers_whose_apis_say_nothing_are_unchanged() {
+    // Groq's list has no reasoning fields: no levels are invented.
+    let raw = normalize(&json!({"data": [{"id": "llama-9", "context_window": 131072}]}));
+    assert!(derive("groq", &raw, &[])[0].variants.is_empty());
+    // A reasoning flag from a provider without known controls changes only
+    // a model that does not reason.
+    let raw = vec![json!({"id": "m", "kind": "chat", "reasoning": true, "efforts": ["high"]})];
+    assert!(derive("groq", &raw, &[])[0].variants.is_empty());
+}
+
+#[test]
+fn kept_levels_are_checked_again_on_reading() {
+    // A hand-edited file with odd levels: only valid ones are spelled.
+    let raw = vec![json!({"id": "claude-z", "kind": "chat", "reasoning": true,
+                          "efforts": ["HIGH", "low", "../x", "low", 7]})];
+    assert_eq!(variant_ids(&derive("anthropic", &raw, &[])[0]), ["low"]);
+}
+
+#[test]
+fn random_capabilities_never_panic_and_give_valid_levels() {
+    // A small deterministic generator, so the cases are the same each run.
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let pool = [
+        json!(true),
+        json!(false),
+        json!(null),
+        json!(3),
+        json!("high"),
+        json!({"supported": true}),
+        json!({"supported": false}),
+        json!(["low", "max"]),
+        json!({}),
+    ];
+    for _ in 0..2000 {
+        let pick = |n: u64| pool[(n % pool.len() as u64) as usize].clone();
+        let m = json!({
+            "id": "m",
+            "capabilities": {"effort": {"supported": pick(next()), "low": pick(next()), "max": pick(next())},
+                             "thinking": pick(next())},
+            "reasoning": pick(next()),
+            "supported_parameters": pick(next()),
+        });
+        if let Some(r) = reasoning(obj(&m)) {
+            assert!(r.efforts.iter().all(|l| effort_name(l)), "{m}");
+            assert!(r.efforts.len() <= MAX_EFFORTS);
+            if !r.efforts.is_empty() {
+                assert!(r.supported);
+            }
+        }
+        for pid in ["anthropic", "openrouter", "google", "groq"] {
+            let _ = derive(pid, &normalize(&json!({"data": [m.clone()]})), &[]);
+        }
+    }
+}
+
+#[test]
+fn the_reasoning_packages_speak_each_providers_own_protocol() {
+    // The resolver uses a live model's variants only when its package speaks
+    // the provider's protocol, so the API's levels must not be dropped there.
+    use codesmith_ai::Protocol;
+    for (pid, protocol) in [
+        ("anthropic", Protocol::AnthropicMessages),
+        ("openrouter", Protocol::OpenaiChat),
+        ("google", Protocol::GoogleGemini),
+    ] {
+        let package = reasoning_package(pid).unwrap();
+        assert_eq!(crate::catalog::protocol(package), Some(protocol), "{pid}");
+        let builtin = crate::config::builtin(pid).and_then(|b| b.protocol);
+        assert_eq!(builtin.unwrap_or(Protocol::OpenaiChat), protocol, "{pid}");
+    }
+}
