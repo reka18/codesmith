@@ -636,9 +636,10 @@ pub struct Strip {
     pub start: Cell<usize>,
 }
 
-/// The busy indicator (the first of OpenCode's spinner frames; the full
-/// screen draws no animation).
-pub const SPINNER: &str = "⠋";
+/// The busy indicator: a forge ember. A tab shows it as a single static
+/// glyph (the tab strip draws no animation); the input box animates the
+/// ember and its heat while a turn runs.
+pub const SPINNER: &str = "✶";
 /// The unread marker.
 pub const UNREAD: &str = "•";
 

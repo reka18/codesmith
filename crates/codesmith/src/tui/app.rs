@@ -411,6 +411,11 @@ pub struct App {
     /// Lines scrolled up from the bottom of the transcript.
     pub scroll: usize,
     pub busy: bool,
+    /// When the current turn became busy, for animating the forge
+    /// indicator. Set from `busy` before each frame (see the event loop);
+    /// `None` when idle, so a test that sets `busy` directly renders the
+    /// first frame.
+    pub busy_since: Option<Instant>,
     pub header: Header,
     pub usage: Usage,
     /// The session's spending: billed costs, and tokens to price.
