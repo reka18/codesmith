@@ -264,6 +264,11 @@ pub fn provider_items(list: &[Provider], current: &str) -> Vec<PickItem> {
                 Status::Local(n) => format!("local{}", count(*n)),
                 Status::SignIn => "sign in".into(),
             };
+            let detail = if codesmith_core::providers::verified::verified(&p.id) {
+                detail
+            } else {
+                format!("{detail} · {}", codesmith_core::providers::verified::TAG)
+            };
             PickItem {
                 id: p.id.clone(),
                 label: p.name.clone(),

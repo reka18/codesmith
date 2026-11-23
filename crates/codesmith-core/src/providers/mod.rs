@@ -27,6 +27,7 @@ pub mod sap;
 pub mod signin;
 pub mod snowflake;
 pub mod swap;
+pub mod verified;
 pub mod vertex;
 pub mod xai;
 

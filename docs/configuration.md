@@ -223,36 +223,45 @@ These work without a `providers` entry. Each reads its key from the
 environment variables listed, from a key saved with `codesmith auth login`, or
 from `settings.apiKey` in config.
 
-| Id | Protocol | Key variables |
-|---|---|---|
-| `anthropic` | Anthropic Messages | `ANTHROPIC_API_KEY` |
-| `openai` | OpenAI Responses | `OPENAI_API_KEY` |
-| `google` | Gemini | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY` |
-| `azure` | OpenAI Responses | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY`, `AZURE_COGNITIVE_SERVICES_API_KEY`, or an Azure CLI login (needs the resource name or `settings.baseURL`; see [Azure](#azure-openai)) |
-| `openrouter` | OpenAI Chat | `OPENROUTER_API_KEY` |
-| `groq` | OpenAI Chat | `GROQ_API_KEY` |
-| `deepseek` | OpenAI Chat | `DEEPSEEK_API_KEY` |
-| `mistral` | OpenAI Chat | `MISTRAL_API_KEY` |
-| `xai` | OpenAI Chat | `XAI_API_KEY` |
-| `together` | OpenAI Chat | `TOGETHER_API_KEY` |
-| `fireworks` | OpenAI Chat | `FIREWORKS_API_KEY` |
-| `cerebras` | OpenAI Chat | `CEREBRAS_API_KEY` |
-| `ollama` | OpenAI Chat | none (`http://127.0.0.1:11434/v1`) |
-| `lmstudio` | OpenAI Chat | none (`http://127.0.0.1:1234/v1`) |
-| `llamacpp` | OpenAI Chat | none (`http://127.0.0.1:8080/v1`) |
-| `vllm` | OpenAI Chat | none (`http://127.0.0.1:8000/v1`) |
-| `amazon-bedrock` | Bedrock Converse (Mantle models: Responses, Chat or Messages) | `AWS_BEARER_TOKEN_BEDROCK`, else SigV4 with AWS credentials; see [Amazon Bedrock](#amazon-bedrock) |
-| `google-vertex` | Gemini, Anthropic Messages for Claude, OpenAI Chat for partner models | Application Default Credentials, or `GOOGLE_VERTEX_API_KEY` (Express Mode); see [Google Vertex AI](#google-vertex-ai) |
-| `google-vertex-anthropic` | Anthropic Messages | as `google-vertex` |
-| `github-copilot` | per model: Anthropic Messages, OpenAI Responses or Chat | `codesmith auth login github-copilot`, or `COPILOT_GITHUB_TOKEN`; see [GitHub Copilot](#github-copilot) |
-| `databricks` | OpenAI Chat | `DATABRICKS_TOKEN` (and `DATABRICKS_HOST`, with or without `https://`) |
-| `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) |
-| `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) |
-| `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) |
-| `digitalocean` | per model: OpenAI Chat, Responses or Anthropic Messages | `DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean --oauth`; see [DigitalOcean](#digitalocean) |
-| `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) |
-| `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) |
-| `claude-agent` | your installed Claude Code | a Claude Code token (recommended, works over SSH) or Claude Code's own login; see [Claude Agent](#claude-agent-your-claude-code-login) |
+| Id | Protocol | Key variables | Tested |
+|---|---|---|---|
+| `anthropic` | Anthropic Messages | `ANTHROPIC_API_KEY` | yes |
+| `openai` | OpenAI Responses | `OPENAI_API_KEY` | untested |
+| `google` | Gemini | `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY` | untested |
+| `azure` | OpenAI Responses | `AZURE_OPENAI_API_KEY`, `AZURE_API_KEY`, `AZURE_COGNITIVE_SERVICES_API_KEY`, or an Azure CLI login (needs the resource name or `settings.baseURL`; see [Azure](#azure-openai)) | untested |
+| `openrouter` | OpenAI Chat | `OPENROUTER_API_KEY` | untested |
+| `groq` | OpenAI Chat | `GROQ_API_KEY` | untested |
+| `deepseek` | OpenAI Chat | `DEEPSEEK_API_KEY` | untested |
+| `mistral` | OpenAI Chat | `MISTRAL_API_KEY` | untested |
+| `xai` | OpenAI Chat | `XAI_API_KEY` | untested |
+| `together` | OpenAI Chat | `TOGETHER_API_KEY` | untested |
+| `fireworks` | OpenAI Chat | `FIREWORKS_API_KEY` | yes |
+| `cerebras` | OpenAI Chat | `CEREBRAS_API_KEY` | untested |
+| `ollama` | OpenAI Chat | none (`http://127.0.0.1:11434/v1`) | untested |
+| `lmstudio` | OpenAI Chat | none (`http://127.0.0.1:1234/v1`) | untested |
+| `llamacpp` | OpenAI Chat | none (`http://127.0.0.1:8080/v1`) | untested |
+| `vllm` | OpenAI Chat | none (`http://127.0.0.1:8000/v1`) | untested |
+| `amazon-bedrock` | Bedrock Converse (Mantle models: Responses, Chat or Messages) | `AWS_BEARER_TOKEN_BEDROCK`, else SigV4 with AWS credentials; see [Amazon Bedrock](#amazon-bedrock) | untested |
+| `google-vertex` | Gemini, Anthropic Messages for Claude, OpenAI Chat for partner models | Application Default Credentials, or `GOOGLE_VERTEX_API_KEY` (Express Mode); see [Google Vertex AI](#google-vertex-ai) | untested |
+| `google-vertex-anthropic` | Anthropic Messages | as `google-vertex` | untested |
+| `github-copilot` | per model: Anthropic Messages, OpenAI Responses or Chat | `codesmith auth login github-copilot`, or `COPILOT_GITHUB_TOKEN`; see [GitHub Copilot](#github-copilot) | untested |
+| `databricks` | OpenAI Chat | `DATABRICKS_TOKEN` (and `DATABRICKS_HOST`, with or without `https://`) | untested |
+| `cloudflare-ai-gateway` | per model: OpenAI Responses, Anthropic Messages or OpenAI Chat | `CLOUDFLARE_API_TOKEN`, `CF_AIG_TOKEN` (and the account and gateway ids); see [Cloudflare](#cloudflare-ai-gateway-and-workers-ai) | untested |
+| `cloudflare-workers-ai` | OpenAI Chat | `CLOUDFLARE_API_KEY`, `CLOUDFLARE_WORKERS_AI_TOKEN`, `CLOUDFLARE_API_TOKEN` (and the account id) | untested |
+| `poe` | OpenAI Chat | `POE_API_KEY`, or `codesmith auth login poe --oauth`; see [Poe](#poe) | untested |
+| `digitalocean` | per model: OpenAI Chat, Responses or Anthropic Messages | `DIGITALOCEAN_ACCESS_TOKEN`, or `codesmith auth login digitalocean --oauth`; see [DigitalOcean](#digitalocean) | untested |
+| `snowflake-cortex` | per model: OpenAI Chat or Anthropic Messages | `SNOWFLAKE_CORTEX_TOKEN`, `SNOWFLAKE_CORTEX_PAT` (and `SNOWFLAKE_ACCOUNT`), or a login; see [Snowflake Cortex](#snowflake-cortex) | untested |
+| `sap-ai-core` | OpenAI Chat | `AICORE_SERVICE_KEY` (the service key JSON) and the deployment; see [SAP AI Core](#sap-ai-core) | untested |
+| `claude-agent` | your installed Claude Code | a Claude Code token (recommended, works over SSH) or Claude Code's own login; see [Claude Agent](#claude-agent-your-claude-code-login) | yes |
+
+Only `anthropic`, `claude-agent` and `fireworks` have been tested with
+CodeSmith. The rest, and any provider you add or run locally, are marked
+`untested`: `/provider`, `/login` and `codesmith auth list` tag them, and
+CodeSmith warns the first time a run uses one. The warning doesn't stop
+anything. If an untested provider works for you, please
+[open an issue](https://github.com/reka18/codesmith/issues/new?template=provider-verified.md)
+confirming it; if it doesn't, a pull request that fixes it is welcome (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#providers)).
 
 A key is looked up in this order: `settings.apiKey`, then the `env`
 variables in order, then the saved key. So config and environment variables

@@ -15,6 +15,7 @@ use super::keymap::Keymap;
 use super::theme;
 use crate::cli::{LoginRequest, Secret};
 use codesmith_core::providers::signin::{Choice, Kind, State};
+use codesmith_core::providers::verified;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -633,6 +634,14 @@ impl LoginView {
                             },
                         ),
                         Span::styled(format!(" {}", safe(&c.state.describe())), fg(color)),
+                        Span::styled(
+                            if verified::verified(&c.id) {
+                                String::new()
+                            } else {
+                                format!(" · {}", verified::TAG)
+                            },
+                            fg(p.warning),
+                        ),
                     ]));
                 }
                 out.push(Line::default());
@@ -650,6 +659,13 @@ impl LoginView {
                 out.push(Line::default());
                 if let Some(n) = &c.note {
                     out.push(Line::from(Span::styled(safe(n), fg(p.warning))));
+                    out.push(Line::default());
+                }
+                if let Some(w) = verified::warning(&c.id, &c.name) {
+                    out.push(Line::from(Span::styled(
+                        format!("⚠︎ {}", safe(&w)),
+                        fg(p.warning),
+                    )));
                     out.push(Line::default());
                 }
                 for (i, r) in self.rows(*choice).into_iter().enumerate() {
@@ -922,6 +938,35 @@ mod tests {
         assert!(view(&a).filter.is_empty());
         assert_eq!(a.on_key(key(KeyCode::Esc)), None);
         assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn untested_providers_are_tagged_and_warned_about_and_tested_ones_are_not() {
+        let (mut a, _d) = picker();
+        for (filter, name) in [("groq", "Groq"), ("poe", "Poe")] {
+            assert!(row(&mut a, filter, name).contains("· untested"), "{name}");
+        }
+        for (filter, name) in [
+            ("anthropic", "Anthropic"),
+            ("fireworks", "Fireworks"),
+            ("claude", "Claude Pro/Max (Claude Code)"),
+        ] {
+            assert!(!row(&mut a, filter, name).contains("untested"), "{name}");
+        }
+        // Choosing an untested provider shows the warning with the links.
+        view_mut(&mut a).filter.clear();
+        type_text(&mut a, "groq");
+        a.on_key(key(KeyCode::Enter));
+        let f: String = frame(&a).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(f.contains("hasn't been tested with CodeSmith"), "{f}");
+        // A tested one doesn't.
+        a.on_key(key(KeyCode::Esc));
+        view_mut(&mut a).filter.clear();
+        type_text(&mut a, "fireworks");
+        a.on_key(key(KeyCode::Enter));
+        let f = frame(&a);
+        assert!(f.contains("Paste an API key"), "{f}");
+        assert!(!f.contains("hasn't been tested"), "{f}");
     }
 
     #[test]

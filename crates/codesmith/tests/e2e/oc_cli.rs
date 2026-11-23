@@ -647,3 +647,60 @@ async fn a_bad_claude_code_token_is_refused() {
         out.both()
     );
 }
+
+/// Signing in to an untested provider warns, with the links; a tested one
+/// doesn't; `auth list` tags only the untested ones.
+#[tokio::test(flavor = "multi_thread")]
+async fn untested_providers_are_warned_about_and_tagged() {
+    let e = Env::new();
+    let out = run_env(
+        &e,
+        &["auth", "login", "groq"],
+        &[],
+        Some("gsk-e2e-0123456789\n"),
+    )
+    .await;
+    out.ok();
+    assert!(
+        out.stderr
+            .contains("warning: groq hasn't been tested with CodeSmith"),
+        "{}",
+        out.both()
+    );
+    assert!(
+        out.stderr.contains(
+            "issues/new?template=provider-verified.md&title=Provider%20verified%3A%20groq"
+        ),
+        "{}",
+        out.both()
+    );
+    assert!(out.stderr.contains("CONTRIBUTING.md"), "{}", out.both());
+    let out = run_env(
+        &e,
+        &["auth", "login", "fireworks"],
+        &[],
+        Some("fw-e2e-0123456789\n"),
+    )
+    .await;
+    out.ok();
+    assert!(!out.both().contains("hasn't been tested"), "{}", out.both());
+    let out = e.run(&["auth", "list"]).await;
+    out.ok();
+    let line = |id: &str| {
+        out.stdout
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(id))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(line("groq").ends_with(" · untested"), "{}", out.both());
+    assert!(line("openai").ends_with(" · untested"), "{}", out.both());
+    for id in ["anthropic", "claude-agent", "fireworks"] {
+        let l = line(id);
+        assert!(
+            !l.is_empty() && !l.contains("untested"),
+            "{id}: {}",
+            out.both()
+        );
+    }
+}
