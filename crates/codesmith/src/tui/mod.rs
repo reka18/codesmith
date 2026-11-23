@@ -154,6 +154,10 @@ struct Runner {
     suspend: bool,
     /// `prompt.editor`: edit the prompt in `$EDITOR` before the next frame.
     edit: bool,
+    /// Unlock the macOS keychain before the next frame, for Claude Code.
+    unlock: bool,
+    /// The prompt held back until the keychain is unlocked.
+    unlock_held: Option<(String, String, Vec<codesmith_ai::Media>)>,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
     diffs: settings::Diffs,
     /// The open session tabs; the fields above from `app` to `jobs` are
@@ -339,6 +343,11 @@ impl Runner {
         if self.app.busy {
             self.app
                 .notice("A turn is still running. Press Esc to interrupt it first.");
+            return;
+        }
+        if self.keychain_needed() {
+            self.unlock_held = Some((shown, text, media));
+            self.unlock = true;
             return;
         }
         let Some(mut s) = self.session.take() else {
@@ -1672,6 +1681,61 @@ impl Runner {
         self.login = Some((n, task, paste_tx));
     }
 
+    /// Whether the session's model is Claude Code's and its keychain is
+    /// locked (as in an SSH session).
+    fn keychain_needed(&self) -> bool {
+        let Some(s) = &self.session else {
+            return false;
+        };
+        crate::keychain::needed(
+            provider_pick::provider_of(&s.model_spec),
+            codesmith_ai::claude_agent::keychain_locked,
+        )
+    }
+
+    /// Hand the terminal to macOS to unlock the keychain (it asks for the
+    /// password; CodeSmith never sees it), then send the prompt held for
+    /// it, or give it back to edit when the keychain stays locked.
+    async fn unlock_keychain(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        cursor: settings::Cursor,
+    ) {
+        pause_input(true);
+        let open = tokio::task::spawn_blocking(|| {
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+            ratatui::restore();
+            crate::keychain::unlock()
+        })
+        .await
+        .unwrap_or(false);
+        let _ = ratatui::crossterm::terminal::enable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste
+        );
+        if let Some(c) = cursor_style(cursor) {
+            let _ = execute!(std::io::stdout(), c);
+        }
+        let _ = terminal.clear();
+        pause_input(false);
+        let held = self.unlock_held.take();
+        if open {
+            self.app.notice("keychain unlocked for this session");
+            if let Some((shown, text, media)) = held {
+                self.submit(shown, text, media);
+            }
+            return;
+        }
+        if let Some((shown, _, _)) = held {
+            self.app.input.set(shown);
+        }
+        self.app.error(
+            "The keychain is still locked, so Claude Code can't sign in. Send again to retry, or pick another model with /model.",
+        );
+    }
+
     /// Edit the prompt in the external editor, the terminal handed to it
     /// and taken back after.
     async fn edit_prompt(
@@ -2403,6 +2467,8 @@ async fn run_in(
         theme_before: None,
         suspend: false,
         edit: false,
+        unlock: false,
+        unlock_held: None,
         diffs: settings::Diffs::default(),
         tabs,
         history: history::Store::default(),
@@ -2517,6 +2583,9 @@ async fn run_in(
     r.apply_theme();
     spawn_hangup(tx.clone());
     spawn_input(tx);
+    // A Claude Code session in a locked keychain asks for the password
+    // at once, before anything is typed.
+    r.unlock = r.keychain_needed();
     let result: Result<()> = async {
         loop {
             r.watch_all();
@@ -2569,6 +2638,9 @@ async fn run_in(
             }
             if std::mem::take(&mut r.edit) {
                 r.edit_prompt(&mut terminal, tui.cursor).await;
+            }
+            if std::mem::take(&mut r.unlock) {
+                r.unlock_keychain(&mut terminal, tui.cursor).await;
             }
         }
         Ok(())
