@@ -319,6 +319,16 @@ A local HTTP API that always requires a bearer token. Without `--token` (or
 used, and it is generated on first use. Any host other than loopback requires
 an explicit `--token`. See [local server](local-server.md).
 
+## `codesmith bus`
+
+The [local bus](bus.md) between sessions on this machine.
+
+| Command | |
+|---|---|
+| `codesmith bus peers [--json]` | The sessions on the bus: name, project, agent, model, busy, paused, shared. |
+| `codesmith bus inbox [SESSION] [--json]` | The messages waiting for a session (default: the newest one in this folder). |
+| `codesmith bus relay --to NAME` | Carry the message on stdin to the session shared as `NAME` and print its answer: what a [tailbus bridge](tailbus.md) runs. `--from` names the sender, `--id` makes a repeat get the first answer, `--offline run` continues a closed session headless (default `refuse`), `--timeout` (seconds, default 3600). |
+
 ## `codesmith debug`
 
 | Command | Shows |

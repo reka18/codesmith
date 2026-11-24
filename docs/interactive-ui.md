@@ -386,6 +386,7 @@ and `opencode` is used.
 | `/provider [name]` | Switch provider, or pick one; a provider that needs a key or sign-in opens the sign-in picker on it. |
 | `/model [provider/model]` | Switch model, or pick one of the current provider's. |
 | `/effort [level]` | Pick the model's reasoning effort (`low`, `high`, `max`, …), or set the one named; `/effort default` goes back to the provider's default. Offered only for a model whose provider has effort levels for it, and the levels are the provider's: from its API where it lists them (see [model lists from the provider](configuration.md#model-lists-from-the-provider)). A level is the model's [variant](configuration.md#provider-options-and-variants) of that name. |
+| `/bus [name NAME \| share NAME \| unshare \| pause \| resume]` | This session on the [local bus](bus.md): its name, the other sessions and what waits; rename it, share it with [tailbus](tailbus.md), or stop taking requests for a while. |
 | `/variant [name]` | Switch to the model's next [variant](configuration.md#provider-options-and-variants), or to the one named; `/variant default` drops it. |
 | `/compact` | Summarize older history now. See [compaction](configuration.md#compaction). |
 | `/login` | [Sign in](#signing-in-to-providers) to a provider, or sign out. |

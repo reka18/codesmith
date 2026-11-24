@@ -31,6 +31,10 @@ New here? Start with [Getting started](getting-started.md).
 - [MCP servers](mcp.md): tools, Code Mode, OAuth, resources, prompts, events.
 - [Code review](code-review.md): `/calibrate` and `/review`.
 - [Automations](automations.md): scheduled and event-driven runs.
+- [The local bus](bus.md): sessions on one machine asking each other for
+  help.
+- [tailbus](tailbus.md): reaching a CodeSmith session from other agents on
+  your tailnet, or running CodeSmith as a tailbus bridge's agent.
 - [Editors (ACP)](editors-acp.md): Zed and other ACP clients.
 - [Local server](local-server.md): the HTTP API.
 - [Plugins](plugins.md): native Rust plugins.

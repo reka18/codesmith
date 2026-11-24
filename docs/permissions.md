@@ -58,6 +58,8 @@ Patterns:
 | `openapi` | `<METHOD> <url>` | A call to an [OpenAPI tool](mcp.md#openapi-tools) in Code Mode. Credentials in the query are left out of the URL. |
 | `websearch` | the query | |
 | `subagent` | the subagent id | |
+| `bus_send` | the recipient's name, or `*` | A message to another session on the [local bus](bus.md). Allowed by default. |
+| `bus_receive` | the sender's name | Whether a request from another session starts a turn. Allowed by default; see [the local bus](bus.md#permissions). |
 | `skill` | the skill id | |
 | `lsp` | the file path | |
 | `question`, `todowrite` | `*` | |
@@ -287,6 +289,11 @@ permission request opens a dialog. Edits and writes preview their diff.
 | **a** | Always allow: allow, and save a rule for the project ([saved approvals](#saved-approvals)). |
 | **n**, **Esc** or **Enter** | Reject. |
 | type text, then **Enter** | Reject and send what you typed to the model as feedback. |
+
+In a turn that another session's request started over the
+[local bus](bus.md#permissions), the dialog says who asked, and **a** is
+replaced by **s**: allow for this session, until it closes, saving nothing.
+Another session can never be the reason a rule is saved.
 
 Enter rejects, so a stray keypress never approves anything. Allowing always
 takes a deliberate key. The request is shown with control characters escaped
