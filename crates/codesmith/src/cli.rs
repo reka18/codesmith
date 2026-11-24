@@ -3766,6 +3766,11 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     if let Some(n) = &narrowed {
         session.tools.retain(|t| n.tools.contains(t));
     }
+    // No key at all: say so before anything is sent, instead of after the
+    // provider's refusals.
+    if let Some(why) = codesmith_core::retry::missing_key(&session.model) {
+        return Err(anyhow!(why));
+    }
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if let Some(path) = &args.usage_log {

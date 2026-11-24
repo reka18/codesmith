@@ -345,6 +345,50 @@ impl Target {
     }
 }
 
+/// Why a run can't start: `model`'s provider is one signed in to with a
+/// plain API key (a built-in with key variables), and no key was found, in
+/// the environment or among the keys saved for this home. Checked before
+/// anything is sent, so a headless run (a tailbus bridge's, with its own
+/// `HOME`) fails at once and says how to give it one.
+pub fn missing_key(model: &crate::config::ModelRef) -> Option<String> {
+    let (_, name, _, _, vars) = crate::config::BUILTIN
+        .iter()
+        .find(|(id, ..)| *id == model.provider_id)?;
+    let p = &model.provider;
+    let keyless = vars.is_empty()
+        || model.local
+        || p.hooks.is_some()
+        || p.auth != codesmith_ai::Auth::Default
+        || p.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
+    if keyless {
+        return None;
+    }
+    let pid = &model.provider_id;
+    let saved = crate::paths::auth_file();
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let own = crate::bus::user_home();
+    let other_home = match (&home, &own) {
+        (Some(h), Some(o)) => h != o,
+        _ => false,
+    };
+    let login = if other_home {
+        format!(
+            "HOME={} codesmith auth login {pid}",
+            home.as_ref()
+                .map(|h| h.display().to_string())
+                .unwrap_or_default()
+        )
+    } else {
+        format!("codesmith auth login {pid}")
+    };
+    Some(format!(
+        "No API key for {name}: none in {} or in the keys saved at {}.\n  Save one for this home:  {login}\n  or set {} (a tailbus bridge passes it with `secrets`).",
+        vars.join(" or "),
+        saved.display(),
+        vars[0],
+    ))
+}
+
 /// The scheme, host and port of the URL a transport error names.
 fn error_origin(m: &str) -> Option<String> {
     let url = m.split_once("for url (")?.1.split(')').next()?;

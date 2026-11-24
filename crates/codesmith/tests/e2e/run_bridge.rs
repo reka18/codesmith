@@ -330,3 +330,57 @@ async fn a_bridge_keeps_sessions_in_its_own_database_and_continues_them() {
     // The user's own database never saw these sessions.
     assert!(e.store().list(None, true).unwrap_or_default().is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_with_no_key_fails_at_once_and_says_how_to_give_it_one() {
+    let e = Env::new();
+    // No config naming a server: a built-in provider signed in to with a key.
+    let started = std::time::Instant::now();
+    let out = e
+        .run_with_stdin(
+            &[
+                "run",
+                "-m",
+                "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
+            ],
+            "say hi",
+        )
+        .await;
+    assert_ne!(out.code, Some(0));
+    assert!(
+        out.stderr.contains("No API key for Fireworks AI"),
+        "{}",
+        out.both()
+    );
+    assert!(out.stderr.contains("FIREWORKS_API_KEY"), "{}", out.both());
+    assert!(
+        out.stderr.contains("codesmith auth login fireworks"),
+        "{}",
+        out.both()
+    );
+    assert!(out.stderr.contains("auth.json"), "{}", out.both());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "it waited"
+    );
+    // The run goes ahead with a key (to a local model server standing in
+    // for Fireworks, so nothing leaves the machine).
+    let m = Model::start(answer("hi", "Hello.")).await;
+    e.config(
+        &m.url,
+        json!({"model": "fireworks/kimi", "providers": {"fireworks": {
+            "settings": {"baseURL": m.url},
+            "models": {"kimi": {"limit": {"context": 100000}}}
+        }}}),
+    );
+    let mut c = e.command(&["run", "hi"]);
+    c.env("FIREWORKS_API_KEY", "fw-test");
+    let o = tokio::time::timeout(std::time::Duration::from_secs(60), c.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), "Hello.");
+    // (A server on this machine needs no key, so the check leaves it
+    // alone: the run above would have passed without FIREWORKS_API_KEY.)
+}
