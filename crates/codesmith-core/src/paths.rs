@@ -8,6 +8,38 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// The account's own home folder, from the user database rather than
+/// `$HOME` (which a tailbus bridge sets to its own folder).
+#[cfg(unix)]
+pub fn account_home() -> Option<PathBuf> {
+    use std::ffi::CStr;
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut out: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is valid for the call, and `buf` outlives it.
+    let r = unsafe {
+        libc::getpwuid_r(
+            libc::geteuid(),
+            &mut pw,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut out,
+        )
+    };
+    if r != 0 || out.is_null() || pw.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: getpwuid_r succeeded, so pw_dir points into `buf`.
+    let dir = unsafe { CStr::from_ptr(pw.pw_dir) };
+    Some(PathBuf::from(dir.to_string_lossy().into_owned()))
+}
+
+/// `$HOME`, where there's no user database to ask.
+#[cfg(not(unix))]
+pub fn account_home() -> Option<PathBuf> {
+    dirs::home_dir()
+}
+
 fn xdg(var: &str, fallback: &str) -> PathBuf {
     // Unit tests ignore the variables too: a user's own `XDG_DATA_HOME`
     // must not lead them to the real data.

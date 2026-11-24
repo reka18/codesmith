@@ -40,6 +40,8 @@
 //! - `swap`: `codesmith models swap` and a provider's `swap` setting.
 //! - `trust`: project config trust: the prompt, `codesmith trust`, and an
 //!   untrusted project reaching no URL of its own (a loopback recorder).
+//! - `folder`: starting outside a repository: the warning, the question
+//!   at a terminal, the refusal in the home folder or `/` without one.
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
 
 mod harness;
@@ -49,6 +51,7 @@ mod acp;
 mod automation;
 mod catalog;
 mod delegation;
+mod folder;
 mod limits;
 mod mcp;
 mod oc_cli;

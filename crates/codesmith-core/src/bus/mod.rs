@@ -131,26 +131,7 @@ pub fn user_home() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("CODESMITH_RELAY_HOME").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(h));
     }
-    use std::ffi::CStr;
-    let mut buf = vec![0u8; 16 * 1024];
-    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut out: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: every pointer is valid for the call, and `buf` outlives it.
-    let r = unsafe {
-        libc::getpwuid_r(
-            crate::daemon::fs::euid(),
-            &mut pw,
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            &mut out,
-        )
-    };
-    if r != 0 || out.is_null() || pw.pw_dir.is_null() {
-        return None;
-    }
-    // SAFETY: getpwuid_r succeeded, so pw_dir points into `buf`.
-    let dir = unsafe { CStr::from_ptr(pw.pw_dir) };
-    Some(PathBuf::from(dir.to_string_lossy().into_owned()))
+    crate::paths::account_home()
 }
 
 /// How long an idle broker waits.

@@ -42,6 +42,10 @@ struct Cli {
     /// Approve every permission request that isn't denied (interactive UI).
     #[arg(long)]
     auto: bool,
+    /// Start outside a repository without asking, even in the home folder
+    /// or `/` with no terminal to confirm.
+    #[arg(long, global = true, env = "CODESMITH_ANY_FOLDER", action = clap::ArgAction::SetTrue, value_parser = clap::builder::FalseyValueParser::new())]
+    any_folder: bool,
 }
 
 #[derive(Subcommand)]
@@ -1109,6 +1113,7 @@ async fn run(cli: Cli) -> Result<()> {
             with_update_notice(tui::run(
                 cwd,
                 tui::Opts {
+                    any_folder: cli.any_folder,
                     resume,
                     agent: cli.agent,
                     model: cli.model,
@@ -1118,7 +1123,10 @@ async fn run(cli: Cli) -> Result<()> {
             ))
             .await
         }
-        Some(Command::Run(args)) => run_prompt(cwd, args).await,
+        Some(Command::Run(args)) => {
+            folder_check(&cwd, cli.any_folder)?;
+            run_prompt(cwd, args).await
+        }
         Some(Command::Mcp {
             what: McpCmd::Auth { name },
         }) => {
@@ -3129,6 +3137,87 @@ fn asks_trust(command: &Option<Command>) -> bool {
             | Some(Command::Commands)
             | Some(Command::Worktree { .. })
     )
+}
+
+/// Warn before a session starts outside any repository (see
+/// [`codesmith_core::folder`]), and ask at a terminal. A yes for a loose
+/// folder is remembered; the home folder and `/` are asked about every
+/// time, and with no terminal to ask they're refused. With no terminal, a
+/// loose folder is a warning on stderr.
+pub(crate) fn folder_check(cwd: &std::path::Path, any_folder: bool) -> Result<()> {
+    use codesmith_core::folder::{self, Place};
+    if any_folder {
+        return Ok(());
+    }
+    let place = folder::place(cwd);
+    let Some(warning) = folder::warning(&place) else {
+        return Ok(());
+    };
+    let store = folder::Accepted::default_store();
+    if let Place::Loose(d) = &place {
+        // Your own config only: a folder can't silence the warning about
+        // itself.
+        let own = config::Sources {
+            project: false,
+            ..config::Sources::from_env()
+        };
+        let off = config::load_from(cwd, &own)
+            .ok()
+            .and_then(|l| l.config.repo_warning)
+            == Some(false);
+        if off || store.has(d) {
+            return Ok(());
+        }
+    }
+    let tty = if std::io::stderr().is_terminal() {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/tty")
+            .ok()
+    } else {
+        None
+    };
+    let Some(mut tty) = tty else {
+        if let Place::Broad(_) = place {
+            return Err(anyhow!(
+                "{warning}\nNot starting here with no terminal to confirm it. \
+                 Start in a project folder, or pass --any-folder."
+            ));
+        }
+        eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+        return Ok(());
+    };
+    let _ = write!(
+        tty,
+        "\x1b[33mwarning:\x1b[0m {warning}\nStart here anyway? [y/N] "
+    );
+    let _ = tty.flush();
+    let mut line = Vec::new();
+    let mut buf = [0u8; 1];
+    while let Ok(1) = tty.read(&mut buf) {
+        if buf[0] == b'\n' {
+            break;
+        }
+        line.push(buf[0]);
+    }
+    let answer = String::from_utf8_lossy(&line).trim().to_ascii_lowercase();
+    if answer != "y" && answer != "yes" {
+        return Err(anyhow!(
+            "not started. Start in a project folder, or pass --any-folder."
+        ));
+    }
+    if let Place::Loose(d) = &place {
+        match store.add(d) {
+            Ok(()) => {
+                let _ = writeln!(tty, "Remembered: this folder won't be asked about again.");
+            }
+            Err(e) => {
+                let _ = writeln!(tty, "could not remember the answer ({e:#})");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ask about trusting `cwd`'s project config when it needs an answer and

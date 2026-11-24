@@ -282,7 +282,9 @@ async fn headless(
         "your final answer is the response (ignore reply_to",
     );
     let mut cmd = tokio::process::Command::new(exe);
-    cmd.args(["run", "--session", session])
+    // The session started in this folder with someone there to confirm
+    // it; nobody is now, so the folder warning doesn't ask again.
+    cmd.args(["run", "--any-folder", "--session", session])
         .current_dir(&dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::inherit())
