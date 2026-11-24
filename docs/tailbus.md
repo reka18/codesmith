@@ -70,7 +70,9 @@ reachable with `--offline run` until you unshare it.
 ## A headless agent
 
 `codesmith run` takes the message on stdin and prints its answer, which is
-all a bridge needs. These options make it a good headless agent:
+all a bridge needs. These options make it a good headless agent. `--effort`,
+`--tools`, `--no-tools`, `--no-mcp` and `--usage-log` are new after 0.4.1:
+check yours with `codesmith --version` and `codesmith run --help`.
 
 | Bridge setting | CodeSmith |
 |---|---|
@@ -128,3 +130,49 @@ bridge home's `codesmith.json` the rules the agent needs (`{"permissions":
 The bridge's `home` is CodeSmith's home for these runs: its config, keys and
 sessions are the bridge's, not yours. A narrowed run (`--tools` or
 `--no-tools`) never joins your [local bus](bus.md).
+
+### Signing in, the model and the effort
+
+A run under a bridge sees none of your own sign-ins: only `HOME`, `PATH`,
+`TMPDIR` and what the bridge's table sets. Give it a provider one of these
+ways:
+
+- **A key in `secrets`** (best): `FIREWORKS_API_KEY = "/Users/you/.secrets/fireworks"`
+  reads the key from that file (yours, `chmod 600`) for each run and passes
+  it as the provider's usual variable (`FIREWORKS_API_KEY`,
+  `ANTHROPIC_API_KEY`, `MOONSHOT_API_KEY`, …). A new key needs no restart.
+- **A key saved in the bridge's home**, once:
+  `HOME=/Users/you/agent-home/home codesmith auth login fireworks`. It goes
+  in that home's `auth.json`, apart from yours.
+- **Claude Code** (`claude-agent`): save a `claude setup-token` token in the
+  bridge's home the same way (`codesmith auth login claude-agent`), and put
+  `claude` on the bridge's `path`.
+
+The model is `-m {MODEL}`: the bridge's `model`, or one a request picks from
+`options.models` (anything else is refused before the run starts). Without
+one, it's `"model"` in the bridge home's `codesmith.json`. The effort is
+`--effort {EFFORT}` from `options.efforts`, or fixed as the model's variant
+(`provider/model#high`). A level the model doesn't have is refused before
+any call; `codesmith debug model PROVIDER/MODEL` lists its levels.
+
+### Trying it by hand
+
+Run what the bridge will run, as it will run it, before installing the
+bridge:
+
+```sh
+mkdir -p /tmp/bridge-home
+# Read the key before HOME changes: on the same line, `~` would already be
+# the new HOME.
+KEY=$(cat /Users/you/.secrets/fireworks)
+echo "say hi" | HOME=/tmp/bridge-home FIREWORKS_API_KEY="$KEY" \
+  codesmith run -m fireworks/accounts/fireworks/models/kimi-k3p1-pro --effort high
+```
+
+With a CodeSmith from before `--effort`, put the effort in the model
+instead, quoted so the shell leaves the `#` alone:
+`-m 'fireworks/accounts/fireworks/models/kimi-k3p1-pro#high'`.
+
+It should print the model's answer and nothing else on stdout. An error
+about a missing key means the bridge needs one of the sign-ins above; an
+unknown model or effort is reported before anything is sent.

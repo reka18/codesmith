@@ -67,7 +67,7 @@ codesmith run --format json "list the TODOs" | jq .
 | `--title TEXT` | Title for a new session (otherwise one is generated). |
 | `--archived` | Archive the session before its prompt runs, so it stays out of session lists even if the run fails or is stopped (scripted or CI runs). |
 | `-w, --worktree[=NAME]` | Run in a new git worktree (a name needs the `=`). |
-| `--effort LEVEL` | Reasoning effort: one of the model's levels (see `/effort`), or `default`. A level the model doesn't have is refused before anything is sent. |
+| `--effort LEVEL` | (New after 0.4.1, as are the four below.) Reasoning effort: one of the model's levels (see `/effort`), or `default`. A level the model doesn't have is refused before anything is sent. |
 | `--tools LIST` | Offer only these built-in tools (`read,grep`; `bash` and `task` are accepted for `shell` and `subagent`). Every other tool is denied, MCP tools, plugin tools and automations included, and no configured rule can allow it again. |
 | `--no-tools` | Offer no tools at all. |
 | `--no-mcp` | Connect no MCP servers. |
