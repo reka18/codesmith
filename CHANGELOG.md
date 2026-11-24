@@ -3,6 +3,16 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **`codesmith run` works as a headless agent for other programs.** New
+  flags: `--effort LEVEL`; `--tools LIST` and `--no-tools`, which offer only
+  the named built-in tools and deny every other one, MCP and plugin tools
+  included, past any configured rule; `--no-mcp`; and `--usage-log PATH`,
+  one JSON line per model step and tool call while the run goes. The
+  message can come on stdin alone, as before. These are what a tailbus
+  bridge needs to run CodeSmith the way it runs pi or Claude Code.
+
 ## 0.4.1 — 2026-11-23
 
 - **Fixed: `/login`'s *Open the API key page* for Fireworks opened a page

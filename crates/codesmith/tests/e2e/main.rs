@@ -30,6 +30,9 @@
 //! - `pty`: `codesmith serve` terminals over HTTP and WebSockets.
 //! - `mcp`: stdio MCP servers with and without Code Mode, MCP prompts.
 //! - `automation`: `automation add`/`run-due`/`log`.
+//! - `run_bridge`: `run` as a headless agent for a bridge: the prompt on
+//!   stdin alone, `--effort`, `--tools`, `--no-tools`, `--no-mcp`,
+//!   `--usage-log`.
 //! - `worktree`: `run -w`.
 //! - `tui`: the interactive UI in a pseudo-terminal.
 //! - `catalog`: the models.dev catalog: listing, resolution, background
@@ -50,6 +53,7 @@ mod limits;
 mod mcp;
 mod oc_cli;
 mod pty;
+mod run_bridge;
 mod run_cli;
 mod serve;
 mod swap;

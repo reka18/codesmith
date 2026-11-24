@@ -10,6 +10,7 @@ pub mod image_generate;
 pub mod input_repair;
 pub mod input_schema;
 mod lsp;
+pub mod narrow;
 pub mod patch;
 pub(crate) mod read;
 pub mod shell;
