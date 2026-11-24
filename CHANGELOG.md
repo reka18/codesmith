@@ -5,6 +5,22 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **The local bus: sessions on one machine work together.** Every
+  CodeSmith session you have open joins a bus that only you can reach: no
+  network listener, nothing hosted. A session's model can list the others
+  (`bus_peers`), send one a request (`bus_send`), and wait for the answer
+  (`bus_wait`). A request starts a turn in the receiving session, under that
+  session's own permission rules; a prompt it raises says who asked and
+  offers allow once or allow for this session, never "always". `/bus` shows
+  and names the session, `codesmith bus peers` and `inbox` look from the
+  shell. A small broker starts with the first session and exits a minute
+  after the last. See `docs/bus.md`.
+- **tailbus can reach a CodeSmith session you have open.** `/bus share
+  reviewer`, plus a tailbus bridge that runs `codesmith bus relay --to
+  reviewer`, lets a Claude Code session (or any tailbus agent) send that
+  session work and get its answer back. With `--offline run`, a closed
+  session is continued headless. See `docs/tailbus.md`.
+
 - **`codesmith run` works as a headless agent for other programs.** New
   flags: `--effort LEVEL`; `--tools LIST` and `--no-tools`, which offer only
   the named built-in tools and deny every other one, MCP and plugin tools

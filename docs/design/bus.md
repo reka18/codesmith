@@ -1,6 +1,8 @@
 # Design: the local bus
 
-Status: **draft for approval.** No code until this is signed off.
+Status: **approved and built** (2026-11-24). The user guide is
+[docs/bus.md](../bus.md); reaching sessions from tailbus is
+[docs/tailbus.md](../tailbus.md).
 
 The local bus lets CodeSmith sessions on one machine find each other and
 exchange messages: one session asks another to do something, the other
@@ -27,6 +29,16 @@ These are settled; the rest of this document follows from them.
    that session.
 5. **This machine only.** There is no network listener. Talking to other
    machines stays tailbus's job.
+6. **tailbus reaches a session you have open through a relay.** A tailbus
+   bridge runs `codesmith bus relay --to NAME`, which hands the message to
+   the session shared as `NAME` (`/bus share NAME`) and prints its answer.
+   CodeSmith never speaks tailbus's protocol. Only shared sessions can be
+   reached. When the shared session isn't running, the relay refuses, or
+   with `--offline run` continues the session in a headless run. This
+   replaces the "tailbus connector" considered earlier.
+7. **`codesmith run` is a good headless agent for a bridge**: the message
+   on stdin alone, `--effort`, `--tools` / `--no-tools`, `--no-mcp`,
+   `--usage-log`, and `CODESMITH_DB` for a session store per sender.
 
 ## How it differs from tailbus
 
@@ -208,6 +220,46 @@ them; their parent session talks for them.
 
 `codesmith bus peers` and `codesmith bus inbox [SESSION]` print the same
 information on the command line. They only read; there is no send command.
+
+## The relay
+
+- The relay finds the bus by the user's id, never by `$HOME` or `$TMPDIR`,
+  which a bridge sets to its own. When it has to start the broker, it does
+  so in the user's home (from the user database; `CODESMITH_RELAY_HOME` in
+  tests), and the broker reuses the mailbox the last broker recorded in the
+  bus directory (`mailbox.path`), so a relay never opens a second mailbox.
+- A share records where the sharing process keeps its config, keys and
+  sessions (`HOME`, `XDG_*_HOME`, `CODESMITH_DB`; absolute paths only).
+  `--offline run` applies exactly those, so the headless run continues the
+  same session with the same keys, never the bridge's.
+- `--id {ID}` makes tailbus's at-least-once delivery safe: a repeat of a
+  carried message gets the first one's answer (or waits for it) instead of a
+  second turn.
+- Each relayed request comes from a fresh relay member with its own id, and
+  only a relay may carry one; a relay can't send requests of its own or
+  share anything.
+
+## Where the build differs from the plan
+
+- **Who joins.** The interactive UI (as the tab on screen) and `codesmith
+  run` (when a broker already runs; it takes replies, not requests, and
+  never starts a broker, since under a bridge its folders aren't the
+  user's). A narrowed run (`--tools`, `--no-tools`) stays off the bus.
+  Sessions under `serve` and ACP, and automation runs, don't join yet.
+- **Authentication.** The token is checked on a connection's first line;
+  every later line rides on that authenticated, uid-checked connection.
+- **The `explore` agent** is a subagent, and subagents get no bus tools, so
+  only `plan` has the look-only set.
+- **An unanswered request** is answered with the turn's final text (or its
+  error, or "stopped by its user" after an interrupt), so a sender never
+  waits forever.
+- **After an interrupt** the waiting messages hold until `/bus resume`, so
+  the user has the session back.
+- **Order.** Messages are kept and delivered in the order they were
+  accepted (SQLite row order); ids made in the same millisecond don't sort
+  in time order, which the property test caught.
+- **Untitled sessions** are called `session` until they get a title, then
+  take a name from it; a name chosen with `/bus name` stays.
 
 ## Out of scope
 
