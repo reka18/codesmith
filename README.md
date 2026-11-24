@@ -4,12 +4,14 @@
 
 # CodeSmith
 
-A terminal coding agent, written in Rust. CodeSmith is a port of
-[OpenCode](https://github.com/anomalyco/opencode)'s terminal agent, and aims
-to match its features.
+A terminal coding agent, written in Rust, built to be safe to hand your
+machine to.
 
 - **Fully local.** No hosted services, no accounts, no telemetry. Sessions,
   keys and logs stay on your machine.
+- **Careful by default.** Every shell command is checked, secret files
+  ask, your keys are kept from the commands it runs, and a repository's
+  config can't use your secrets until you trust it. See [Safety](#safety).
 - **Any model.** Use Anthropic, OpenAI, Gemini or another hosted provider,
   or a model on your own hardware through Ollama, LM Studio, llama.cpp,
   vLLM, oMLX or any OpenAI-compatible server. Reasoning effort, thinking
@@ -19,15 +21,12 @@ to match its features.
   `codesmith run` for one-shot use, ACP for editors such as Zed, and a local
   HTTP API.
 
-> **Status: early.** CodeSmith covers OpenCode's terminal agent feature set,
-> and is pinned to OpenCode's behaviour by ported tests and replays of its
-> recorded provider traffic. It is young, though, so expect rough edges.
+> **Status: early.** CodeSmith is young, so expect rough edges.
 
-## Why port?
+## Why CodeSmith?
 
-[OpenCode](https://github.com/anomalyco/opencode) is an excellent terminal
-agent, but it runs on Node. Re-implementing its agent in Rust buys a few
-things that matter for a tool you live in all day and hand to other people:
+A coding agent is a tool you live in all day and hand to other people.
+CodeSmith is built for that:
 
 - **One binary, no runtime.** Install a single signed, notarized executable —
   no Node, no `npm`, no version drift. The Linux builds are static musl, so
@@ -36,16 +35,12 @@ things that matter for a tool you live in all day and hand to other people:
   and CPU, with no garbage-collection pauses, and keeps working without a
   package ecosystem shifting under it.
 - **Safety where an agent touches your machine.** Permissions, secret-file
-  guards and the shell/tool boundary are enforced by a type-checked core with
-  an explicit, layered policy model — a security and operability layer that
-  goes beyond the original.
-- **Behaviour you can trust.** Parity isn't a claim: CodeSmith is pinned to
-  OpenCode by ported tests and by replaying OpenCode's own recorded provider
-  traffic, so each port is checked, not guessed.
-
-It is not a rewrite for its own sake, and not a fork of OpenCode's source: it
-is an independent implementation that aims to match OpenCode's terminal agent,
-then add the operability a local, self-hosted tool needs.
+  guards, credential-free child environments and project trust are enforced
+  by a type-checked core with an explicit, layered policy model; see
+  [Safety](#safety).
+- **Behaviour you can trust.** Providers are tested against recorded real
+  traffic, and features ship with regression, attack-style, edge and
+  stress tests.
 
 ## Install
 
@@ -109,7 +104,7 @@ git diff | codesmith run "review this change"
 
 - **[Interactive UI](docs/interactive-ui.md)**: Markdown transcript with
   diffs, model, agent and session pickers, `@` file mentions, image and PDF
-  attachments, and OpenCode's leader keys.
+  attachments, and leader-key shortcuts.
 - **[Tools](docs/tools.md)**: read, write, edit, glob, grep, shell (with
   background commands), web fetch, self-hosted web search, todos, questions,
   and native image and PDF input.
@@ -132,7 +127,7 @@ git diff | codesmith run "review this change"
 - **[Automations](docs/automations.md)**: prompts or programs on a schedule
   or on MCP events, with unattended runs locked down by default.
 - **[Language servers and formatters](docs/language-servers-and-formatters.md)**:
-  OpenCode's built-in lists, off until you turn them on.
+  built-in lists for common languages, off until you turn them on.
 - **[Editors (ACP)](docs/editors-acp.md)** and a
   **[local HTTP server](docs/local-server.md)** that requires a token.
 - **[Plugins](docs/plugins.md)**: native Rust plugins compiled into your own
@@ -144,31 +139,81 @@ The full guide is in [docs/](docs/README.md), with
 [configuration](docs/configuration.md), [CLI](docs/cli.md) and
 [troubleshooting](docs/troubleshooting.md) references.
 
-## Project config is trusted
+## Safety
 
-> **Read a repository's CodeSmith config before you run CodeSmith in it.**
-> As in OpenCode, a `codesmith.json` or `.codesmith/` folder inside a
-> repository is applied as if you had written it. It can start MCP servers
-> (which run programs), choose the shell, turn on the repository's own
-> formatters and language servers, point a provider at any URL and send it
-> values from `{env:}` or `{file:}`, and add permission rules that come after
-> your global ones, and so override them. In a repository you don't trust,
-> read its `codesmith.json[c]` and `.codesmith/` first, or run with
-> `CODESMITH_DISABLE_PROJECT_CONFIG=1`.
+A coding agent runs commands and edits files as you. CodeSmith's job is to
+make sure you see what it does before it matters, and that nothing it
+reads or runs gets your secrets without you knowing. Each of these is
+enforced in the core and covered by tests, including attack-style ones.
+
+- **Every shell command is checked, not just the first.** A line like
+  `git status && rm -rf build` is split into each command it would run,
+  including those inside `$(…)`, pipelines, loops, `sudo`/`env`/`xargs`
+  wrappers, `sh -c '…'` strings and commands handed to `git`, `ssh` or
+  `awk`. Redirects are checked as writes. A line the scanner can't read
+  runs only as far as your rules allow commands in general.
+  [More](docs/permissions.md#shell-commands)
+- **Secret files ask, whatever else allows.** Reading `.env` files,
+  `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`, cloud and registry logins,
+  keychain dumps and CodeSmith's own saved keys asks every time. A blanket
+  allow or an "always" answer doesn't lift it; only a rule naming that path
+  does. Symlinks and `..` are followed first.
+  [More](docs/permissions.md#secret-files)
+- **Commands don't inherit your keys.** The shell, MCP servers, language
+  servers and formatters get your environment with API keys, tokens and
+  passwords removed. [More](docs/configuration.md#what-commands-see-of-your-environment)
+- **A repository can't quietly use your secrets.** If a project's
+  `codesmith.json` asks to read an environment variable or a file, send
+  requests to its own URL, or run a program, CodeSmith asks you first,
+  once per project. Until you trust it, those parts are ignored.
+  [More](docs/configuration.md#trusting-a-projects-config)
+- **The project is a boundary.** Reading, writing or `cd`-ing outside the
+  repository asks first. Starting outside any repository warns you, and
+  your home folder or `/` asks every time (and is refused when nobody is
+  at a terminal to confirm). [More](docs/cli.md#starting-outside-a-repository)
+- **Prompts are hard to fool.** Enter rejects, so a stray key never
+  approves. Hidden control characters and padding are shown, not
+  rendered. A request from another session says who sent it, and can't
+  be saved as "always".
+  [More](docs/permissions.md#answering-a-request)
+- **Unattended runs are locked down.** Automations, and `codesmith run`
+  with no terminal, refuse anything that would ask. Automations can't use
+  the shell, edit files, fetch URLs or call MCP tools unless you opt them
+  back in. [More](docs/permissions.md#unattended-runs)
+- **Undo for every turn.** File changes are snapshotted per turn, so
+  `undo` puts them back. [More](docs/sessions.md)
+- **Nothing leaves your machine but the model calls you set up.** No
+  accounts, no telemetry, no update checks unless you opt in. Keys are
+  stored readable only by you. The local server and the
+  [local bus](docs/bus.md) listen on loopback or a private socket and
+  need a token.
+- **Signed releases.** `codesmith upgrade` checks a minisign-signed
+  `SHA256SUMS` before replacing anything, and `install.sh` does too when
+  minisign is installed. The macOS binary is signed and notarized. [More](docs/cli.md#codesmith-upgrade)
+
+**What it isn't:** a sandbox. CodeSmith runs as you, with your access to
+files and the network. Its checks are a careful policy layer, not an OS
+jail; a program you let it run can do whatever you can. The shell check
+is best effort for paths a command computes at run time.
+
+> **Read a repository's rules before you trust it.** A project's
+> `codesmith.json` can add permission rules, and they come after yours, so
+> they win, trusted or not. In a repository you don't trust, read its
+> `codesmith.json[c]` and `.codesmith/` first, or run with
+> `CODESMITH_DISABLE_PROJECT_CONFIG=1`. [More](docs/permissions.md#where-rules-come-from)
 
 ## License and attribution
 
-CodeSmith is MIT licensed; see [LICENSE](LICENSE). It is derived from
-[OpenCode](https://github.com/anomalyco/opencode), © 2025 opencode, also
-under the MIT License, and that notice is kept in [LICENSE](LICENSE).
+CodeSmith is MIT licensed; see [LICENSE](LICENSE), which also carries the
+notices of the open-source work it includes.
 
 - The code review prompts adapt the code-review plugin from Anthropic's
   `claude-plugins-official` repository, under the Apache License 2.0. See
   [its notice](crates/codesmith-core/src/prompt/review/NOTICE.md) and
   [license](crates/codesmith-core/src/prompt/review/LICENSE-APACHE-2.0).
-- The provider test fixtures include HTTP recordings made by the OpenCode
-  project, vendored unchanged under its MIT License. See
+- Some provider test fixtures are third-party HTTP recordings, vendored
+  unchanged under their license. See
   [their notice](crates/codesmith-ai/tests/fixtures/opencode/NOTICE.md).
 
 Maintainers: see [RELEASING.md](RELEASING.md) and
-[provider parity](crates/codesmith-ai/PARITY.md).
+[provider tests](crates/codesmith-ai/PARITY.md).
