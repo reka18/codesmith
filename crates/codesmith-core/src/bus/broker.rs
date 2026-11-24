@@ -500,6 +500,15 @@ fn assign_name(
     if let Some(n) = st.mailbox.name_of(session).ok().flatten() {
         return Ok(n);
     }
+    Ok(derived_name(st, session, title))
+}
+
+/// A free name from `title` (or `session`), numbered until it's free.
+fn derived_name(st: &State, session: &str, title: Option<&str>) -> String {
+    let free = |n: &str| match st.mailbox.name_owner(n).ok().flatten() {
+        None => true,
+        Some(s) => s == session,
+    };
     let base = protocol::slug(title.unwrap_or("session"));
     for i in 1..1000 {
         let n = if i == 1 {
@@ -509,11 +518,11 @@ fn assign_name(
             let keep = base.len().min(protocol::MAX_NAME - suffix.len());
             format!("{}{suffix}", base[..keep].trim_end_matches('-'))
         };
-        if free(&n, false) {
-            return Ok(n);
+        if free(&n) {
+            return n;
         }
     }
-    Ok(format!("session-{}", new_id()[16..].to_ascii_lowercase()))
+    format!("session-{}", new_id()[16..].to_ascii_lowercase())
 }
 
 fn ok(rid: u64, data: Value) -> Reply {
@@ -680,9 +689,19 @@ fn update(
         let _ = st.mailbox.touch_name(&member.session, now_ms());
     }
     // The session's name: the one asked for, else its own, else from its
-    // (new) title.
+    // (new) title. A session first named before it had a title (`session`,
+    // `session-2`) takes one from the title it gets.
+    let titled = title.is_some() && title != member.title;
     let title = title.or_else(|| member.title.clone());
     let changed_session = new_session != member.session;
+    let current = st
+        .conns
+        .get(&id)
+        .map(|c| c.name.clone())
+        .unwrap_or_default();
+    let untitled_name =
+        member.name.is_none() && (current == "session" || current.starts_with("session-"));
+    let explicit = name.is_some();
     let new_name = if name.is_some() || changed_session {
         let fallback = name.is_none();
         Some(assign_name(
@@ -692,6 +711,8 @@ fn update(
             title.as_deref(),
             fallback,
         )?)
+    } else if titled && untitled_name {
+        Some(derived_name(st, &new_session, title.as_deref()))
     } else {
         None
     };
@@ -719,6 +740,11 @@ fn update(
         }
         if let Some(n) = new_name {
             c.name = n;
+        }
+        if explicit {
+            c.member.name = Some(c.name.clone());
+        } else if changed_session {
+            c.member.name = None;
         }
         accepts = c.member.accepts && !c.paused;
         current_name = c.name.clone();

@@ -182,6 +182,9 @@ fn builtin(id: &str) -> Option<Agent> {
                 .push(Rule::new("question", "*", Effect::Allow));
             a.permissions
                 .extend(crate::plugin::plan::rules(&crate::plugin::plan::directory()).own);
+            // It may look at the bus, not ask other sessions to act.
+            a.permissions
+                .push(Rule::new(crate::tool::bus::SEND, "*", Effect::Deny));
         }
         "general" => {
             a.name = "General".into();
@@ -377,6 +380,8 @@ pub fn list(config: &Config) -> Vec<String> {
 /// its action is denied.
 pub fn tools(agent: &Agent) -> Vec<Tool> {
     ALL.into_iter()
+        // A subagent's parent talks on the bus for it.
+        .filter(|t| !(t.is_bus() && agent.mode == "subagent"))
         .filter(|t| {
             let action = t.action();
             let blanket_deny = evaluate(action, "*", &agent.permissions) == Effect::Deny;
@@ -836,7 +841,11 @@ mod tests {
                 "subagent",
                 "skill",
                 "question",
-                "lsp"
+                "lsp",
+                "bus_peers",
+                "bus_send",
+                "bus_inbox",
+                "bus_wait"
             ]
         );
         // Plan writes plan files, so it has the writing tools.
@@ -856,7 +865,10 @@ mod tests {
                 "subagent",
                 "skill",
                 "question",
-                "lsp"
+                "lsp",
+                "bus_peers",
+                "bus_inbox",
+                "bus_wait"
             ]
         );
         assert_eq!(

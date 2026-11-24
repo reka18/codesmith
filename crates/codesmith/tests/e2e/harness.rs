@@ -133,6 +133,10 @@ impl Env {
             ("XDG_DATA_HOME".into(), p(&self.data)),
             ("XDG_CACHE_HOME".into(), p(&self.home.join(".cache"))),
             ("XDG_STATE_HOME".into(), p(&self.home.join(".state"))),
+            // Each world has its own local bus, gone soon after its last
+            // session.
+            ("CODESMITH_BUS_DIR".into(), p(&self.root.join("bus"))),
+            ("CODESMITH_BUS_IDLE_MS".into(), "1500".into()),
             ("CODESMITH_CONFIG_DIR".into(), p(&self.config_dir)),
             ("CODESMITH_DB".into(), p(&self.db)),
             // No test reaches models.dev; the bundled catalog serves.

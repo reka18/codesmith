@@ -1490,13 +1490,17 @@ fn authorize_unknown(
         title: title.to_string(),
     };
     let asker = ctx.gate.asker();
+    let by = ctx.gate.origin();
     let reply = tokio::task::block_in_place(|| {
         crate::plugin::active()
             .permission(&req)
-            .unwrap_or_else(|| asker.ask(&req))
+            .unwrap_or_else(|| match &by {
+                Some(b) => asker.ask_for(&req, b),
+                None => asker.ask(&req),
+            })
     });
     match reply {
-        Reply::Once | Reply::Always => Ok(()),
+        Reply::Once | Reply::Always | Reply::Session => Ok(()),
         Reply::Reject(feedback) => Err(Denied::Declined { feedback }.to_string()),
     }
 }

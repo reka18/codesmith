@@ -260,6 +260,19 @@ fn permission_keys(k: &super::keymap::Keymap) -> String {
         }
     )
 }
+/// The keys of a permission request in a turn another session started:
+/// "always" is "for this session", never saved.
+fn peer_permission_keys(k: &super::keymap::Keymap) -> String {
+    let key = |id: &str| match k.hint(id) {
+        h if h.is_empty() => String::new(),
+        h => format!("[{h}] "),
+    };
+    format!(
+        "{}allow once   [s] allow for this session   {}or Enter reject",
+        key("permission.allow.once"),
+        key("permission.reject"),
+    )
+}
 const PERMISSION_FEEDBACK: &str =
     "or type feedback for the agent and press Enter to reject with it";
 
@@ -1347,6 +1360,13 @@ pub fn status_text(app: &App, scrolled: usize) -> String {
     }
     parts.push(u);
     parts.push(app.header.session.clone());
+    if let Some(n) = &app.bus_name {
+        let mut b = format!("⇄ {}", display_safe(n));
+        if app.bus_waiting > 0 {
+            b.push_str(&format!(" ({} waiting)", app.bus_waiting));
+        }
+        parts.push(b);
+    }
     if scrolled > 0 {
         let key = app.keymap.hint("session.last");
         parts.push(if key.is_empty() {
@@ -2134,6 +2154,7 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
             diff,
             from,
             scroll,
+            by,
             ..
         } => {
             let width = MODAL_WIDTH
@@ -2147,9 +2168,17 @@ fn draw_modal(f: &mut Frame, area: Rect, m: &Modal, app: &App) {
                 scroll,
                 width as usize,
                 room,
-                &permission_keys(&app.keymap),
+                &if by.is_some() {
+                    peer_permission_keys(&app.keymap)
+                } else {
+                    permission_keys(&app.keymap)
+                },
             );
-            ("Permission required".into(), lines, p.warning)
+            let title = match by {
+                Some(b) => format!("Permission required · requested by {}", display_safe(b)),
+                None => "Permission required".into(),
+            };
+            (title, lines, p.warning)
         }
         Modal::Question { form, .. } => {
             let width = MODAL_WIDTH
@@ -2974,6 +3003,7 @@ mod tests {
             feedback: String::new(),
             diff: Some(diff::diff("old\n", "new\n", 3)),
             from: None,
+            by: None,
             scroll: Default::default(),
         });
         let s = screen(&a, 80, 24).join("\n");
@@ -2995,6 +3025,7 @@ mod tests {
             feedback: String::new(),
             diff: None,
             from: None,
+            by: None,
             scroll: Default::default(),
         }
     }

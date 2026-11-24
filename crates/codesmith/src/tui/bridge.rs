@@ -124,6 +124,10 @@ pub enum Ev {
     Background,
     /// An event of the session in this tab (see `tabs_host`).
     Tab(u64, Box<Ev>),
+    /// A message from another session on the local bus.
+    Bus(Box<codesmith_core::bus::Message>),
+    /// This UI's place on the bus changed.
+    BusStatus(codesmith_core::bus::Joined),
 }
 
 pub struct ChanSink {

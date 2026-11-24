@@ -216,6 +216,11 @@ enum Command {
         #[command(subcommand)]
         what: Debug,
     },
+    /// The local bus between CodeSmith sessions on this machine.
+    Bus {
+        #[command(subcommand)]
+        what: crate::busctl::BusCmd,
+    },
     /// Upgrade CodeSmith to the latest or a specific release.
     #[command(visible_alias = "update")]
     Upgrade {
@@ -1534,6 +1539,7 @@ async fn run(cli: Cli) -> Result<()> {
             what: Debug::Links { check },
         }) => crate::links::run(check).await,
         Some(Command::Debug { what }) => debug(cwd, what),
+        Some(Command::Bus { what }) => crate::busctl::run(cwd, what).await,
         Some(Command::Upgrade {
             target,
             method,
@@ -3103,7 +3109,7 @@ async fn generate_cmd(
     Ok(())
 }
 
-fn open_store() -> Result<Store> {
+pub(crate) fn open_store() -> Result<Store> {
     let path = store::default_path();
     Store::open(&path).with_context(|| format!("session store {}", path.display()))
 }
@@ -3730,6 +3736,33 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             open(Some(spec), db)?
         }
     };
+    // On the bus if a broker is already running (a run never starts one:
+    // under a bridge its folders aren't the user's), taking replies to
+    // what it sends but no requests, which wait for the session to open.
+    if codesmith_core::bus::enabled(&loaded.config) && narrowed.is_none() {
+        let member = codesmith_core::bus::client::session_member(
+            &session.id,
+            session.title.as_deref(),
+            &session.cwd.display().to_string(),
+            &session.agent.id,
+            &session.model_spec,
+            false,
+        );
+        let bus = codesmith_core::bus::Bus::join(
+            member,
+            codesmith_core::bus::client::Options {
+                start: false,
+                reconnect: false,
+                ..Default::default()
+            },
+        );
+        if matches!(
+            bus.ready(std::time::Duration::from_millis(500)).await,
+            codesmith_core::bus::Joined::On(_)
+        ) {
+            session.set_bus(Some(bus));
+        }
+    }
     if let Some(n) = &narrowed {
         session.tools.retain(|t| n.tools.contains(t));
     }
