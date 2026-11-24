@@ -18,11 +18,20 @@ EOF
 
 cat > "$hooks/pre-push" <<'EOF'
 #!/bin/sh
-# Run local CI before every push; a failure stops the push. With
-# CODESMITH_CI_LINUX=1, the Linux run in Docker (scripts/ci-linux.sh) too.
+# Run local CI before every push; a failure stops the push. It's skipped
+# when CI last passed for exactly the code being pushed (scripts/ci.sh
+# --unless-passed). With CODESMITH_CI_LINUX=1, the Linux run in Docker
+# (scripts/ci-linux.sh) too.
 set -e
 root="$(git rev-parse --show-toplevel)"
-"$root/scripts/ci.sh"
+trees=""
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  case "$local_sha" in
+    *[!0]*) trees="$trees $(git rev-parse "$local_sha^{tree}")" ;;
+  esac
+done
+# shellcheck disable=SC2086
+"$root/scripts/ci.sh" --unless-passed $trees
 if [ "${CODESMITH_CI_LINUX:-0}" = 1 ]; then
   "$root/scripts/ci-linux.sh"
 fi
