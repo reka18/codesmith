@@ -1627,3 +1627,272 @@ async fn an_untested_provider_is_warned_about_once() {
     assert!(text.contains("provider-verified.md"), "{shown}");
     ui.quit().await;
 }
+
+// --- The local bus ---
+
+/// A relay as a tailbus bridge runs it: the bridge's own HOME, and the
+/// user's home found by CodeSmith (`CODESMITH_RELAY_HOME` stands in for
+/// the user database here).
+fn relay_cmd(e: &Env, args: &[&str]) -> tokio::process::Command {
+    let bridge_home = e.root.join("bridge-home");
+    std::fs::create_dir_all(&bridge_home).unwrap();
+    let mut c = e.command(args);
+    c.env("HOME", &bridge_home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("CODESMITH_RELAY_HOME", &e.home)
+        .stdin(std::process::Stdio::piped());
+    c
+}
+
+async fn relay(e: &Env, args: &[&str], body: &str) -> std::process::Output {
+    let mut child = relay_cmd(e, args).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(body.as_bytes()).await.unwrap();
+    drop(stdin);
+    tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+        .await
+        .expect("the relay timed out")
+        .unwrap()
+}
+
+fn out(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+fn err(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_relay_reaches_a_shared_session_and_brings_back_its_answer() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .always("title", M::title(), Reply::text("Reviewer"))
+            .always(
+                "check",
+                M::tools().and(M::prompt("check the build")),
+                Reply::text("The build is green."),
+            ),
+    )
+    .await;
+    // The user's data lives in their own XDG folders; a relay finds them
+    // through its home, so this world keeps them under it.
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("/help for commands").await;
+    ui.send(b"/bus share reviewer\r").await;
+    ui.wait_for("Shared as reviewer").await;
+    let peers = e.run(&["bus", "peers"]).await;
+    peers.ok();
+    assert!(
+        peers.stdout.contains("shared as reviewer"),
+        "{}",
+        peers.both()
+    );
+
+    let args = [
+        "bus",
+        "relay",
+        "--to",
+        "reviewer",
+        "--from",
+        "crucible@stable-mac",
+        "--id",
+        "tb-1",
+    ];
+    let o = relay(&e, &args, "check the build").await;
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o).trim(), "The build is green.");
+    ui.wait_for("Request from crucible@stable-mac").await;
+    let asked = m.by("check");
+    assert_eq!(asked.len(), 1);
+    let text = crate::model::prompt(&asked[0]);
+    assert!(
+        text.contains("<bus-message") && text.contains("not from your user"),
+        "{text}"
+    );
+
+    // tailbus delivering the same message again: the same answer, no new turn.
+    let o = relay(&e, &args, "check the build").await;
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o).trim(), "The build is green.");
+    assert_eq!(m.by("check").len(), 1);
+
+    // Not shared any more: refused.
+    ui.send(b"/bus unshare\r").await;
+    ui.wait_for("No longer shared").await;
+    let o = relay(&e, &["bus", "relay", "--to", "reviewer"], "check the build").await;
+    assert!(!o.status.success());
+    assert!(
+        err(&o).contains("no session is shared as reviewer"),
+        "{}",
+        err(&o)
+    );
+
+    // Shared again, then closed: refused by default, or continued headless.
+    ui.send(b"/bus share reviewer\r").await;
+    ui.wait_for("Shared as reviewer").await;
+    ui.quit().await;
+    let o = relay(&e, &["bus", "relay", "--to", "reviewer"], "check the build").await;
+    assert!(!o.status.success());
+    assert!(err(&o).contains("isn't running"), "{}", err(&o));
+    let o = relay(
+        &e,
+        &["bus", "relay", "--to", "reviewer", "--offline", "run"],
+        "check the build",
+    )
+    .await;
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(out(&o).contains("The build is green."), "{}", out(&o));
+    assert_eq!(m.by("check").len(), 2);
+    // The headless run continued the same session.
+    let list = e.store().list(None, false).unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peers_permission_prompt_says_who_and_allows_for_the_session_only() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .always("title", M::title(), Reply::text("Worker"))
+            .then(
+                "shell",
+                M::tools().and(M::prompt("run the tests")).and(M::step(0)),
+                Reply::call(
+                    "shell",
+                    json!({"command": "echo ran", "description": "run"}),
+                ),
+            )
+            .always(
+                "done",
+                M::tools().and(M::prompt("run the tests")).and(M::step(1)),
+                Reply::text("Tests ran."),
+            ),
+    )
+    .await;
+    e.config(
+        &m.url,
+        json!({"permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]}),
+    );
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("/help for commands").await;
+    ui.send(b"/bus share worker\r").await;
+    ui.wait_for("Shared as worker").await;
+    let relay_task = {
+        let mut child = relay_cmd(
+            &e,
+            &[
+                "bus",
+                "relay",
+                "--to",
+                "worker",
+                "--from",
+                "crucible@stable-mac",
+            ],
+        )
+        .spawn()
+        .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"run the tests").await.unwrap();
+        drop(stdin);
+        tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(60), child.wait_with_output()).await
+        })
+    };
+    ui.wait_for("requested by crucible@stable-mac").await;
+    ui.wait_for("allow for this session").await;
+    ui.send(b"s").await;
+    let o = relay_task.await.unwrap().expect("relay timed out").unwrap();
+    assert!(o.status.success(), "{}", err(&o));
+    assert_eq!(out(&o).trim(), "Tests ran.");
+    ui.quit().await;
+    // Nothing was saved for the project.
+    let list = e.run(&["permissions", "list"]).await;
+    list.ok();
+    assert!(!list.stdout.contains("echo"), "{}", list.both());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_asks_a_ui_session_over_the_bus_and_waits_for_its_answer() {
+    let e = Env::new();
+    let m = Model::start(
+        Script::new()
+            .always("title", M::title(), Reply::text("Title"))
+            .then(
+                "send",
+                M::tools()
+                    .and(M::prompt("ask the reviewer"))
+                    .and(M::step(0)),
+                Reply::call(
+                    "bus_send",
+                    json!({"to": "reviewer", "body": "please review add.sh"}),
+                ),
+            )
+            .then(
+                "wait",
+                M::tools()
+                    .and(M::prompt("ask the reviewer"))
+                    .and(M::step(1)),
+                Reply::call("bus_wait", json!({"timeout": 30})),
+            )
+            .always(
+                "report",
+                M::tools()
+                    .and(M::prompt("ask the reviewer"))
+                    .and(M::step(2)),
+                Reply::text("The reviewer answered."),
+            )
+            .always(
+                "review",
+                M::tools().and(M::prompt("please review add.sh")),
+                Reply::text("LGTM, ship it."),
+            ),
+    )
+    .await;
+    e.config(&m.url, json!({}));
+    let Some(mut ui) = Ui::start(&e, "") else {
+        return;
+    };
+    ui.wait_for("/help for commands").await;
+    ui.send(b"/bus name reviewer\r").await;
+    ui.wait_for("now reviewer on the bus").await;
+    let o = e
+        .run(&["run", "--format", "json", "ask the reviewer"])
+        .await;
+    o.ok();
+    assert_eq!(o.text(), "The reviewer answered.");
+    ui.wait_for("LGTM, ship it.").await;
+    let reported = m.by("report");
+    let results = crate::model::results(&reported[0]);
+    assert!(results[0].contains("delivered"), "{results:?}");
+    assert!(results[1].contains("LGTM, ship it."), "{results:?}");
+    // The plan agent may look but not send.
+    let plan = Model::start(
+        Script::new()
+            .always("title", M::title(), Reply::text("T"))
+            .always(
+                "look",
+                M::tools().and(M::prompt("look around")),
+                Reply::text("ok"),
+            ),
+    )
+    .await;
+    e.config(&plan.url, json!({}));
+    let o = e
+        .run(&["run", "--agent", "plan", "--format", "json", "look around"])
+        .await;
+    o.ok();
+    let tools = crate::model::tools(&plan.by("look")[0]);
+    assert!(tools.contains(&"bus_peers".to_string()), "{tools:?}");
+    assert!(!tools.contains(&"bus_send".to_string()), "{tools:?}");
+    ui.quit().await;
+}

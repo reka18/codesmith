@@ -219,7 +219,7 @@ async fn relay(
                 "{to} isn't running: open its session ({}) in CodeSmith, or relay with --offline run",
                 r.session
             )),
-            Offline::Run => headless(&home, &r.session, &r.project, &via, &body).await,
+            Offline::Run => headless(&home, &r.env, &r.session, &r.project, &via, &body).await,
         };
     }
     let id =
@@ -251,6 +251,7 @@ async fn relay(
 /// user (their home), with the message framed as another session's.
 async fn headless(
     home: &std::path::Path,
+    env: &std::collections::BTreeMap<String, String>,
     session: &str,
     project: &str,
     via: &str,
@@ -283,15 +284,25 @@ async fn headless(
     let mut cmd = tokio::process::Command::new(exe);
     cmd.args(["run", "--session", session])
         .current_dir(&dir)
-        .env("HOME", home)
-        .env_remove("XDG_STATE_HOME")
-        .env_remove("XDG_DATA_HOME")
-        .env_remove("XDG_CONFIG_HOME")
-        .env_remove("XDG_CACHE_HOME")
-        .env_remove("CODESMITH_DB")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
+    // Where the sharing process kept its config, keys and sessions; the
+    // user's home for what it didn't set. Never the bridge's.
+    let env = bus::protocol::share_env(env);
+    for k in bus::protocol::SHARE_ENV {
+        match env.get(k) {
+            Some(v) => {
+                cmd.env(k, v);
+            }
+            None if k == "HOME" => {
+                cmd.env("HOME", home);
+            }
+            None => {
+                cmd.env_remove(k);
+            }
+        }
+    }
     let mut child = cmd.spawn().context("starting a headless run")?;
     {
         use tokio::io::AsyncWriteExt;

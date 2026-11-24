@@ -198,6 +198,11 @@ pub enum Request {
     /// Open this session to relays as `name`.
     Share {
         name: String,
+        /// Where the sharing process keeps its config, keys and sessions
+        /// ([`SHARE_ENV`]), so a relay's headless run continues the
+        /// session as it would.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        env: std::collections::BTreeMap<String, String>,
     },
     Unshare,
     /// Relay only: carry a message to the session shared as `share`. `key`
@@ -266,6 +271,35 @@ pub struct Relayed {
     pub session: String,
     pub project: String,
     pub name: String,
+    /// Where the sharing process kept its folders ([`SHARE_ENV`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// The variables a share records: where CodeSmith keeps config, keys and
+/// sessions. Only these, and only absolute paths, are kept or applied.
+pub const SHARE_ENV: [&str; 6] = [
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "CODESMITH_DB",
+];
+
+/// `env` cut to [`SHARE_ENV`] names with absolute values.
+pub fn share_env(
+    env: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    env.iter()
+        .filter(|(k, v)| {
+            SHARE_ENV.contains(&k.as_str())
+                && std::path::Path::new(v.as_str()).is_absolute()
+                && !v.contains('\0')
+                && v.len() < 4096
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// Unix milliseconds now.

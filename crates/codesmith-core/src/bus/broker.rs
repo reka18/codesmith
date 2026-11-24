@@ -61,6 +61,30 @@ impl Options {
     }
 }
 
+/// Where a broker records the mailbox it uses, in the bus directory.
+pub const MAILBOX_POINTER: &str = "mailbox.path";
+
+/// The mailbox the pointer in `dir` names: this user's own file (0600, no
+/// symlink), absolute, existing.
+pub fn mailbox_pointer(dir: &Path) -> Option<PathBuf> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(MAILBOX_POINTER))
+        .ok()?;
+    let m = f.metadata().ok()?;
+    if !m.is_file() || m.uid() != fs::euid() || m.mode() & 0o077 != 0 {
+        return None;
+    }
+    let mut s = String::new();
+    f.by_ref().take(4096).read_to_string(&mut s).ok()?;
+    let p = PathBuf::from(s.trim());
+    let pm = std::fs::symlink_metadata(&p).ok()?;
+    (p.is_absolute() && pm.is_file() && pm.uid() == fs::euid()).then_some(p)
+}
+
 /// How long a connection may take to send its first line.
 const FIRST_LINE: Duration = Duration::from_secs(5);
 
@@ -77,7 +101,13 @@ pub fn main(args: &[String]) -> ! {
         std::process::exit(2);
     };
     let _ = std::env::set_current_dir("/");
-    let code = match run(Options::new(PathBuf::from(dir))) {
+    let mut opts = Options::new(PathBuf::from(dir));
+    // The mailbox the last broker here used, so one started by a relay
+    // (with only the user's home) keeps the sessions' mailbox.
+    if let Some(p) = mailbox_pointer(&opts.dir) {
+        opts.mailbox = p;
+    }
+    let code = match run(opts) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("codesmith __busd: {e}");
@@ -178,6 +208,10 @@ pub async fn serve(opts: Options) -> io::Result<()> {
         return Ok(());
     }
     let mailbox = Mailbox::open(&opts.mailbox).map_err(|e| io::Error::other(format!("{e:#}")))?;
+    let _ = crate::paths::write_private(
+        &opts.dir.join(MAILBOX_POINTER),
+        opts.mailbox.display().to_string().as_bytes(),
+    );
     let _ = mailbox.prune(now_ms());
     let socket = opts.dir.join(super::SOCKET);
     let _ = std::fs::remove_file(&socket);
@@ -594,7 +628,7 @@ fn handle(state: &Shared, id: u64, rid: u64, req: Request) -> Reply {
         } => update(
             &mut st, id, &member, session, name, title, project, agent, model, busy,
         ),
-        Request::Share { name } => {
+        Request::Share { name, env } => {
             if member.role != Role::Session {
                 Err("only a session can be shared".into())
             } else if !valid_name(&name) {
@@ -602,7 +636,7 @@ fn handle(state: &Shared, id: u64, rid: u64, req: Request) -> Reply {
             } else {
                 match st
                     .mailbox
-                    .share(&member.session, &name, &member.project, now_ms())
+                    .share_with(&member.session, &name, &member.project, now_ms(), &env)
                 {
                     Ok(true) => Ok(json!({"shared": name})),
                     Ok(false) => Err(format!("another session is shared as {name}")),
@@ -951,6 +985,7 @@ fn relay(
         .ok()
         .flatten()
         .unwrap_or_else(|| share.to_string());
+    let env = st.mailbox.share_env(share).unwrap_or_default();
     let running = st
         .conns
         .values()
@@ -984,6 +1019,7 @@ fn relay(
                 session,
                 project,
                 name,
+                env: env.clone(),
             }));
         }
     }
@@ -994,6 +1030,7 @@ fn relay(
             session,
             project,
             name,
+            env: env.clone(),
         }));
     }
     let unhandled = st.mailbox.unhandled().map_err(|e| format!("{e:#}"))?;
@@ -1026,5 +1063,6 @@ fn relay(
         session,
         project,
         name,
+        env: env.clone(),
     }))
 }
