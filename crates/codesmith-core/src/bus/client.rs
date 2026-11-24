@@ -214,10 +214,19 @@ impl Bus {
         self.call(Request::Pause { on }).await.map(|_| ())
     }
 
+    /// Share this session as `name`, recording where this process keeps
+    /// its folders for a relay's headless run.
     pub async fn share(&self, name: &str) -> Result<(), String> {
-        self.call(Request::Share { name: name.into() })
-            .await
-            .map(|_| ())
+        let env = super::protocol::SHARE_ENV
+            .iter()
+            .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+            .collect();
+        self.call(Request::Share {
+            name: name.into(),
+            env: super::protocol::share_env(&env),
+        })
+        .await
+        .map(|_| ())
     }
 
     /// Whether the session was shared.

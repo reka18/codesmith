@@ -840,3 +840,78 @@ fn the_bus_directory_is_private_and_per_user() {
     let _ = Path::new("/");
     let _ = client::Options::default();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_broker_records_its_mailbox_for_the_next_one() {
+    let w = World::new().await;
+    assert_eq!(broker::mailbox_pointer(&w.dir), Some(w.mailbox.clone()));
+    // Not trusted when others could have written it, or it's a symlink.
+    use std::os::unix::fs::PermissionsExt;
+    let p = w.dir.join(broker::MAILBOX_POINTER);
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(broker::mailbox_pointer(&w.dir), None);
+    std::fs::remove_file(&p).unwrap();
+    std::os::unix::fs::symlink(&w.mailbox, &p).unwrap();
+    assert_eq!(broker::mailbox_pointer(&w.dir), None);
+    // Nor one naming a file that isn't there.
+    std::fs::remove_file(&p).unwrap();
+    crate::paths::write_private(&p, b"/nonexistent/mailbox.db").unwrap();
+    assert_eq!(broker::mailbox_pointer(&w.dir), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_share_records_only_absolute_folder_variables() {
+    let w = World::new().await;
+    let s = w.session("ses_s", "Reviewer", "/p").await;
+    s.share("reviewer").await.unwrap();
+    drop(s);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let r = w.relay().await;
+    let got = r.relay("reviewer", "x", "v", None).await.unwrap();
+    for (k, v) in &got.env {
+        assert!(super::protocol::SHARE_ENV.contains(&k.as_str()), "{k}");
+        assert!(Path::new(v).is_absolute(), "{k}={v}");
+    }
+    let mut raw = std::collections::BTreeMap::new();
+    raw.insert("HOME".to_string(), "/home/me".to_string());
+    raw.insert("PATH".to_string(), "/bin".to_string());
+    raw.insert("XDG_DATA_HOME".to_string(), "relative".to_string());
+    raw.insert("LD_PRELOAD".to_string(), "/evil.so".to_string());
+    let kept = super::protocol::share_env(&raw);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept["HOME"], "/home/me");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untitled_session_takes_a_name_from_its_title() {
+    let w = World::new().await;
+    let a = Bus::join(
+        session_member("ses_a", None, "/p", "build", "m", true),
+        w.opts(),
+    );
+    a.ready(T).await;
+    assert_eq!(a.name().as_deref(), Some("session"));
+    let n = a
+        .update(Change {
+            title: Some("Fix the parser".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(n, "fix-the-parser");
+    // A chosen name stays when the title changes.
+    a.update(Change {
+        name: Some("mine".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let n = a
+        .update(Change {
+            title: Some("Something else".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(n, "mine");
+}

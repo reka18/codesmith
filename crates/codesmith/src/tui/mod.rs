@@ -2872,6 +2872,7 @@ const BUILTINS: &[(&str, bool)] = &[
     ("provider", true),
     ("variant", true),
     ("effort", true),
+    ("bus", true),
     ("diff", false),
     ("editor", false),
 ];

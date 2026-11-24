@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS share (
     name TEXT PRIMARY KEY,
     session TEXT NOT NULL UNIQUE,
     project TEXT NOT NULL DEFAULT '',
-    created INTEGER NOT NULL
+    created INTEGER NOT NULL,
+    env TEXT NOT NULL DEFAULT '{}'
 );
 ";
 
@@ -306,19 +307,47 @@ impl Mailbox {
     /// Share `session` as `name`, replacing its earlier share. Refused when
     /// another session has that name shared.
     pub fn share(&self, session: &str, name: &str, project: &str, now: i64) -> Result<bool> {
+        self.share_with(session, name, project, now, &Default::default())
+    }
+
+    /// [`Mailbox::share`], recording where the sharing process keeps its
+    /// folders.
+    pub fn share_with(
+        &self,
+        session: &str,
+        name: &str,
+        project: &str,
+        now: i64,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool> {
         if let Some((other, _)) = self.shared(name)? {
             if other != session {
                 return Ok(false);
             }
         }
+        let env = serde_json::to_string(&super::protocol::share_env(env))?;
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM share WHERE session = ?1", [session])?;
         tx.execute(
-            "INSERT INTO share (name, session, project, created) VALUES (?1, ?2, ?3, ?4)",
-            params![name, session, project, now],
+            "INSERT INTO share (name, session, project, created, env) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, session, project, now, env],
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// The folders the session shared as `name` recorded.
+    pub fn share_env(&self, name: &str) -> Result<std::collections::BTreeMap<String, String>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT env FROM share WHERE name = ?1", [name], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(raw
+            .and_then(|r| serde_json::from_str(&r).ok())
+            .map(|e| super::protocol::share_env(&e))
+            .unwrap_or_default())
     }
 
     pub fn unshare(&self, session: &str) -> Result<bool> {
