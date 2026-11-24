@@ -7,6 +7,7 @@ pub mod attachment;
 pub mod auth;
 pub mod automation;
 pub mod blob;
+pub mod bus;
 pub mod catalog;
 pub mod child_env;
 pub mod codemode;
