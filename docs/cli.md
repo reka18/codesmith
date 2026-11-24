@@ -67,6 +67,17 @@ codesmith run --format json "list the TODOs" | jq .
 | `--title TEXT` | Title for a new session (otherwise one is generated). |
 | `--archived` | Archive the session before its prompt runs, so it stays out of session lists even if the run fails or is stopped (scripted or CI runs). |
 | `-w, --worktree[=NAME]` | Run in a new git worktree (a name needs the `=`). |
+| `--effort LEVEL` | Reasoning effort: one of the model's levels (see `/effort`), or `default`. A level the model doesn't have is refused before anything is sent. |
+| `--tools LIST` | Offer only these built-in tools (`read,grep`; `bash` and `task` are accepted for `shell` and `subagent`). Every other tool is denied, MCP tools, plugin tools and automations included, and no configured rule can allow it again. |
+| `--no-tools` | Offer no tools at all. |
+| `--no-mcp` | Connect no MCP servers. |
+| `--usage-log PATH` | Append a JSON line to `PATH` for each model step (`type: "step"`, with `model`, `input`, `output`, `cache_read`, `cache_write`, `reasoning` and `usd` when the provider reports a cost) and each tool call (`type: "tool"`, its `name`, and `path` for file tools), as the run goes. The file is created readable only by you, and a symlink is refused. |
+
+The message can come on stdin alone (`echo "review this" | codesmith
+run`). `CODESMITH_DB` points a run at another session database, so a
+program running CodeSmith for others, such as a [tailbus bridge](tailbus.md),
+keeps those sessions apart from yours, and `-c` continues the latest one
+there.
 
 Without `--auto`, requests that a rule marks `ask` are asked on the
 terminal. See [answering a request](permissions.md#answering-a-request). The

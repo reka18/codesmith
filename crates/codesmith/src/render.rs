@@ -12,6 +12,100 @@ pub struct Printer {
     thinking: bool,
     in_reasoning: bool,
     at_line_start: bool,
+    usage_log: Option<UsageLog>,
+}
+
+/// `codesmith run --usage-log PATH`: one JSON line per model step (its
+/// tokens and any reported cost) and per tool call, appended as they
+/// happen, so a program watching the run (a tailbus bridge's `[usage]`)
+/// can count what it used while it runs. Lines are written whole, and a
+/// failed write only stops the log, never the run.
+pub struct UsageLog {
+    file: Option<std::fs::File>,
+    model: String,
+    session: String,
+}
+
+impl UsageLog {
+    /// Open `path` for appending (created 0600), for a run of `session`
+    /// on `model`.
+    pub fn open(path: &std::path::Path, model: &str, session: &str) -> std::io::Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        Ok(UsageLog {
+            file: Some(file),
+            model: model.to_string(),
+            session: session.to_string(),
+        })
+    }
+
+    fn write(&mut self, v: Value) {
+        let Some(f) = &mut self.file else {
+            return;
+        };
+        let mut line = v.to_string();
+        line.push('\n');
+        if f.write_all(line.as_bytes())
+            .and_then(|_| f.flush())
+            .is_err()
+        {
+            self.file = None;
+        }
+    }
+
+    /// A model step's line.
+    pub fn step(&mut self, reason: &FinishReason, usage: &Usage) {
+        let v = usage_line(&self.model, &self.session, reason, usage);
+        self.write(v);
+    }
+
+    /// A tool call's line: its name and, for file tools, the path.
+    pub fn tool(&mut self, name: &str, input: &Value) {
+        let v = tool_line(&self.session, name, input);
+        self.write(v);
+    }
+}
+
+/// The usage log's line for one step.
+pub fn usage_line(model: &str, session: &str, reason: &FinishReason, u: &Usage) -> Value {
+    let mut v = json!({
+        "type": "step",
+        "session": session,
+        "model": model,
+        "reason": reason.normalized,
+        "input": u.input,
+        "output": u.output,
+        "cache_read": u.cache_read,
+        "cache_write": u.cache_write,
+        "reasoning": u.reasoning,
+        "time": chrono::Utc::now().to_rfc3339(),
+    });
+    if let Some(c) = u.cost.filter(|c| c.is_finite()) {
+        v["usd"] = json!(c);
+    }
+    v
+}
+
+/// The usage log's line for one tool call. Only the path of a file tool's
+/// input is kept, never its content or a command.
+pub fn tool_line(session: &str, name: &str, input: &Value) -> Value {
+    let mut v = json!({"type": "tool", "session": session, "name": name});
+    if let Some(p) = input
+        .get("filePath")
+        .or_else(|| input.get("path"))
+        .and_then(Value::as_str)
+    {
+        v["path"] = json!(p);
+    }
+    v
 }
 
 impl Printer {
@@ -21,7 +115,14 @@ impl Printer {
             thinking,
             in_reasoning: false,
             at_line_start: true,
+            usage_log: None,
         }
+    }
+
+    /// Also write a [`UsageLog`].
+    pub fn with_usage_log(mut self, log: UsageLog) -> Self {
+        self.usage_log = Some(log);
+        self
     }
 
     fn emit(&self, v: Value) {
@@ -177,6 +278,9 @@ impl Sink for Printer {
 
     fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
         self.end_reasoning();
+        if let Some(log) = &mut self.usage_log {
+            log.tool(name, input);
+        }
         if self.json {
             self.emit(json!({"type": "tool_call", "id": id, "name": name, "input": input}));
             return;
@@ -206,6 +310,9 @@ impl Sink for Printer {
     }
 
     fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
+        if let Some(log) = &mut self.usage_log {
+            log.step(reason, usage);
+        }
         if self.json {
             self.emit(json!({"type": "step", "reason": reason.normalized, "finish": reason, "usage": usage_json(usage)}));
         }

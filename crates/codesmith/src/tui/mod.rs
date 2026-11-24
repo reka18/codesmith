@@ -28,6 +28,11 @@ mod diff_view;
 mod dirs;
 mod editor;
 mod effort;
+
+/// The model spec `--effort LEVEL` runs `base` at, from its variants.
+pub(crate) fn effort_spec(base: &str, variants: &[String], level: &str) -> Result<String, String> {
+    effort::choose(base, &effort::levels(variants), level)
+}
 mod export_view;
 mod external;
 mod fit;

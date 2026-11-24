@@ -300,6 +300,23 @@ struct RunArgs {
     /// session lists (for scripted or CI runs).
     #[arg(long)]
     archived: bool,
+    /// Reasoning effort for the model (one of its levels, or `default`).
+    #[arg(long, value_name = "LEVEL")]
+    effort: Option<String>,
+    /// Offer only these built-in tools (comma-separated) and deny every
+    /// other tool, MCP's included.
+    #[arg(long, value_name = "LIST", conflicts_with = "no_tools")]
+    tools: Option<String>,
+    /// Offer no tools at all.
+    #[arg(long)]
+    no_tools: bool,
+    /// Connect no MCP servers.
+    #[arg(long)]
+    no_mcp: bool,
+    /// Append one JSON line per model step (tokens, cost) and tool call
+    /// to this file while the run goes.
+    #[arg(long, value_name = "PATH")]
+    usage_log: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -794,6 +811,11 @@ impl RunArgs {
             title: None,
             worktree: None,
             archived: false,
+            effort: None,
+            tools: None,
+            no_tools: false,
+            no_mcp: false,
+            usage_log: None,
         }
     }
 }
@@ -3604,7 +3626,17 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         Some(name) => enter_worktree(&cwd, name)?,
         None => cwd,
     };
-    let loaded = config::load(&cwd)?;
+    let mut loaded = config::load(&cwd)?;
+    // `--tools` / `--no-tools`: deny everything else, after every rule.
+    let narrowed = match (&args.tools, args.no_tools) {
+        (Some(list), _) => Some(codesmith_core::tool::narrow::parse(list).map_err(|e| anyhow!(e))?),
+        (None, true) => Some(Vec::new()),
+        (None, false) => None,
+    }
+    .map(|allowed| codesmith_core::tool::narrow::narrow(&loaded.config, &allowed));
+    if let Some(n) = &narrowed {
+        loaded.config.overrides.extend(n.rules.iter().cloned());
+    }
     let mut media = Vec::new();
     for f in &media_files {
         let name = f.display().to_string();
@@ -3617,7 +3649,11 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     let (mut agent_arg, mut model_arg) = (args.agent, args.model);
     let mut native: Option<(String, String)> = None;
     let mut custom: Option<(command::Command, String)> = None;
-    let mcp = connect_mcp(&loaded, args.format != Format::Json).await;
+    let mcp = if args.no_mcp {
+        codesmith_core::mcp::Mcp::empty()
+    } else {
+        connect_mcp(&loaded, args.format != Format::Json).await
+    };
     let all = if message.trim_start().starts_with('/') {
         all_commands_with(&cwd, &loaded, &mcp)
     } else {
@@ -3659,24 +3695,51 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     } else {
         Arc::new(Terminal)
     };
-    let mut session = Session::new(
-        &loaded,
-        cwd,
-        Options {
-            agent: agent_arg,
-            model: model_arg,
-            resume,
-            title: args.title,
-            parent: None,
-            id: None,
-            questioner,
-            mcp: Some(mcp),
-        },
-        asker,
-        db,
-    )?;
+    let open = |model: Option<String>, db: Option<store::Store>| {
+        Session::new(
+            &loaded,
+            cwd.clone(),
+            Options {
+                agent: agent_arg.clone(),
+                model,
+                resume: resume.clone(),
+                title: args.title.clone(),
+                parent: None,
+                id: None,
+                questioner: questioner.clone(),
+                mcp: Some(mcp.clone()),
+            },
+            asker.clone(),
+            db,
+        )
+    };
+    let mut session = match &args.effort {
+        None => open(model_arg, db)?,
+        Some(level) => {
+            // The model the session would use, at `level`: chosen first
+            // without a store, so nothing is opened twice.
+            let probe = open(model_arg, None)?;
+            let (base, _) = config::split_variant(&probe.model_spec);
+            let variants = loaded
+                .config
+                .resolve_model(base)
+                .map(|m| m.variants)
+                .unwrap_or_default();
+            let spec = crate::tui::effort_spec(base, &variants, level).map_err(|e| anyhow!(e))?;
+            drop(probe);
+            open(Some(spec), db)?
+        }
+    };
+    if let Some(n) = &narrowed {
+        session.tools.retain(|t| n.tools.contains(t));
+    }
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
+    if let Some(path) = &args.usage_log {
+        let log = render::UsageLog::open(path, &session.model_spec, &session.id)
+            .with_context(|| format!("opening the usage log {}", path.display()))?;
+        sink = sink.with_usage_log(log);
+    }
     if !json {
         eprintln!(
             "\x1b[2m> {} · {}/{} · {}\x1b[0m",
