@@ -301,7 +301,7 @@ extern "C" {
     fn setsid() -> i32;
 }
 
-async fn finish(child: tokio::process::Child) -> Out {
+pub async fn finish(child: tokio::process::Child) -> Out {
     let out = tokio::time::timeout(TIMEOUT, child.wait_with_output())
         .await
         .expect("codesmith timed out")

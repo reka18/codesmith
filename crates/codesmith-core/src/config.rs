@@ -110,6 +110,11 @@ pub struct Config {
     /// `false` keeps this process's sessions off the local bus
     /// ([`crate::bus`]).
     pub bus: Option<bool>,
+    /// `false` stops the warning about starting a session outside any
+    /// repository (see [`crate::folder`]). Read from your own config
+    /// only, never a project's; the home folder and `/` are asked about
+    /// regardless.
+    pub repo_warning: Option<bool>,
     /// Unattended automation runs: `permissions` are rules applied after
     /// the default unattended denies (shell, edit, webfetch,
     /// external_directory), to opt back in.

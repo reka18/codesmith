@@ -29,6 +29,20 @@ All notable changes to CodeSmith are listed here. Versions follow
   message can come on stdin alone, as before. These are what a tailbus
   bridge needs to run CodeSmith the way it runs pi or Claude Code.
 
+- **Starting outside a repository warns first.** The UI and `codesmith
+  run` ask `Start here anyway?` at a terminal when the folder isn't in a
+  repository, and remember a yes for that folder. Your home folder and `/`
+  are asked about every time, and with no terminal (a tailbus bridge, a
+  script) they're refused instead of starting. `--any-folder` skips the
+  question; `"repo_warning": false` in your own config quiets it for other
+  folders.
+- **Fixed: a run with its own `HOME` could snapshot your whole home
+  folder.** Undo never snapshots the home folder, but CodeSmith found it
+  from `$HOME`, so a run started in your home with `HOME` set elsewhere (as
+  a tailbus bridge does) copied all of it into a snapshot first, and seemed
+  to hang. The home folder is now also your account's, from the user
+  database.
+
 ## 0.4.1 — 2026-11-23
 
 - **Fixed: `/login`'s *Open the API key page* for Fireworks opened a page

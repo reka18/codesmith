@@ -128,7 +128,14 @@ bridge home's `codesmith.json` the rules the agent needs (`{"permissions":
 [...]}`), or run with `--auto` to approve what no rule denies.
 
 The bridge's `home` is CodeSmith's home for these runs: its config, keys and
-sessions are the bridge's, not yours. A narrowed run (`--tools` or
+sessions are the bridge's, not yours.
+
+Give the bridge a `working_directory` that's a repository, or a folder of
+its own. A run in your home folder or `/` is refused (nobody is there to
+confirm it, and undo would have to snapshot all of it), even though the
+bridge's `HOME` is another folder. A run in a folder outside any repository
+prints a warning on stderr and goes ahead; `"repo_warning": false` in the
+bridge home's `codesmith.json` quiets it. A narrowed run (`--tools` or
 `--no-tools`) never joins your [local bus](bus.md).
 
 ### Signing in, the model and the effort
@@ -162,6 +169,8 @@ bridge:
 
 ```sh
 mkdir -p /tmp/bridge-home
+# Not in your home folder: a run there with no terminal is refused.
+cd /tmp/bridge-home
 # Read the key before HOME changes: on the same line, `~` would already be
 # the new HOME.
 KEY=$(cat /Users/you/.secrets/fireworks)

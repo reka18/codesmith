@@ -36,7 +36,30 @@ Opens the [interactive UI](interactive-ui.md).
 | `--prompt TEXT` | Send this prompt as soon as the UI opens. |
 | `-w, --worktree[=NAME]` | Start in a new git [worktree](sessions.md#worktrees). |
 | `--auto` | Approve every permission request that no rule denies. |
+| `--any-folder` | Start outside a repository without asking (see [below](#starting-outside-a-repository)). Accepted by `run` too. |
 | `--print-logs` | Accepted on every command, but has no effect yet. |
+
+### Starting outside a repository
+
+A session's project is the repository above the folder it starts in, so
+starting in a subfolder of a repository is fine. Outside any repository
+the folder itself is the project: the model sees everything under it, and
+undo snapshots all of it. So the UI and `codesmith run` warn first:
+
+| Where | At a terminal | With no terminal (a bridge, a script) |
+|---|---|---|
+| A repository, or a folder in one | Nothing. | Nothing. |
+| Any other folder | Asks `Start here anyway? [y/N]`. A yes is remembered for that folder. | A warning on stderr, then it runs. |
+| Your home folder, or `/` | Asks every time, and never snapshots it. | Refused, before anything is sent. |
+
+`codesmith run` asks on the terminal even when its message is piped in.
+"Your home folder" is both `$HOME` and your account's home, so a tailbus
+bridge that sets its own `HOME` and starts in yours is still refused.
+
+`--any-folder` (or `CODESMITH_ANY_FOLDER=1`) skips the question and the
+refusal. `"repo_warning": false` in your own config turns off the warning
+for other folders; a folder's own `codesmith.json` can't. Your answers are
+in `folders.json` in the state folder.
 
 ## `codesmith run`
 

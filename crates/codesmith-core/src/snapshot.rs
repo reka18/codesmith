@@ -41,8 +41,9 @@ impl Snapshots {
     /// Snapshots for a project root, stored under `base`. `None` for roots too
     /// broad to snapshot (the home directory or `/`).
     pub fn new(root: &Path, base: &Path) -> Option<Snapshots> {
-        let home = dirs::home_dir();
-        if root.parent().is_none() || Some(root) == home.as_deref() {
+        // `$HOME` and the account's home: a bridge's `HOME` doesn't make
+        // the real home folder snapshottable.
+        if crate::folder::is_broad(root) {
             return None;
         }
         Some(Snapshots {
@@ -427,6 +428,10 @@ mod tests {
         let base = Path::new("/tmp/x");
         assert!(Snapshots::new(Path::new("/"), base).is_none());
         if let Some(h) = dirs::home_dir() {
+            assert!(Snapshots::new(&h, base).is_none());
+        }
+        // The account's home, whatever `$HOME` says (a bridge sets its own).
+        if let Some(h) = crate::paths::account_home() {
             assert!(Snapshots::new(&h, base).is_none());
         }
         assert_eq!(stable_hash("/a"), stable_hash("/a"));

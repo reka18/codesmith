@@ -206,6 +206,7 @@ In a project's files both are empty until you
 | `worktree` | | `{"directory", "start"}`. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
+| `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Read from your own config only, never a project's; your home folder and `/` are asked about regardless. |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `update` | `"disable"` | Global config only: `"notify"` checks for a new release once a day and says so after the UI exits. See [update checks](cli.md#update-checks). |
@@ -2012,6 +2013,7 @@ Idle cost is negligible: on a 100,000-file tree, see
 | `CODESMITH_DISABLE_CLAUDE_CODE` | Don't read `CLAUDE.md` or `.claude/` skills and commands. |
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |
+| `CODESMITH_ANY_FOLDER` | `1` is `--any-folder`: start outside a repository, even in the home folder or `/`, without asking. |
 | `CODESMITH_BUS` | `0` keeps this process off the [local bus](bus.md). |
 | `CODESMITH_BUS_DIR` | The local bus's folder (an absolute path), instead of `codesmith-bus-<uid>` in the runtime folder. |
 | `CODESMITH_BUS_IDLE_MS` | How long an idle bus broker waits before it exits (default 60000). |

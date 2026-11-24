@@ -113,6 +113,8 @@ pub struct Opts {
     pub model: Option<String>,
     pub prompt: Option<String>,
     pub auto: bool,
+    /// `--any-folder`: start outside a repository without asking.
+    pub any_folder: bool,
 }
 
 struct Runner {
@@ -2514,7 +2516,11 @@ async fn run_in(
         model: opts.model.clone(),
         prompt: opts.prompt.clone(),
         auto: opts.auto,
+        any_folder: opts.any_folder,
     };
+    // Before the UI takes the terminal: a folder outside any repository
+    // is asked about.
+    crate::cli::folder_check(&cwd, opts.any_folder)?;
     // Started again in another folder: its project may need an answer.
     crate::cli::trust_prompt(&cwd)?;
     let loaded = config::load(&cwd)?;

@@ -18,6 +18,7 @@ pub mod config;
 #[cfg(unix)]
 pub mod daemon;
 pub mod export;
+pub mod folder;
 pub mod fork;
 pub mod form;
 pub mod format;
