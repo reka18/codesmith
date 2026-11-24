@@ -86,7 +86,7 @@ const MAX_SOCKET_PATH: usize = 100;
 /// The user's own runtime directories, best first: `$XDG_RUNTIME_DIR`,
 /// and on macOS the per-user temporary directory
 /// (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, else `$TMPDIR`).
-fn user_bases() -> Vec<PathBuf> {
+pub(crate) fn user_bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         out.push(PathBuf::from(x));
@@ -104,7 +104,7 @@ fn user_bases() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn darwin_user_temp_dir() -> Option<PathBuf> {
+pub(crate) fn darwin_user_temp_dir() -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     let mut buf = vec![0u8; libc::PATH_MAX as usize];
     // SAFETY: `buf` is valid for writes of its length.
@@ -125,7 +125,7 @@ fn darwin_user_temp_dir() -> Option<PathBuf> {
 /// The first of `candidates` that is this user's alone (an absolute, real
 /// directory, on its resolved path owned by this user and writable by no
 /// one else) and short enough for a socket path in it; else `/tmp`.
-fn pick_base(candidates: &[PathBuf]) -> PathBuf {
+pub(crate) fn pick_base(candidates: &[PathBuf]) -> PathBuf {
     let private = |p: &Path| {
         p.is_absolute()
             && std::fs::canonicalize(p)
