@@ -337,8 +337,13 @@ fn evaluate_all_layers(action: &str, resources: &[String], layers: &[&[Rule]]) -
 pub enum Reply {
     /// Allow this one request.
     Once,
-    /// Allow it and every later request matching the same rule this session.
+    /// Allow it and every later request matching the same rule: saved
+    /// for the project when there is a database, else for the session.
     Always,
+    /// Allow it and every later request matching the same rule for this
+    /// session only, never saved. The most a turn another session started
+    /// (see [`Gate::set_origin`]) can be answered with.
+    Session,
     /// Refuse; the optional feedback goes back to the model.
     Reject(Option<String>),
 }
@@ -357,6 +362,15 @@ pub struct Request {
 /// Asks the user. Implemented by the CLI and, later, the TUI.
 pub trait Asker: Send + Sync {
     fn ask(&self, req: &Request) -> Reply;
+
+    /// Ask for a request made in a turn that another session (`by`) started
+    /// over the local bus: the prompt says who is asking, and offers allow
+    /// once, allow for this session, or reject. An "always" answer counts
+    /// as "for this session".
+    fn ask_for(&self, req: &Request, by: &str) -> Reply {
+        let _ = by;
+        self.ask(req)
+    }
 }
 
 /// Answers every request with the same reply (for `--auto` and tests).
@@ -431,6 +445,9 @@ pub struct Gate {
     durable: Option<(Arc<crate::approvals::Book>, String)>,
     /// Rules granted for a while ([`Granted`]).
     granted: Option<Arc<dyn Granted>>,
+    /// The session whose request started the turn now running, if another
+    /// session's did (shared with clones, so a subagent's asks say so too).
+    origin: Arc<Mutex<Option<String>>>,
 }
 
 impl Gate {
@@ -441,7 +458,19 @@ impl Gate {
             asker,
             durable: None,
             granted: None,
+            origin: Arc::default(),
         }
+    }
+
+    /// Mark the turns that follow as started by another session's request
+    /// (`Some(its name)`), or by the user (`None`).
+    pub fn set_origin(&self, by: Option<String>) {
+        *self.origin.lock().unwrap() = by;
+    }
+
+    /// Who started the turn now running, when another session did.
+    pub fn origin(&self) -> Option<String> {
+        self.origin.lock().unwrap().clone()
     }
 
     /// Judge requests with the rules `granted` holds at the time, too (see
@@ -645,11 +674,17 @@ impl Gate {
                 action: req.action.clone(),
                 resource: req.resources.join(", "),
             }),
-            Effect::Ask => match crate::plugin::active()
-                .permission(req)
-                .unwrap_or_else(|| self.asker.ask(req))
-            {
+            Effect::Ask => match self.ask(req) {
                 Reply::Once => Ok(()),
+                Reply::Session => {
+                    if !self.guarded(&req.action, &req.resources) {
+                        let mut saved = self.saved.lock().unwrap();
+                        for s in safe_saves(req) {
+                            saved.push(Rule::new(&req.action, &s, Effect::Allow));
+                        }
+                    }
+                    Ok(())
+                }
                 Reply::Always => {
                     // No saved approval lifts a secret guard: save nothing.
                     let saves = if self.guarded(&req.action, &req.resources) {
@@ -674,6 +709,26 @@ impl Gate {
                 }
                 Reply::Reject(feedback) => Err(Denied::Declined { feedback }),
             },
+        }
+    }
+}
+
+impl Gate {
+    /// Ask about `req`: a plugin first, then the asker, saying who asked
+    /// when another session's request started the turn. Another session
+    /// can never be why a rule is saved, so "always" counts as "for this
+    /// session" then.
+    fn ask(&self, req: &Request) -> Reply {
+        let by = self.origin();
+        let reply = crate::plugin::active()
+            .permission(req)
+            .unwrap_or_else(|| match &by {
+                Some(b) => self.asker.ask_for(req, b),
+                None => self.asker.ask(req),
+            });
+        match (reply, by.is_some()) {
+            (Reply::Always, true) => Reply::Session,
+            (r, _) => r,
         }
     }
 }
@@ -1026,6 +1081,102 @@ mod tests {
                 .iter()
                 .any(|r| evaluate(action, r, g.configured()) == Effect::Deny)
             && evaluate_all(action, resources, &g.rules()) == Effect::Allow
+    }
+
+    /// Records who each request was asked for.
+    struct Recording(Mutex<Vec<Option<String>>>, Reply);
+    impl Asker for Recording {
+        fn ask(&self, _: &Request) -> Reply {
+            self.0.lock().unwrap().push(None);
+            self.1.clone()
+        }
+        fn ask_for(&self, _: &Request, by: &str) -> Reply {
+            self.0.lock().unwrap().push(Some(by.to_string()));
+            self.1.clone()
+        }
+    }
+
+    fn shell(cmd: &str) -> Request {
+        Request {
+            action: "shell".into(),
+            resources: vec![cmd.into()],
+            save: vec![cmd.into()],
+            title: cmd.into(),
+        }
+    }
+
+    #[test]
+    fn a_peer_turn_asks_saying_who_and_never_saves_for_the_project() {
+        let (_d, b) = book();
+        let asker = Arc::new(Recording(Mutex::new(vec![]), Reply::Always));
+        let mut g = Gate::new(vec![Rule::new("shell", "*", Effect::Ask)], asker.clone());
+        g.set_durable(b.clone(), "proj".into());
+        g.set_origin(Some("reviewer".into()));
+        assert!(g.assert(&shell("make test")).is_ok());
+        assert_eq!(*asker.0.lock().unwrap(), vec![Some("reviewer".to_string())]);
+        // "Always" became "for this session": nothing in the book...
+        assert!(b.list(Some("proj")).unwrap().is_empty());
+        // ...but this session doesn't ask again.
+        assert!(g.assert(&shell("make test")).is_ok());
+        assert_eq!(asker.0.lock().unwrap().len(), 1);
+        // Back to the user's own turns: "always" saves as before.
+        g.set_origin(None);
+        assert!(g.assert(&shell("cargo build")).is_ok());
+        assert_eq!(asker.0.lock().unwrap().last().unwrap(), &None);
+        assert_eq!(b.list(Some("proj")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn allow_for_this_session_lasts_for_the_session_only() {
+        let (_d, b) = book();
+        let asker = Arc::new(Recording(Mutex::new(vec![]), Reply::Session));
+        let mut g = Gate::new(vec![Rule::new("shell", "*", Effect::Ask)], asker.clone());
+        g.set_durable(b.clone(), "proj".into());
+        assert!(g.assert(&shell("ls")).is_ok());
+        assert!(g.assert(&shell("ls")).is_ok());
+        assert_eq!(asker.0.lock().unwrap().len(), 1);
+        assert!(b.list(Some("proj")).unwrap().is_empty());
+        // A new gate (a new session) asks again.
+        let mut g2 = Gate::new(vec![Rule::new("shell", "*", Effect::Ask)], asker.clone());
+        g2.set_durable(b, "proj".into());
+        assert!(g2.assert(&shell("ls")).is_ok());
+        assert_eq!(asker.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_peer_turn_cant_lift_a_deny_or_a_secret_guard() {
+        let asker = Arc::new(Recording(Mutex::new(vec![]), Reply::Session));
+        let mut rules = base_rules();
+        rules.push(Rule::new("shell", "rm *", Effect::Deny));
+        let g = Gate::new(rules, asker.clone());
+        g.set_origin(Some("peer".into()));
+        assert!(g.assert(&shell("rm -rf /")).is_err());
+        assert!(asker.0.lock().unwrap().is_empty(), "a deny never asks");
+        // A guarded secret read is asked, and "for this session" saves
+        // nothing that would skip the next ask.
+        let home = dirs::home_dir().unwrap();
+        let key = home.join(".ssh/id_ed25519").display().to_string();
+        let req = Request {
+            action: "read".into(),
+            resources: vec![key.clone()],
+            save: vec![key],
+            title: "read key".into(),
+        };
+        if g.guarded("read", &req.resources) {
+            assert!(g.assert(&req).is_ok());
+            assert!(g.assert(&req).is_ok());
+            assert_eq!(asker.0.lock().unwrap().len(), 2, "asked each time");
+        }
+    }
+
+    #[test]
+    fn the_origin_is_shared_with_clones() {
+        let g = Gate::new(vec![], Arc::new(Fixed(Reply::Once)));
+        let child = g.clone();
+        g.set_origin(Some("a".into()));
+        assert_eq!(child.origin().as_deref(), Some("a"));
+        child.set_origin(None);
+        assert_eq!(g.origin(), None);
     }
 
     fn book() -> (tempfile::TempDir, Arc<crate::approvals::Book>) {

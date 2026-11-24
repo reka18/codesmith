@@ -290,6 +290,10 @@ pub enum Modal {
         diff: Option<Diff>,
         /// The subagent asking, when one is: `explore subagent · Find the adder`.
         from: Option<String>,
+        /// The session whose bus request started this turn, when another
+        /// session's did: the dialog says so and offers "allow for this
+        /// session" in place of "always".
+        by: Option<String>,
         /// First row of the request text shown when it is too long to fit
         /// (the view clamps it).
         scroll: std::cell::Cell<usize>,
@@ -531,6 +535,12 @@ pub struct App {
     pub frecency: super::stash::Frecency,
     /// The session's goal (`/goal`), shown in the status line.
     pub goal: Option<codesmith_core::plugin::goal::Status>,
+    /// The session whose bus request the running turn answers.
+    pub bus_origin: Option<String>,
+    /// This session's name on the local bus, while it's on it.
+    pub bus_name: Option<String>,
+    /// Bus messages waiting for a turn.
+    pub bus_waiting: usize,
     /// The open menu or the worktrees dialog, while open. A permission or
     /// question that comes meanwhile is drawn over it and takes the keys.
     pub browser: Option<Box<super::browser::Browser>>,
@@ -768,6 +778,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "pick the reasoning effort, where the provider offers it",
     ),
     ("compact", "summarize older history now"),
+    (
+        "bus",
+        "this session on the local bus: name, share, pause, other sessions",
+    ),
     (
         "login",
         "sign in to a provider: browser, API key or Claude Code login",
@@ -1287,12 +1301,19 @@ impl App {
                         })
                         .flatten()
                 };
+                let by = self.bus_origin.clone();
+                let from = match (&by, from) {
+                    (Some(b), Some(f)) => Some(format!("requested by {b} · {f}")),
+                    (Some(b), None) => Some(format!("requested by {b}")),
+                    (None, f) => f,
+                };
                 self.modal = Some(Modal::Permission {
                     req,
                     reply: Some(reply),
                     feedback: String::new(),
                     diff,
                     from,
+                    by,
                     scroll: Default::default(),
                 });
             }
@@ -1332,7 +1353,9 @@ impl App {
             | Ev::Stopped
             | Ev::Background
             | Ev::Login(..)
-            | Ev::Tab(..) => {}
+            | Ev::Tab(..)
+            | Ev::Bus(_)
+            | Ev::BusStatus(_) => {}
         }
     }
 
@@ -2447,6 +2470,7 @@ impl App {
                 feedback,
                 reply,
                 scroll,
+                by,
                 ..
             } => {
                 let bound = if feedback.is_empty() {
@@ -2454,9 +2478,15 @@ impl App {
                 } else {
                     None
                 };
+                let peer = by.is_some();
                 let answer = match (bound, k.code) {
                     (Some("permission.allow.once"), _) => Some(Reply::Once),
+                    // Another session's request: never saved for the project.
+                    (Some("permission.allow.always"), _) if peer => Some(Reply::Session),
                     (Some("permission.allow.always"), _) => Some(Reply::Always),
+                    (None, KeyCode::Char('s')) if peer && feedback.is_empty() => {
+                        Some(Reply::Session)
+                    }
                     (Some(_), _) => Some(Reply::Reject(None)),
                     (None, KeyCode::Esc) => Some(Reply::Reject(None)),
                     // Allowing takes a deliberate y or a: a stray Enter rejects.

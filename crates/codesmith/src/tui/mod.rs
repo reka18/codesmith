@@ -19,6 +19,7 @@ mod bench;
 mod bridge;
 mod browse_host;
 mod browser;
+mod bus_host;
 mod complete;
 mod diff;
 mod diff_draw;
@@ -202,6 +203,17 @@ struct Runner {
     login_seq: u64,
     /// The provider the running login signs in to.
     login_provider: Option<String>,
+    /// This UI on the local bus (see `bus_host`), following the session
+    /// shown.
+    bus: Option<codesmith_core::bus::Bus>,
+    /// Messages from other sessions waiting for a turn.
+    bus_queue: std::collections::VecDeque<codesmith_core::bus::Message>,
+    /// The message the running turn answers.
+    bus_running: Option<codesmith_core::bus::Message>,
+    /// `/bus pause`.
+    bus_paused: bool,
+    /// The session, title, agent and model the bus last heard about.
+    bus_seen: Option<(String, Option<String>, String, String)>,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -251,7 +263,8 @@ impl Runner {
     }
 
     /// Install a session and refresh the header (and transcript when continuing).
-    fn install(&mut self, s: Session, replay: bool) {
+    fn install(&mut self, mut s: Session, replay: bool) {
+        self.bus_follow(&mut s);
         self.selections.record(&s.id, &s.agent.id, &s.model_spec);
         self.app.header.agent = s.agent.name.clone();
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
@@ -539,6 +552,7 @@ impl Runner {
         // the session at once, which after an interrupted resume would
         // restart it.
         self.resume_held = self.session.as_ref().map(|s| s.background_finished());
+        self.bus_interrupted();
     }
 
     /// Keep the status line's background count current and, while idle,
@@ -816,6 +830,7 @@ impl Runner {
                 }
             }
             "variant" if self.idle_or_say() => self.set_variant(args)?,
+            "bus" => self.bus_command(args),
             "effort" if self.idle_or_say() => {
                 if args.trim().is_empty() {
                     self.open_effort_picker();
@@ -2180,7 +2195,10 @@ impl Runner {
                 }
                 self.install(*session, false);
                 self.app.diff_turn_done();
+                self.bus_turn_done();
             }
+            Ev::Bus(m) => self.on_bus(*m),
+            Ev::BusStatus(st) => self.on_bus_status(st),
             Ev::Diff(r) => self.app.diff_answer(*r),
             Ev::Browse(r) => {
                 let result = match self.app.browse_answer(*r) {
@@ -2582,6 +2600,11 @@ async fn run_in(
         login: None,
         login_provider: None,
         login_seq: 0,
+        bus: None,
+        bus_queue: Default::default(),
+        bus_running: None,
+        bus_paused: false,
+        bus_seen: None,
         outside: outside::Outside::new(tui.terminal_title, tui.attention.clone(), &|k| {
             std::env::var(k).ok()
         }),
@@ -2641,6 +2664,7 @@ async fn run_in(
     let pid = first.model.provider_id.clone();
     let quiet = r.warned.insert(pid.clone());
     r.install(first, opts.resume.is_some());
+    r.join_bus();
     r.start_tabs(first_tab, opts.resume.is_some());
     if r.app.entries.is_empty() {
         r.app.notice(format!(

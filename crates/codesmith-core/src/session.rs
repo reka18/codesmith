@@ -264,6 +264,19 @@ pub struct Options {
     pub id: Option<String>,
 }
 
+/// A bus message body cut to the bus's limit, on a character boundary.
+fn cap_body(s: &str) -> String {
+    let max = crate::bus::protocol::MAX_BODY - 64;
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[cut at {} KiB]", &s[..end], max / 1024)
+}
+
 /// Who wrote a prompt's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin {
@@ -372,6 +385,14 @@ pub struct Session {
     /// Whether the image and video generation tools are offered: a model
     /// of that type is reachable and config leaves the tool on.
     media_tools: [bool; 2],
+    /// This session's place on the local bus ([`Session::set_bus`]).
+    bus: Option<crate::bus::Bus>,
+    /// The bus tools the agent may use, offered once on the bus.
+    bus_tools: Vec<Tool>,
+    /// The message the running turn answers, when another session's started it.
+    bus_turn: Option<crate::bus::Message>,
+    /// Requests this session answered with `bus_send`.
+    bus_answered: std::collections::HashSet<String>,
 }
 
 /// What keeps a session consistent with other processes using the same
@@ -650,6 +671,14 @@ impl Session {
         if lsp.is_none() {
             tools.retain(|t| *t != Tool::Lsp);
         }
+        // The bus tools wait until the session is on the bus (see
+        // `Session::set_bus`); a subagent's parent talks for it.
+        let bus_tools: Vec<Tool> = if opts.parent.is_none() {
+            tools.iter().copied().filter(|t| t.is_bus()).collect()
+        } else {
+            Vec::new()
+        };
+        tools.retain(|t| !t.is_bus());
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let tmp = paths::tmp_dir();
         let _ = std::fs::create_dir_all(&tmp);
@@ -839,7 +868,175 @@ impl Session {
                 wait: true,
             },
             media_tools: [tool::image_generate::offered(config), false],
+            bus: None,
+            bus_tools,
+            bus_turn: None,
+            bus_answered: Default::default(),
         })
+    }
+
+    /// Put the session on the local bus (or take it off): its bus tools are
+    /// offered from the next step. A subagent never is.
+    pub fn set_bus(&mut self, bus: Option<crate::bus::Bus>) {
+        if self.parent.is_some() {
+            return;
+        }
+        self.tools.retain(|t| !t.is_bus());
+        if bus.is_some() {
+            self.tools.extend(self.bus_tools.iter().copied());
+        }
+        self.bus = bus;
+    }
+
+    pub fn bus(&self) -> Option<&crate::bus::Bus> {
+        self.bus.as_ref()
+    }
+
+    /// The session's permission gate (a clone sharing its approvals and
+    /// asker), for checks made outside a turn, such as `bus_receive`.
+    pub fn gate_for_bus(&self) -> Gate {
+        self.gate.clone()
+    }
+
+    /// A turn for a message from another session: its text framed as data
+    /// ([`crate::bus::framed`]), every permission prompt in it saying who
+    /// asked (an "always" answer kept for this session only), and a request
+    /// that the turn didn't answer with `bus_send` answered with the turn's
+    /// final text, or its error.
+    pub async fn prompt_from_bus(
+        &mut self,
+        m: &crate::bus::Message,
+        sink: &mut dyn Sink,
+    ) -> Result<()> {
+        let text = crate::bus::framed(m);
+        self.bus_turn = Some(m.clone());
+        self.gate.set_origin(Some(m.from_name.clone()));
+        let r = self.prompt_from(Origin::Engine, &text, vec![], sink).await;
+        self.gate.set_origin(None);
+        self.bus_turn = None;
+        if m.kind == crate::bus::Kind::Request && !self.bus_answered.contains(&m.id) {
+            let body = match &r {
+                Ok(()) => {
+                    let a = self.last_answer();
+                    if a.trim().is_empty() {
+                        "(The session finished without an answer.)".to_string()
+                    } else {
+                        a
+                    }
+                }
+                Err(e) => format!("The session couldn't finish this request: {e:#}"),
+            };
+            if let Some(bus) = &self.bus {
+                let body = cap_body(&body);
+                let _ = bus
+                    .send("", crate::bus::Kind::Response, &body, Some(&m.id), m.hop)
+                    .await;
+            }
+            self.bus_answered.insert(m.id.clone());
+        }
+        r
+    }
+
+    /// A bus tool's call.
+    async fn run_bus(&mut self, tool: Tool, input: &serde_json::Value) -> (String, bool) {
+        use crate::bus::Kind;
+        use tool::bus as tb;
+        let Some(bus) = self.bus.clone() else {
+            return ("This session isn't on the bus.".into(), true);
+        };
+        match tool {
+            Tool::BusPeers => match bus.peers().await {
+                Ok(p) => (tb::describe_peers(&bus.session(), &p), false),
+                Err(e) => (format!("The bus didn't answer: {e}"), true),
+            },
+            Tool::BusInbox => match bus.inbox(None).await {
+                Ok(list) => (tb::describe_inbox(&list), false),
+                Err(e) => (format!("The bus didn't answer: {e}"), true),
+            },
+            Tool::BusWait => {
+                let secs = tb::wait_secs(input);
+                let re = input
+                    .get("reply_to")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                match bus.wait(Duration::from_secs(secs), re).await {
+                    Some(m) => (tb::describe_message(&m), false),
+                    None => (format!("No reply arrived in {secs} seconds."), false),
+                }
+            }
+            Tool::BusSend => {
+                let s = match tb::parse_send(input) {
+                    Ok(s) => s,
+                    Err(e) => return (e, true),
+                };
+                // The recipient: a request's `to`, or the sender of the
+                // request a reply belongs to.
+                let to = match (&s.kind, &self.bus_turn) {
+                    (Kind::Request, _) => s.to.clone(),
+                    (_, Some(t)) if Some(&t.id) == s.reply_to.as_ref() => t.from_name.clone(),
+                    _ => s.to.clone(),
+                };
+                let title = format!(
+                    "Send a {} to {}",
+                    s.kind.as_str(),
+                    if to.is_empty() {
+                        "a session"
+                    } else {
+                        to.as_str()
+                    }
+                );
+                let resource = if to.is_empty() {
+                    "*".to_string()
+                } else {
+                    to.clone()
+                };
+                if let Err(e) = self.allowed(tb::SEND, &resource, title) {
+                    return (e, true);
+                }
+                // A request sent from a turn another session's request
+                // started is one hop further along its chain.
+                let hop = match &self.bus_turn {
+                    Some(t) if s.kind == Kind::Request => t.hop + 1,
+                    Some(t) => t.hop,
+                    None => 0,
+                };
+                match bus
+                    .send(&s.to, s.kind, &s.body, s.reply_to.as_deref(), hop)
+                    .await
+                {
+                    Ok(sent) => {
+                        if s.kind == Kind::Response {
+                            if let Some(r) = &s.reply_to {
+                                self.bus_answered.insert(r.clone());
+                            }
+                        }
+                        let lines: Vec<String> = sent
+                            .iter()
+                            .map(|v| {
+                                format!(
+                                    "Sent {} {} to {}: {}",
+                                    s.kind.as_str(),
+                                    v["id"].as_str().unwrap_or(""),
+                                    v["to"].as_str().unwrap_or(""),
+                                    if v["delivered"].as_bool() == Some(true) {
+                                        "delivered"
+                                    } else {
+                                        "stored until that session opens"
+                                    }
+                                )
+                            })
+                            .collect();
+                        let mut out = lines.join("\n");
+                        if s.kind == Kind::Request {
+                            out.push_str("\nWait for the answer with bus_wait (reply_to the id above), or carry on and it will arrive as a message.");
+                        }
+                        (out, false)
+                    }
+                    Err(e) => (e, true),
+                }
+            }
+            _ => (String::new(), true),
+        }
     }
 
     /// Whether a turn waits while another process runs one in this session
@@ -2485,6 +2682,7 @@ impl Session {
                         self.run_plugin_tool(&plugins, &name, &input).await
                     }
                     Some(Tool::Todowrite) => self.run_todowrite(&input, sink),
+                    Some(t) if t.is_bus() => self.run_bus(t, &input).await,
                     Some(Tool::Subagent) => {
                         // A subagent's requests may reach the same server.
                         self.settle_title().await;

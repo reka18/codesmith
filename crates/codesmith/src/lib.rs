@@ -22,6 +22,7 @@
 #![allow(clippy::needless_doctest_main)]
 
 mod acp;
+mod busctl;
 mod claude_token;
 mod cli;
 mod links;
@@ -44,6 +45,10 @@ pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
     // So does the shell daemon (`__shelld`), which `serve` starts.
     #[cfg(unix)]
     codesmith_core::daemon::child_main_if_requested();
+    // And the local bus's broker (`__busd`), which the first session on the
+    // bus starts.
+    #[cfg(unix)]
+    codesmith_core::bus::child_main_if_requested();
     // Before any thread starts: `serve` alone gets the server token, and no
     // child process inherits it.
     cli::take_server_token();

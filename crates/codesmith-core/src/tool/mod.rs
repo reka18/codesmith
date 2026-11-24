@@ -2,6 +2,7 @@
 //! a JSON Schema (ported from OpenCode), and runs against a `Ctx`.
 
 pub mod apply_patch;
+pub mod bus;
 mod edit;
 mod glob;
 mod grep;
@@ -255,9 +256,13 @@ pub enum Tool {
     Skill,
     Question,
     Lsp,
+    BusPeers,
+    BusSend,
+    BusInbox,
+    BusWait,
 }
 
-pub const ALL: [Tool; 14] = [
+pub const ALL: [Tool; 18] = [
     Tool::Read,
     Tool::Write,
     Tool::Edit,
@@ -272,6 +277,10 @@ pub const ALL: [Tool; 14] = [
     Tool::Skill,
     Tool::Question,
     Tool::Lsp,
+    Tool::BusPeers,
+    Tool::BusSend,
+    Tool::BusInbox,
+    Tool::BusWait,
 ];
 
 impl Tool {
@@ -291,14 +300,34 @@ impl Tool {
             Tool::Skill => "skill",
             Tool::Question => "question",
             Tool::Lsp => "lsp",
+            Tool::BusPeers => bus::PEERS,
+            Tool::BusSend => bus::SEND,
+            Tool::BusInbox => bus::INBOX,
+            Tool::BusWait => bus::WAIT,
         }
+    }
+
+    /// One of the local bus tools, offered only once the session is on
+    /// the bus.
+    pub fn is_bus(self) -> bool {
+        matches!(
+            self,
+            Tool::BusPeers | Tool::BusSend | Tool::BusInbox | Tool::BusWait
+        )
     }
 
     /// Tools the session runs itself, because they need session state.
     pub fn session_level(self) -> bool {
         matches!(
             self,
-            Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question
+            Tool::Todowrite
+                | Tool::Subagent
+                | Tool::Skill
+                | Tool::Question
+                | Tool::BusPeers
+                | Tool::BusSend
+                | Tool::BusInbox
+                | Tool::BusWait
         )
     }
 
@@ -331,6 +360,9 @@ impl Tool {
             Tool::Skill => crate::skill::tool_spec(&[]),
             Tool::Question => crate::question::spec(),
             Tool::Lsp => lsp::spec(),
+            Tool::BusPeers | Tool::BusSend | Tool::BusInbox | Tool::BusWait => {
+                bus::spec(self.name())
+            }
         };
         // The patch as raw text matching OpenCode's patch grammar, for
         // models that take Lark-constrained custom tools.
@@ -357,9 +389,14 @@ impl Tool {
             Tool::Webfetch => webfetch::run(ctx, input).await,
             Tool::Websearch => websearch::run(ctx, input).await,
             Tool::Lsp => lsp::run(ctx, input).await,
-            Tool::Todowrite | Tool::Subagent | Tool::Skill | Tool::Question => {
-                Err(format!("{} must be run by the session", self.name()))
-            }
+            Tool::Todowrite
+            | Tool::Subagent
+            | Tool::Skill
+            | Tool::Question
+            | Tool::BusPeers
+            | Tool::BusSend
+            | Tool::BusInbox
+            | Tool::BusWait => Err(format!("{} must be run by the session", self.name())),
         }
     }
 }
