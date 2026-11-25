@@ -3,7 +3,9 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## 0.5.0 — 2026-11-25
+## 0.5.1 — 2026-11-25
+
+0.5.0 was tagged but never released; its changes ship here.
 
 - **The local bus: sessions on one machine work together.** Every
   CodeSmith session you have open joins a bus that only you can reach: no
@@ -46,6 +48,23 @@ All notable changes to CodeSmith are listed here. Versions follow
   database.
 - **The README leads with what keeps you safe**, and describes CodeSmith
   on its own terms.
+- **Fixed: commands ignored the signal that stops them when CodeSmith was
+  started with it ignored.** Some launchers and CI runners start programs
+  with SIGTERM ignored, and every command CodeSmith ran inherited that, so
+  stopping one waited out the grace period and killed it. Commands and
+  terminals now start with SIGTERM, SIGINT and SIGQUIT at their defaults
+  (SIGHUP is left alone, so `nohup` still works).
+- **Fixed: `codesmith upgrade` could fail on Linux with "Text file busy"**
+  when another thread started a process just as the new binary was written.
+  It now tries again for up to a second.
+- **The input box's title says what tab does and stands out.** "tab
+  agents" is now "tab → Plan" (or "→ Build"), and the title is drawn in the
+  text colour, apart from the placeholder and the usage line.
+- **Homebrew, the built-in `codesmith` skill and the crate describe
+  CodeSmith on its own terms.**
+- **CI runs on GitHub Actions** for every pull request and push to `main`,
+  on Linux (x86_64 and arm64) and macOS. Releases are still built and
+  signed locally.
 
 ## 0.4.1 — 2026-11-23
 
