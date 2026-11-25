@@ -1,22 +1,23 @@
 # Releasing CodeSmith
 
-There is no hosted CI and no GitHub Actions: everything is built and checked
-on our own machines, and GitHub only hosts the code and the release page.
-`install.sh` and Homebrew download the tarballs from that page, and all
-signing happens on the owner's own two Macs (see "Two Macs").
+GitHub Actions runs CI; releases are built and signed on our own machines,
+and GitHub hosts the code and the release page. `install.sh` and Homebrew
+download the tarballs from that page, and all signing happens on the owner's
+own two Macs (see "Two Macs"). The CI workflow gets no secrets and no write
+access.
 
-## Checks before every push
+## CI
 
 `scripts/ci.sh` is the CI: `cargo fmt --check`, `cargo clippy --all-targets
---workspace -D warnings`, `cargo test --workspace` and `shellcheck`. Install the
-hooks once per clone with `scripts/install-hooks.sh`; the pre-push hook runs
-`scripts/ci.sh` and a failure stops the push.
+--workspace -D warnings`, `cargo test --workspace` and `shellcheck`.
+`.github/workflows/ci.yml` runs it on GitHub's hosted runners for every pull
+request and every push to `main`: Linux x86_64, Linux arm64 and macOS arm64,
+each against the latest stable Rust. A pull request merges only when all
+three pass. Release from a commit on `main` whose CI passed.
 
 `scripts/ci-linux.sh` runs the same checks on Linux in Docker (linux/arm64;
-`--amd64` for x86_64 under emulation), which catches Linux-only `cfg` code and
-lints the Mac run never compiles. It is slow, so the hook runs it only with
-`CODESMITH_CI_LINUX=1` set (`CODESMITH_CI_LINUX=1 git push`); run it by hand
-before a release or after touching platform-specific code. The repo is mounted
+`--amd64` for x86_64 under emulation), for checking Linux-only `cfg` code
+from a Mac before pushing. The repo is mounted
 read-only, cargo's registry and target dir are cached in `codesmith-ci-*`
 Docker volumes, and the checks run as a non-root user with `--network none`
 under CPU, memory and pids limits (`CI_LINUX_CPUS`, `CI_LINUX_MEMORY`,
@@ -349,7 +350,7 @@ signature. To move to a new key, all on Skeptic-Mac unless it says otherwise:
    comment there, and add it to `RELEASE_KEYS` in `install.sh`,
    space-separated, in the same order. Update `CODESMITH_KEY` in the test
    that pins the key (`crates/codesmith/src/upgrade/tests.rs`) to list both.
-   Run `scripts/ci.sh`, commit and push.
+   Run `scripts/ci.sh`, commit and push, and wait for CI to pass.
 3. **Release with both pinned, still signing with the old key** (the normal
    checklist). That release trusts both keys.
 4. Once that release has been out long enough that users have it, **sign
@@ -374,7 +375,8 @@ in step 8, after both signing steps.
 1. **Bump the version** (any Mac with a clone) in `[workspace.package]` in
    `Cargo.toml` (and the `version` on the `codesmith-ai`/`codesmith-core`
    entries under `[workspace.dependencies]`), then run `cargo check` so
-   `Cargo.lock` follows. Run `scripts/ci.sh`. Add the release's section to
+   `Cargo.lock` follows. Run `scripts/ci.sh`, and after pushing check that
+   CI passed on GitHub. Add the release's section to
    `CHANGELOG.md`. Commit: `Release 0.2.0`.
 2. **Tag and push.** Check that the tag matches the version.
 

@@ -828,6 +828,25 @@ fn oc_scan_retains_commands_in_nested_shorthand_loops() {
     }
 }
 
+/// The major version `bash --version` reports (0 when it can't be read).
+fn bash_major(exe: &str) -> u32 {
+    std::process::Command::new(exe)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            let v = text
+                .split("version ")
+                .nth(1)?
+                .split('.')
+                .next()?
+                .to_string();
+            v.parse().ok()
+        })
+        .unwrap_or(0)
+}
+
 /// "${shell}: %s" (real-shell compound syntax): the shell runs the probe
 /// in a function whose body is a bare compound command, and the scan reads
 /// it; Zsh's short loops run in Zsh and are refused by the scan.
@@ -844,6 +863,12 @@ fn oc_scan_real_shells_run_compound_function_bodies() {
                     .map(|b| format!("printf '%s' \"$(probe() {b}; probe)\"")),
             )
             .collect();
+        // Bash before 4 (macOS's /bin/bash is 3.2) can't parse a `case`
+        // arm's `)` inside `$( )`, a parser bug bash 4 fixed; the scan
+        // isn't what's tested there, so those few are left out.
+        if name == "bash" && bash_major(&exe) < 4 {
+            sources.retain(|s| !(s.contains("$(") && s.contains("case ")));
+        }
         let functions = sources.len();
         if name == "zsh" {
             sources.extend(short_loops().into_iter().map(|(s, _)| s));

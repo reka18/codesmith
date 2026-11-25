@@ -1687,3 +1687,35 @@ fn the_coloured_banners_are_the_plain_ones_with_colour_codes() {
 fn colour_needs_a_terminal() {
     assert!(!colour_for(false));
 }
+
+#[test]
+fn a_busy_binary_is_run_again_and_other_errors_are_not() {
+    use std::io::{Error, ErrorKind};
+    // Busy twice, then it runs.
+    let mut calls = 0;
+    let out = super::retry_while_busy(|| {
+        calls += 1;
+        if calls < 3 {
+            Err(Error::from(ErrorKind::ExecutableFileBusy))
+        } else {
+            Ok(calls)
+        }
+    });
+    assert_eq!(out.unwrap(), 3);
+    // Any other error is returned at once.
+    let mut calls = 0;
+    let out: std::io::Result<()> = super::retry_while_busy(|| {
+        calls += 1;
+        Err(Error::from(ErrorKind::PermissionDenied))
+    });
+    assert_eq!(out.unwrap_err().kind(), ErrorKind::PermissionDenied);
+    assert_eq!(calls, 1);
+    // Busy for good: it gives up after a bounded number of tries.
+    let mut calls = 0;
+    let out: std::io::Result<()> = super::retry_while_busy(|| {
+        calls += 1;
+        Err(Error::from(ErrorKind::ExecutableFileBusy))
+    });
+    assert_eq!(out.unwrap_err().kind(), ErrorKind::ExecutableFileBusy);
+    assert_eq!(calls, 20);
+}

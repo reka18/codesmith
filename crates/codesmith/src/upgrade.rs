@@ -909,13 +909,35 @@ fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
     }
 }
 
+/// `run`, again while it fails because the file is busy (Linux's
+/// ETXTBSY): a child process another thread was starting can still hold
+/// the just-written binary open for writing until it execs, for a moment.
+/// Any other error is returned at once.
+pub(crate) fn retry_while_busy<T>(
+    mut run: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    const TRIES: u32 = 20;
+    let mut tries = 1;
+    loop {
+        match run() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < TRIES => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// The downloaded binary must run here and call itself `version`.
 fn check_version(binary: &Path, version: &str) -> Result<()> {
-    let output = std::process::Command::new(binary)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .with_context(|| format!("the downloaded binary did not run ({})", binary.display()))?;
+    let output = retry_while_busy(|| {
+        std::process::Command::new(binary)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+    })
+    .with_context(|| format!("the downloaded binary did not run ({})", binary.display()))?;
     let text = String::from_utf8_lossy(&output.stdout);
     let mut words = text.split_whitespace();
     let reported = match (words.next(), words.next()) {
