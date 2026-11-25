@@ -8,15 +8,15 @@ reviewed by the maintainer before it merges.
 ```sh
 git clone https://github.com/reka18/codesmith.git
 cd codesmith
-scripts/install-hooks.sh   # format check on commit, local CI on push
 cargo build
 ```
 
-There is no hosted CI. `scripts/ci.sh` is the CI: it checks formatting,
-runs Clippy with warnings as errors and runs every test, and the pre-push
-hook runs it before each push. Run it yourself before opening a pull
-request. On Linux, or for the Linux build from a Mac with Docker, use
-`scripts/ci-linux.sh`.
+`scripts/ci.sh` is the CI: it checks formatting, runs Clippy with
+warnings as errors, runs every test and shellchecks the scripts. GitHub
+Actions runs it on every pull request and every push to `main`, on Linux
+(x86_64 and arm64) and macOS, and a pull request merges only when all
+three pass. Run it yourself before opening one. For the Linux checks from
+a Mac with Docker, use `scripts/ci-linux.sh`.
 
 ## Pull requests
 
