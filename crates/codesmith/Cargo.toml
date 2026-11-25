@@ -1,6 +1,6 @@
 [package]
 name = "codesmith"
-description = "A terminal coding agent. A Rust port of OpenCode."
+description = "A terminal coding agent, fully local and careful with your machine."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

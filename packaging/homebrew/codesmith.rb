@@ -4,7 +4,7 @@
 # sha256 of each tarball from a release's SHA256SUMS. Copy the result to
 # Formula/codesmith.rb in a tap repository (see RELEASING.md).
 class Codesmith < Formula
-  desc "Terminal coding agent (a Rust port of OpenCode)"
+  desc "Terminal coding agent, fully local and careful with your machine"
   homepage "https://github.com/reka18/codesmith"
   version "@VERSION@"
   license "MIT"
