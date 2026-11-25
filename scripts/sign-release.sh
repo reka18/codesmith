@@ -180,7 +180,9 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
     LC_ALL=C sort -k 2 "$work/members" | cmp -s - "$work/members.built" \
         || die "${name}.tar.gz on draft $tag holds other files than release.sh built (BUILT-SHA256SUMS)"
     bin="$tree/${name}/codesmith"
-    [ -f "$bin" ] && [ ! -L "$bin" ] || die "${name}.tar.gz has no codesmith binary"
+    if [ ! -f "$bin" ] || [ -L "$bin" ]; then
+        die "${name}.tar.gz has no codesmith binary"
+    fi
     codesign --verify --strict "$bin" 2>/dev/null \
         || die "the binary in ${name}.tar.gz is not code-signed; run scripts/sign-macos.sh $tag on the mini first"
     info=$(codesign -dv --verbose=2 "$bin" 2>&1) \

@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.5.0 — 2026-11-25
 
 - **The local bus: sessions on one machine work together.** Every
   CodeSmith session you have open joins a bus that only you can reach: no
@@ -20,7 +20,6 @@ All notable changes to CodeSmith are listed here. Versions follow
   reviewer`, lets a Claude Code session (or any tailbus agent) send that
   session work and get its answer back. With `--offline run`, a closed
   session is continued headless. See `docs/tailbus.md`.
-
 - **`codesmith run` works as a headless agent for other programs.** New
   flags: `--effort LEVEL`; `--tools LIST` and `--no-tools`, which offer only
   the named built-in tools and deny every other one, MCP and plugin tools
@@ -28,7 +27,10 @@ All notable changes to CodeSmith are listed here. Versions follow
   one JSON line per model step and tool call while the run goes. The
   message can come on stdin alone, as before. These are what a tailbus
   bridge needs to run CodeSmith the way it runs pi or Claude Code.
-
+- **A run with no API key stops at once and says how to give one.**
+  Instead of a quiet wait and then the provider's 401, `codesmith run`
+  names the missing variable and `codesmith auth login`, before anything
+  is sent.
 - **Starting outside a repository warns first.** The UI and `codesmith
   run` ask `Start here anyway?` at a terminal when the folder isn't in a
   repository, and remember a yes for that folder. Your home folder and `/`
@@ -42,6 +44,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   a tailbus bridge does) copied all of it into a snapshot first, and seemed
   to hang. The home folder is now also your account's, from the user
   database.
+- **The README leads with what keeps you safe**, and describes CodeSmith
+  on its own terms.
 
 ## 0.4.1 — 2026-11-23
 

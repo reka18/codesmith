@@ -614,7 +614,7 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 
 [[package]]
 name = "codesmith"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-ai"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-stream",
  "base64 0.22.1",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "codesmith-plugin-example"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "codesmith",
  "serde_json",

@@ -93,8 +93,9 @@ for target in aarch64-apple-darwin x86_64-apple-darwin \
     aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
     name="codesmith-${version}-${target}.tar.gz"
     line=$(grep "^[0-9a-f]\{64\}  ${name}\$" "$built" || true)
-    [ -n "$line" ] && [ "$(printf '%s\n' "$line" | grep -c .)" = 1 ] \
-        || die "BUILT-SHA256SUMS does not list $name exactly once"
+    if [ -z "$line" ] || [ "$(printf '%s\n' "$line" | grep -c .)" != 1 ]; then
+        die "BUILT-SHA256SUMS does not list $name exactly once"
+    fi
     [ -f "$work/$name" ] || die "missing $name on release $tag"
     (cd "$work" && printf '%s\n' "$line" | shasum -a 256 -c - >/dev/null 2>&1) \
         || die "$name on the draft does not match BUILT-SHA256SUMS: it is not what release.sh built"
@@ -137,7 +138,9 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
     tar -xzf "$tarball" -C "$bindir" "${name}/codesmith" \
         || die "$name.tar.gz has no codesmith binary"
     bin="$bindir/$name/codesmith"
-    [ -f "$bin" ] && [ ! -L "$bin" ] || die "$name.tar.gz has no codesmith binary"
+    if [ ! -f "$bin" ] || [ -L "$bin" ]; then
+        die "$name.tar.gz has no codesmith binary"
+    fi
 
     say "signing $name"
     # --options runtime: hardened runtime, required for notarization.
