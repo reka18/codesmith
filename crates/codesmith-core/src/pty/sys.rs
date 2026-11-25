@@ -105,10 +105,11 @@ pub(super) fn spawn(
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave));
-    // SAFETY: between fork and exec only async-signal-safe calls: setsid
-    // and ioctl on the child's own stdin (the slave side).
+    // SAFETY: between fork and exec only async-signal-safe calls: signal,
+    // setsid and ioctl on the child's own stdin (the slave side).
     unsafe {
         cmd.pre_exec(|| {
+            crate::tool::shell::default_stop_signals();
             check(libc::setsid())?;
             check(libc::ioctl(0, libc::TIOCSCTTY as _, 0))?;
             Ok(())

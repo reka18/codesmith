@@ -2228,13 +2228,33 @@ pub(crate) const NONINTERACTIVE_ENV: &[(&str, &str)] = &[
 /// a stop signals, so it still reaches everything the command starts.
 /// Called between `fork` and `exec`, where only async-signal-safe calls
 /// may run: `setsid` is one.
+///
+/// It also puts the stop signals back to their default action
+/// ([`default_stop_signals`]).
 #[cfg(unix)]
 pub(crate) fn own_session() -> std::io::Result<()> {
+    default_stop_signals();
     // SAFETY: setsid takes no pointers and touches no Rust state.
     if unsafe { libc::setsid() } < 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// SIGTERM, SIGINT and SIGQUIT back to their default action in a child,
+/// between `fork` and `exec`. An ignored signal stays ignored across
+/// `exec`, so CodeSmith started with SIGTERM ignored (as some launchers and
+/// CI runners do) would hand that to every command, and stopping one would
+/// wait out the grace period and kill it. SIGHUP is left as it is, so
+/// `nohup` still works. `signal` is async-signal-safe.
+#[cfg(unix)]
+pub(crate) fn default_stop_signals() {
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGQUIT] {
+        // SAFETY: setting a disposition to the default; no Rust state.
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+        }
+    }
 }
 
 /// Start the command under `shell -c` with stdout and stderr appended to
@@ -4280,6 +4300,40 @@ mod tests {
         // Cancelling what already finished does nothing.
         assert!(!jobs.cancel("shell_1"));
         assert!(!jobs.cancel("shell_9"));
+    }
+
+    /// A command started while this process ignores SIGTERM (a CI runner
+    /// or launcher can start CodeSmith so) still stops on SIGTERM.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_stops_on_sigterm_even_when_codesmith_ignores_it() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "kill -TERM $$; sleep 5; exit 3"]);
+        // SAFETY: async-signal-safe calls only, between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                // As inherited from a parent that ignores SIGTERM.
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                own_session()
+            });
+        }
+        let started = std::time::Instant::now();
+        let status = cmd.status().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+        assert!(started.elapsed() < Duration::from_secs(4));
+
+        // Without the reset, the signal is ignored: the check is real.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "kill -TERM $$; exit 3"]);
+        // SAFETY: as above.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        assert_eq!(cmd.status().unwrap().code(), Some(3));
     }
 
     #[tokio::test(flavor = "multi_thread")]
