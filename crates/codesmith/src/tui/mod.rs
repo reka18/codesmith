@@ -269,6 +269,9 @@ impl Runner {
         self.bus_follow(&mut s);
         self.selections.record(&s.id, &s.agent.id, &s.model_spec);
         self.app.header.agent = s.agent.name.clone();
+        self.app.header.next_agent = self.next_agent(&s.agent.id, 1).and_then(|id| {
+            codesmith_core::agent::resolve(&self.loaded.config, &id).map(|a| a.name)
+        });
         self.app.header.model = format!("{}/{}", s.model.provider_id, s.model.model_id);
         self.app.header.session = s.id.clone();
         self.app.parent = s.parent().map(str::to_string);
@@ -1274,6 +1277,15 @@ impl Runner {
         if !self.idle_or_say() {
             return Ok(());
         }
+        match self.next_agent(&self.current_agent(), dir) {
+            Some(next) => self.set_agent(&next),
+            None => Ok(()),
+        }
+    }
+
+    /// The agent `dir` steps from `cur` among the ones that can be picked
+    /// (build and plan, and your own), or `None` when there's only one.
+    fn next_agent(&self, cur: &str, dir: i32) -> Option<String> {
         let primary: Vec<String> = agent::list(&self.loaded.config)
             .into_iter()
             .filter(|id| {
@@ -1281,13 +1293,11 @@ impl Runner {
             })
             .collect();
         if primary.len() < 2 {
-            return Ok(());
+            return None;
         }
-        let cur = self.current_agent();
-        let i = primary.iter().position(|a| *a == cur).unwrap_or(0) as i32;
+        let i = primary.iter().position(|a| a == cur).unwrap_or(0) as i32;
         let n = primary.len() as i32;
-        let next = primary[((i + dir) % n + n) as usize % primary.len()].clone();
-        self.set_agent(&next)
+        Some(primary[((i + dir) % n + n) as usize % primary.len()].clone())
     }
 
     fn picked(&mut self, kind: Pick, id: String) -> Result<()> {

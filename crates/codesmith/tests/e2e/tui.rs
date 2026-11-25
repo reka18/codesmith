@@ -403,7 +403,7 @@ async fn oc_a_manual_agent_switch_supersedes_the_cli_agent_after_its_commit() {
     // "esc to interrupt" there instead): it is over. The header names the
     // agent and model too, so they alone don't tell.
     ui.wait_for("Hello there.").await;
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/agent plan\r").await;
     ui.wait_for("agent: plan").await;
     ui.send(b"first plan\r").await;
@@ -480,7 +480,7 @@ async fn a_finished_background_command_resumes_the_idle_ui() {
     // The turn is over (the idle prompt's title is back) before the
     // command finishes; the status line's count is checked by the view's
     // own tests, as only changed cells are redrawn here.
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.wait_for("background command shell_1 finished").await;
     ui.wait_for("The build finished fine.").await;
     ui.quit().await;
@@ -531,7 +531,7 @@ async fn a_prompt_while_the_ui_waits_reports_the_command_once() {
         return;
     };
     // The turn is over once the idle prompt's title is back.
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"check on it\r").await;
     ui.wait_for("It built after all.").await;
     // Nothing is resumed afterwards.
@@ -590,12 +590,12 @@ async fn background_commands_survive_an_interrupt_switches_and_undo() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"wait a bit\r").await;
     ui.wait_for("sleep 30").await;
     // Interrupted once the idle prompt's title is back.
     ui.send(b"\x03").await;
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/agent plan\r/model fake/other\r/undo\r").await;
     ui.wait_for("the latest turn").await;
     ui.wait_for("The build finished fine.").await;
@@ -650,7 +650,7 @@ async fn an_interrupt_does_not_resume_for_commands_already_finished() {
     tokio::time::sleep(Duration::from_millis(2500)).await;
     ui.send(b"\x03").await;
     // Interrupted once the idle prompt's title is back.
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(m.unmatched().is_empty(), "resumed: {:#?}", m.unmatched());
     ui.send(b"what happened\r").await;
@@ -693,7 +693,7 @@ async fn without_tabs_a_new_session_stops_the_old_ones_background_commands() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/new\r").await;
     ui.wait_for("new session").await;
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -915,7 +915,7 @@ async fn a_background_tab_keeps_its_commands_and_resumes_by_itself() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
     };
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/new\r").await;
     ui.wait_for("new session").await;
     // The first tab resumes in the background and is marked unread.
@@ -1518,7 +1518,7 @@ async fn the_provider_and_model_pickers_list_by_provider() {
     let Some(mut ui) = Ui::start(&e, "") else {
         return;
     };
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/provider\r").await;
     ui.wait_for("Providers").await;
     ui.wait_for("ready · configured · 2 models").await;
@@ -1578,7 +1578,7 @@ async fn the_effort_picker_offers_the_levels_the_api_listed() {
     let Some(mut ui) = Ui::start(&e, "") else {
         return;
     };
-    ui.wait_for("tab agents").await;
+    ui.wait_for("tab → Plan").await;
     ui.send(b"/effort\r").await;
     ui.wait_for("Effort · anthropic/claude-future-9").await;
     ui.wait_for("the provider's default").await;

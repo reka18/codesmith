@@ -394,6 +394,9 @@ pub enum Action {
 #[derive(Default)]
 pub struct Header {
     pub agent: String,
+    /// The agent the cycle key (tab) switches to, by name: `Plan` from
+    /// `Build`. `None` when there's only one to choose.
+    pub next_agent: Option<String>,
     pub model: String,
     pub session: String,
     pub title: Option<String>,
