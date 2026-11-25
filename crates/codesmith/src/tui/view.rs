@@ -1598,8 +1598,10 @@ pub fn prompt_footer(f: &Footer, hint: &dyn Fn(&str) -> String) -> (String, Stri
     (left, right)
 }
 
-/// The input box's title: the agent and how to switch it, or how to stop
-/// a running turn, or the keys typed so far of a binding.
+/// The input box's title: the agent and what tab switches it to, or how to
+/// stop a running turn, or the keys typed so far of a binding. It's drawn
+/// in the text colour, brighter than the input's placeholder and the usage
+/// line above, so it reads as the box's label.
 fn input_hint(app: &App, p: &theme::Palette) -> Line<'static> {
     let k = &app.keymap;
     if !app.pending().is_empty() {
@@ -1616,8 +1618,8 @@ fn input_hint(app: &App, p: &theme::Palette) -> Line<'static> {
     }
     let mut parts = vec![app.header.agent.clone()];
     let cycle = k.hint("agent.cycle");
-    if !cycle.is_empty() {
-        parts.push(format!("{cycle} agents"));
+    if let (false, Some(next)) = (cycle.is_empty(), &app.header.next_agent) {
+        parts.push(format!("{cycle} → {next}"));
     }
     let palette = k.hint("command.palette.show");
     if !palette.is_empty() {
@@ -1626,9 +1628,9 @@ fn input_hint(app: &App, p: &theme::Palette) -> Line<'static> {
     parts.push("/help".into());
     let look = ForgeLook::from_palette(p);
     Line::from(vec![
-        Span::styled(" ", fg(p.muted)),
+        Span::styled(" ", fg(p.text)),
         cold_hammer(look),
-        Span::styled(format!(" {} ", parts.join(" · ")), fg(p.muted)),
+        Span::styled(format!(" {} ", parts.join(" · ")), fg(p.text)),
     ])
 }
 
@@ -3124,6 +3126,30 @@ mod tests {
                 t.draw(|f| draw(f, &a)).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn the_input_title_names_what_tab_switches_to_in_the_text_colour() {
+        let p = theme::current();
+        let mut a = App::new();
+        a.header.agent = "Build".into();
+        a.header.next_agent = Some("Plan".into());
+        let line = input_hint(&a, &p);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("Build · tab → Plan · "), "{text}");
+        assert!(!text.contains("agents"), "{text}");
+        assert!(text.contains("/help"), "{text}");
+        let label = line.spans.last().unwrap();
+        assert_eq!(label.style.fg, Some(p.text));
+        assert_ne!(p.text, p.muted);
+        // Only one agent to pick: nothing for tab to switch to.
+        a.header.next_agent = None;
+        let text: String = input_hint(&a, &p)
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!text.contains('→'), "{text}");
     }
 
     #[test]
