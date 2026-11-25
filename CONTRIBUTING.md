@@ -11,12 +11,17 @@ cd codesmith
 cargo build
 ```
 
-`scripts/ci.sh` is the CI: it checks formatting, runs Clippy with
-warnings as errors, runs every test and shellchecks the scripts. GitHub
-Actions runs it on every pull request and every push to `main`, on Linux
-(x86_64 and arm64) and macOS, and a pull request merges only when all
-three pass. Run it yourself before opening one. For the Linux checks from
-a Mac with Docker, use `scripts/ci-linux.sh`.
+## CI
+
+CI runs on GitHub Actions, so you don't need to run anything before
+opening a pull request. Every pull request is checked on Linux (x86_64
+and arm64) and macOS: formatting, Clippy with warnings as errors, every
+test, and shellcheck on the scripts. The results show on the pull
+request, and it merges once all three pass. If one fails, its log says
+what to fix; push again and CI reruns.
+
+To check something before you push, `scripts/ci.sh` runs the same steps
+on your machine, but that's up to you.
 
 ## Pull requests
 

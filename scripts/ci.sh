@@ -1,7 +1,7 @@
 #!/bin/sh
 # CI: what must pass before anything merges. GitHub Actions runs it on
-# Linux (x86_64, arm64) and macOS (.github/workflows/ci.yml); run it
-# yourself before opening a pull request.
+# Linux (x86_64, arm64) and macOS for every pull request and push to main
+# (.github/workflows/ci.yml). Running it locally is optional.
 set -eu
 cd "$(dirname "$0")/.."
 
