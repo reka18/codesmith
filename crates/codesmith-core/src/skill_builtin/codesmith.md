@@ -7,8 +7,9 @@ the question needs more detail. Run `codesmith --help` or `codesmith
 <command> --help` for the exact flags of the installed version, and
 `codesmith debug config` to see the configuration CodeSmith resolved.
 
-CodeSmith is a Rust port of OpenCode (MIT): most concepts carry over, but
-its documentation, not OpenCode's, describes how CodeSmith behaves.
+CodeSmith's own documentation describes how it behaves. Where it looks
+like another coding agent (OpenCode, say), don't assume that agent's
+behaviour or settings apply: check CodeSmith's docs.
 
 Documentation index: <https://github.com/reka18/codesmith/blob/main/docs/README.md>.
 

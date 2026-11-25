@@ -1,4 +1,4 @@
-//! CodeSmith: a terminal coding agent (a Rust port of OpenCode).
+//! CodeSmith: a terminal coding agent.
 //!
 //! Besides the `codesmith` binary, this crate lets you build your own
 //! CodeSmith with native plugins compiled in:
