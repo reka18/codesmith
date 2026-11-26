@@ -34,7 +34,8 @@ New here? Start with [Getting started](getting-started.md).
 - [The local bus](bus.md): sessions on one machine asking each other for
   help.
 - [tailbus](tailbus.md): reaching a CodeSmith session from other agents on
-  your tailnet, or running CodeSmith as a tailbus bridge's agent.
+  your tailnet, or running CodeSmith as a tailbus bridge's agent;
+  `codesmith bridge init` sets either one up.
 - [Editors (ACP)](editors-acp.md): Zed and other ACP clients.
 - [Local server](local-server.md): the HTTP API.
 - [Plugins](plugins.md): native Rust plugins.

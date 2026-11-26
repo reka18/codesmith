@@ -11,7 +11,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`permissions`](#codesmith-permissions) | List, edit or remove saved approvals. |
 | [`trust`](#codesmith-trust) | Trust a project's config, or list and revoke the answers. |
 | [`models`](#codesmith-models) | List providers and models. |
-| [`auth`](#codesmith-auth) | Sign in to providers (keys, browser and device logins), list or remove logins. |
+| [`auth`](#codesmith-auth) | Sign in to providers (keys, browser and device logins), list or remove logins; sign in for another home or into a key file. |
 | [`commands`](#codesmith-commands) | List commands. |
 | [`review`, `calibrate`](#codesmith-review-and-calibrate) | Code review. |
 | [`stats`](#codesmith-stats) | Usage statistics. |
@@ -20,6 +20,7 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`automation`](#codesmith-automation) | Scheduled and event-driven runs. |
 | [`acp`](#codesmith-acp) | Agent Client Protocol for editors. |
 | [`serve`](#codesmith-serve) | Local HTTP API. |
+| [`bridge`](#codesmith-bridge) | Set up a tailbus bridge that runs CodeSmith. |
 | [`debug`](#codesmith-debug) | Inspect config and internals. |
 | [`upgrade`](#codesmith-upgrade) | Upgrade to the latest or a given release. |
 
@@ -221,6 +222,8 @@ global config. It does not change your default model: use `--model` or
 ```sh
 codesmith auth login             # pick a provider from a list (in a terminal)
 codesmith auth login PROVIDER    # prompts without echo, or reads stdin
+codesmith auth login PROVIDER --home DIR     # into another home's auth store (a bridge's)
+codesmith auth login PROVIDER --to-file PATH # the key or token alone, in a 0600 file
 codesmith auth list              # where each provider's key comes from
 codesmith auth logout PROVIDER
 ```
@@ -228,10 +231,12 @@ codesmith auth logout PROVIDER
 Without a provider, `auth login` is the [sign-in picker](getting-started.md#signing-in)
 in the terminal: a numbered list of providers with their state, then the
 provider's ways in (a browser or device login, a key read without echo,
-Claude Code's login, …) and **Sign out** for a saved login. Without an
-interactive terminal it asks nothing: it prints each provider with its
-state and the command that signs in to it, and exits with an error. Flags
-need a provider.
+Claude Code's login, …) and **Sign out** for a saved login. Its last row,
+**For a bridge or another home…**, runs [`bridge init`](#codesmith-bridge)
+or the picker again with `--home` or `--to-file`. Without an interactive
+terminal it asks nothing: it prints each provider with its state and the
+command that signs in to it, and exits with an error. Flags other than
+`--home` and `--to-file` need a provider.
 
 | `auth login` flag | Meaning |
 |---|---|
@@ -243,6 +248,8 @@ need a provider.
 | `--cli` | `azure`: use Azure CLI (`az login`) tokens instead of a key. |
 | `--project ID`, `--location L` | `google-vertex`: Application Default Credentials in this project (location default `global`). |
 | `--field KEY=VALUE` | Another answer the login asks for, such as `accountId=…` for Cloudflare (asked in the terminal otherwise). |
+| `--home DIR` | Save the login in another CodeSmith home's auth store (`DIR/.local/share/codesmith/auth.json`), such as a [tailbus bridge's](tailbus.md#signing-in-for-a-bridge-by-hand) `home`, reading that home's config rather than yours or a project's. `DIR` must exist and can't be your own home. No default model is chosen for you, and `claude-agent` takes a token (as with `--token`). At a terminal, a key can be taken from an environment variable you name. |
+| `--to-file PATH` | Write the key (or for `claude-agent` a Claude Code token) to `PATH` alone, created 0600 in an owner-only folder and never through a symlink, and print the `secrets` line a tailbus bridge reads it with (`FIREWORKS_API_KEY = "PATH"`, `CLAUDE_CODE_OAUTH_TOKEN = …`). Only a key or a token: an OAuth login, or a key that needs other answers, needs `--home`. An existing file is replaced only after a yes at a terminal. |
 
 Keys are saved in the data folder's `auth.json`, readable only by you.
 Config and environment variables take precedence over saved keys. See
@@ -341,6 +348,26 @@ A local HTTP API that always requires a bearer token. Without `--token` (or
 `$CODESMITH_SERVER_TOKEN`), the token in the data folder's `serve-token` is
 used, and it is generated on first use. Any host other than loopback requires
 an explicit `--token`. See [local server](local-server.md).
+
+## `codesmith bridge`
+
+```sh
+codesmith bridge init NAME [--dir DIR]
+```
+
+Sets up a [tailbus bridge](tailbus.md#setting-up-a-bridge-codesmith-bridge-init)
+named `NAME` (lowercase letters, digits and hyphens, as tailbus takes),
+asking in the terminal: headless (`codesmith run` for each message) or a
+relay to a shared session; for a headless one, where it works, a provider,
+a sign-in made for the bridge (a key or Claude Code token in a 0600 file
+under the bridge's `secrets`, or an OAuth login in its home), a model and
+an effort from the model's own levels. It writes the bridge's folder
+(`DIR`, by default `bridges/NAME` in the data folder: `home`, `workspace`,
+`secrets`), tries the bridge exactly as tailbus runs it, prints the
+`[bridges.NAME]` table, and asks before adding it to tailbus's
+`config.toml` and before running `tailbus bridge install NAME`. It never
+changes a bridge already in that file, never prints a key, and without a
+terminal writes nothing.
 
 ## `codesmith bus`
 

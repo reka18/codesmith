@@ -3,6 +3,33 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **`codesmith bridge init NAME` sets up a tailbus bridge.** It asks in
+  the terminal: headless (`codesmith run` for each message) or a relay to
+  a session shared with `/bus share`; for a headless bridge, where it
+  works, a provider (untested ones tagged), a sign-in made for the bridge
+  alone (a key, pasted from the key page it offers or taken from an
+  environment variable you name; a Claude Code token for `claude-agent`;
+  or the provider's OAuth), a model, and an effort from that model's own
+  levels. It writes the bridge's folder and a 0600 key file for its
+  `secrets`, tries the bridge exactly as tailbus runs it, and prints the
+  `[bridges.NAME]` table. It adds the table to tailbus's config and runs
+  `tailbus bridge install` only after a yes, never changes a bridge
+  that's already there, and never prints a key. See `docs/tailbus.md`.
+- **`codesmith auth login PROVIDER --home DIR`** saves a login in another
+  CodeSmith home's auth store, such as a bridge's, reading that home's
+  config rather than yours or a project's. **`--to-file PATH`** writes
+  the key, or a Claude Code token, to a 0600 file of its own for a
+  bridge's `secrets`, and prints the line that reads it. A symlink there
+  is refused, and an existing file is replaced only after a yes.
+- **The sign-in picker ends with "For a bridge or another home…"**, in
+  `/login` and in `codesmith auth login`: it leads to `bridge init`,
+  `--home` or `--to-file`.
+- `/bus share NAME` points at `codesmith bridge init`, and a bridge's run
+  with no key now suggests `codesmith auth login PROVIDER --home DIR`
+  instead of a `HOME=` prefix.
+
 ## 0.5.1 — 2026-11-25
 
 0.5.0 was tagged but never released; its changes ship here.

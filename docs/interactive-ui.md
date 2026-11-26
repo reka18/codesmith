@@ -545,6 +545,14 @@ a login is saved:
   check (no key is stored) and shows Claude Code's version and models, or
   what to run when it is missing or signed out.
 
+The list's last row, **For a bridge or another home…**, offers setting up
+a [tailbus bridge](tailbus.md) (`codesmith bridge init NAME`), saving a
+login in another CodeSmith home (`codesmith auth login --home DIR`), or
+writing a key or Claude Code token to a file for a bridge's `secrets`
+(`codesmith auth login --to-file PATH`). It asks for the name, folder or
+file, then hands the terminal to that command and takes it back when you
+press **Enter** after it ends.
+
 When a provider's browser or device login has no client id configured,
 the dialog shows where to register an OAuth app and the redirect URL to
 give it, then asks for the client id. Everything drawn has its control

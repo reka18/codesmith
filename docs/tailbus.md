@@ -5,14 +5,99 @@ agents on your tailnet. A tailbus **bridge** answers an agent's messages
 by running a command once per message. CodeSmith can be that command in two
 ways:
 
-- [**A relay to a session you have open**](#a-session-you-have-open): a
-  Claude Code session sends to `reviewer@your-mac`, and the CodeSmith
-  session you shared as `reviewer` does the work, with you watching, and
-  answers.
-- [**A headless agent**](#a-headless-agent): every message gets a fresh
-  `codesmith run`, the way tailbus runs pi or Claude Code.
+- **A headless agent**: every message gets a fresh `codesmith run`, the
+  way tailbus runs pi or Claude Code, with its own home, model and key.
+- **A relay to a session you have open**: a Claude Code session sends to
+  `reviewer@your-mac`, and the CodeSmith session you shared as `reviewer`
+  does the work, with you watching, and answers.
 
-## A session you have open
+`codesmith bridge init NAME` sets up either one. The rest of this page is
+what it does, and how to do the same [by hand](#by-hand).
+
+## Setting up a bridge: `codesmith bridge init`
+
+```sh
+codesmith bridge init coder
+```
+
+It asks, in the terminal:
+
+1. **How it runs**: headless, or a relay to a session you shared with
+   `/bus share NAME` (it asks for that name).
+2. **The bridge's folder** (default `bridges/NAME` in CodeSmith's data
+   folder, or `--dir DIR`): its `home`, `workspace` and `secrets`, each
+   readable only by you. A folder that's already there is used only when
+   you say so, and what's in it is kept, so running it again picks up
+   where the last one left off.
+3. For a headless bridge:
+   - **Where the agent works**: a repository, or the bridge's own
+     `workspace`. Your home folder and `/` are refused, as `codesmith run`
+     refuses them.
+   - **A provider**, from the providers the bridge's home knows, with
+     untested ones tagged as elsewhere.
+   - **A sign-in made for the bridge**: a key, pasted (it offers the
+     provider's key page) or taken from an environment variable you name,
+     and never shown; a Claude Code token for `claude-agent` (it runs
+     `claude setup-token`, or takes a pasted one); or the provider's own
+     OAuth, saved in the bridge home's auth store. A key or token goes in
+     a file of its own under `secrets`, created 0600 and never through a
+     symlink, which the bridge's `secrets` read. A key that's already
+     there is kept unless you say otherwise. Logins that rest on files in
+     your own home (Claude Code's own login, an AWS profile, Google's
+     Application Default Credentials, the Azure CLI) aren't offered.
+   - **A model**, newest first (type part of a name to narrow the list),
+     then **an effort** from that model's own levels, or the provider's
+     default. The levels become the bridge's `options.efforts`, so a
+     request can name only one the model has.
+4. **The owner**: who may send it messages, offered from tailbus's config.
+
+Then it **tries the bridge exactly as tailbus will run it**: the same
+program and arguments, in the same folder, with tailbus's cleared
+environment (`HOME`, `PATH`, `TMPDIR`, a session database of its own)
+and the secrets read from their files, and a test message on stdin. It
+shows the answer, or why the run failed, with every secret taken out. A
+relay's try sends a message to the shared session, so it asks first and
+skips it unless you say yes.
+
+Last, it prints the `[bridges.NAME]` table and asks whether to add it to
+tailbus's config (`~/.config/tailbus/config.toml`, or where
+`$TAILBUS_HOME` or `$XDG_CONFIG_HOME` puts it), and then whether to run
+`tailbus bridge install NAME`. Nothing in that file changes without a
+yes. A bridge of the same name that's already there is never changed:
+replace it by hand. A config that's a symlink, or that isn't valid TOML,
+is left alone too. Without a terminal, `bridge init` writes nothing.
+
+The sign-in picker (`/login`, or `codesmith auth login` in a terminal)
+ends with **For a bridge or another home…**, which runs `bridge init`,
+or one of the two logins below.
+
+### Signing in for a bridge by hand
+
+```sh
+codesmith auth login fireworks --home /Users/you/agent-home/home   # into that home's auth store
+codesmith auth login fireworks --to-file ~/.secrets/fireworks      # a key file for `secrets`
+codesmith auth login claude-agent --to-file ~/.secrets/claude      # a Claude Code token
+```
+
+`--home DIR` saves the login in that home's `auth.json`
+(`DIR/.local/share/codesmith`), where a run with `HOME=DIR` finds it, and
+reads that home's config, not yours or a project's. The folder must
+exist and can't be your own home. `--to-file PATH` writes the key, or for
+`claude-agent` a Claude Code token, to `PATH` alone (0600), and prints the
+`secrets` line that reads it, such as `FIREWORKS_API_KEY = "PATH"`. It
+takes only a key or a token: an OAuth login, or a key that needs other
+answers, goes in a home with `--home`. An existing file is replaced only
+when you say so at a terminal; a symlink never is. Without a provider,
+either flag opens the sign-in picker for that home or file.
+
+## By hand
+
+What `bridge init` sets up, done yourself. For a headless agent it writes
+a short `kind = "codesmith"` table, which takes its arguments, environment,
+options and usage from tailbus's own defaults for CodeSmith; the full table
+below spells out what those amount to.
+
+### A session you have open
 
 1. In the CodeSmith session, share it:
 
@@ -67,12 +152,13 @@ Only sessions you shared can be reached, and `/bus unshare` closes one
 again. A share outlives the session's process, so a closed session stays
 reachable with `--offline run` until you unshare it.
 
-## A headless agent
+### A headless agent
 
 `codesmith run` takes the message on stdin and prints its answer, which is
 all a bridge needs. These options make it a good headless agent. `--effort`,
-`--tools`, `--no-tools`, `--no-mcp` and `--usage-log` are new after 0.4.1:
-check yours with `codesmith --version` and `codesmith run --help`.
+`--tools`, `--no-tools`, `--no-mcp` and `--usage-log` are new after 0.4.1,
+and `bridge init`, `auth login --home` and `--to-file` after 0.5.1: check
+yours with `codesmith --version` and `codesmith run --help`.
 
 | Bridge setting | CodeSmith |
 |---|---|
@@ -138,7 +224,7 @@ prints a warning on stderr and goes ahead; `"repo_warning": false` in the
 bridge home's `codesmith.json` quiets it. A narrowed run (`--tools` or
 `--no-tools`) never joins your [local bus](bus.md).
 
-### Signing in, the model and the effort
+#### Signing in, the model and the effort
 
 A run under a bridge sees none of your own sign-ins: only `HOME`, `PATH`,
 `TMPDIR` and what the bridge's table sets. Give it a provider one of these
@@ -148,12 +234,15 @@ ways:
   reads the key from that file (yours, `chmod 600`) for each run and passes
   it as the provider's usual variable (`FIREWORKS_API_KEY`,
   `ANTHROPIC_API_KEY`, `MOONSHOT_API_KEY`, …). A new key needs no restart.
+  `codesmith auth login fireworks --to-file /Users/you/.secrets/fireworks`
+  writes the file.
 - **A key saved in the bridge's home**, once:
-  `HOME=/Users/you/agent-home/home codesmith auth login fireworks`. It goes
-  in that home's `auth.json`, apart from yours.
-- **Claude Code** (`claude-agent`): save a `claude setup-token` token in the
-  bridge's home the same way (`codesmith auth login claude-agent`), and put
-  `claude` on the bridge's `path`.
+  `codesmith auth login fireworks --home /Users/you/agent-home/home`. It
+  goes in that home's `auth.json`, apart from yours.
+- **Claude Code** (`claude-agent`): a `claude setup-token` token, in a
+  file for `secrets` (`codesmith auth login claude-agent --to-file PATH`,
+  read as `CLAUDE_CODE_OAUTH_TOKEN`) or in the bridge's home
+  (`--home DIR`), and `claude` on the bridge's `path`.
 
 The model is `-m {MODEL}`: the bridge's `model`, or one a request picks from
 `options.models` (anything else is refused before the run starts). Without
@@ -162,7 +251,7 @@ one, it's `"model"` in the bridge home's `codesmith.json`. The effort is
 (`provider/model#high`). A level the model doesn't have is refused before
 any call; `codesmith debug model PROVIDER/MODEL` lists its levels.
 
-### Trying it by hand
+#### Trying it by hand
 
 Run what the bridge will run, as it will run it, before installing the
 bridge:

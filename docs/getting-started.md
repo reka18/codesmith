@@ -215,6 +215,12 @@ pasted URLs never reach the prompt, the model or the transcript, and are
 never drawn. Without a terminal, `codesmith auth login` prints the list and
 the command for each provider instead (see [`codesmith auth`](cli.md#codesmith-auth)).
 
+The list ends with **For a bridge or another home…**: setting up a
+[tailbus bridge](tailbus.md) with `codesmith bridge init`, a login saved in
+another CodeSmith home (`--home DIR`), or a key or Claude Code token
+written to a file of its own (`--to-file PATH`). From `/login` these run
+in the terminal, and the UI comes back when they're done.
+
 ## First session
 
 In a project folder:
