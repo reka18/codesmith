@@ -68,30 +68,24 @@ async fn auth_login_home_saves_the_key_in_that_homes_store_only() {
 async fn auth_login_home_refuses_your_own_home_and_a_missing_folder() {
     let e = Env::new();
     let out = e
-        .run_with_stdin(
-            &[
-                "auth",
-                "login",
-                "fireworks",
-                "--home",
-                e.home.to_str().unwrap(),
-            ],
-            KEY,
-        )
+        .run(&[
+            "auth",
+            "login",
+            "fireworks",
+            "--home",
+            e.home.to_str().unwrap(),
+        ])
         .await;
     assert_ne!(out.code, Some(0));
     assert!(out.stderr.contains("your own home"), "{}", out.both());
     let out = e
-        .run_with_stdin(
-            &[
-                "auth",
-                "login",
-                "fireworks",
-                "--home",
-                e.root.join("nope").to_str().unwrap(),
-            ],
-            KEY,
-        )
+        .run(&[
+            "auth",
+            "login",
+            "fireworks",
+            "--home",
+            e.root.join("nope").to_str().unwrap(),
+        ])
         .await;
     assert_ne!(out.code, Some(0));
     assert!(out.stderr.contains("create the folder"), "{}", out.both());
@@ -99,18 +93,15 @@ async fn auth_login_home_refuses_your_own_home_and_a_missing_folder() {
     // --home and --to-file together make no sense.
     let h = other_home(&e);
     let out = e
-        .run_with_stdin(
-            &[
-                "auth",
-                "login",
-                "fireworks",
-                "--home",
-                h.to_str().unwrap(),
-                "--to-file",
-                e.root.join("k").to_str().unwrap(),
-            ],
-            KEY,
-        )
+        .run(&[
+            "auth",
+            "login",
+            "fireworks",
+            "--home",
+            h.to_str().unwrap(),
+            "--to-file",
+            e.root.join("k").to_str().unwrap(),
+        ])
         .await;
     assert_ne!(out.code, Some(0));
     no_secret(&out, KEY);
@@ -146,16 +137,13 @@ async fn auth_login_to_file_writes_the_key_owner_only_and_names_its_variable() {
 
     // Not replaced without a terminal to ask at.
     let out = e
-        .run_with_stdin(
-            &[
-                "auth",
-                "login",
-                "fireworks",
-                "--to-file",
-                f.to_str().unwrap(),
-            ],
-            "fw-other-secret-000",
-        )
+        .run(&[
+            "auth",
+            "login",
+            "fireworks",
+            "--to-file",
+            f.to_str().unwrap(),
+        ])
         .await;
     assert_ne!(out.code, Some(0));
     assert!(out.stderr.contains("already exists"), "{}", out.both());
@@ -167,16 +155,13 @@ async fn auth_login_to_file_writes_the_key_owner_only_and_names_its_variable() {
     let link = e.root.join("link");
     std::os::unix::fs::symlink(&victim, &link).unwrap();
     let out = e
-        .run_with_stdin(
-            &[
-                "auth",
-                "login",
-                "fireworks",
-                "--to-file",
-                link.to_str().unwrap(),
-            ],
-            KEY,
-        )
+        .run(&[
+            "auth",
+            "login",
+            "fireworks",
+            "--to-file",
+            link.to_str().unwrap(),
+        ])
         .await;
     assert_ne!(out.code, Some(0));
     assert!(out.stderr.contains("symlink"), "{}", out.both());
@@ -197,7 +182,8 @@ async fn auth_login_to_file_takes_only_a_key_or_a_token() {
         let mut all = vec!["auth", "login"];
         all.extend(&args);
         all.extend(["--to-file", f.to_str().unwrap()]);
-        let out = e.run_with_stdin(&all, KEY).await;
+        // Refused before any key is read: no stdin to write to.
+        let out = e.run(&all).await;
         assert_ne!(out.code, Some(0), "{args:?}: {}", out.both());
         no_secret(&out, KEY);
         assert!(!f.exists(), "{args:?} wrote a file");
