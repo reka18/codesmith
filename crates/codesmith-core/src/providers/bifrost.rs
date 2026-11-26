@@ -303,7 +303,13 @@ pub fn levels_of(variants: &[variant::Variant]) -> Vec<Level> {
                 .as_i64()
                 .or_else(|| s["reasoning"]["max_tokens"].as_i64())
                 .or_else(|| s["thinkingConfig"]["thinkingBudget"].as_i64())
-                .filter(|_| s["effort"].is_null() && s["reasoning"]["effort"].is_null());
+                .filter(|_| {
+                    s["effort"].is_null()
+                        && s["reasoning"]["effort"].is_null()
+                        && s["thinkingConfig"]["thinkingLevel"].is_null()
+                })
+                // Gemini's `thinkingBudget: 0` is the `none` level, not a budget.
+                .filter(|n| *n > 0 || v.id != "none");
             Level {
                 id: v.id.clone(),
                 budget,
@@ -325,7 +331,8 @@ fn settings_variant(id: &str, s: Value) -> variant::Variant {
 }
 
 /// `levels` spelled for `protocol`: Anthropic's `thinking` and `effort`,
-/// the Chat API's `reasoning` object, the Responses API's effort.
+/// the Chat API's `reasoning` object, the Responses API's effort,
+/// Gemini's `thinkingConfig`.
 pub fn spell(levels: &[Level], protocol: Protocol) -> Vec<variant::Variant> {
     levels
         .iter()
@@ -341,6 +348,15 @@ pub fn spell(levels: &[Level], protocol: Protocol) -> Vec<variant::Variant> {
                     "thinking": {"type": "adaptive", "display": "summarized"},
                     "effort": e
                 }),
+                (Protocol::GoogleGemini, Some(n), _) => {
+                    json!({"thinkingConfig": {"includeThoughts": true, "thinkingBudget": n}})
+                }
+                (Protocol::GoogleGemini, None, "none") => {
+                    json!({"thinkingConfig": {"thinkingBudget": 0}})
+                }
+                (Protocol::GoogleGemini, None, e) => {
+                    json!({"thinkingConfig": {"includeThoughts": true, "thinkingLevel": e}})
+                }
                 (Protocol::OpenaiResponses, _, e) => json!({
                     "reasoningEffort": e,
                     "reasoningSummary": "auto",

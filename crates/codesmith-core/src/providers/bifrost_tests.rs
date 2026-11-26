@@ -55,8 +55,24 @@ fn levels_are_spelled_for_each_api() {
         s(&msgs[2]),
         json!({"thinking": {"type": "enabled", "budgetTokens": 31_999}})
     );
+    let gem = spell(&levels, Protocol::GoogleGemini);
+    assert_eq!(s(&gem[0]), json!({"thinkingConfig": {"thinkingBudget": 0}}));
+    assert_eq!(
+        s(&gem[1]),
+        json!({"thinkingConfig": {"includeThoughts": true, "thinkingLevel": "high"}})
+    );
+    assert_eq!(
+        s(&gem[2]),
+        json!({"thinkingConfig": {"includeThoughts": true, "thinkingBudget": 31_999}})
+    );
+    let resp = spell(&levels, Protocol::OpenaiResponses);
+    assert_eq!(s(&resp[1])["reasoningEffort"], "high");
     // Spelled and read back, the levels are the same.
-    for p in [Protocol::OpenaiChat, Protocol::AnthropicMessages] {
+    for p in [
+        Protocol::OpenaiChat,
+        Protocol::AnthropicMessages,
+        Protocol::GoogleGemini,
+    ] {
         assert_eq!(levels_of(&spell(&levels, p)), levels);
     }
 }
