@@ -4,6 +4,7 @@
 mod anthropic;
 pub mod aws;
 pub mod bedrock;
+pub mod bifrost;
 mod billing;
 mod cache;
 pub mod claude_agent;
@@ -1102,6 +1103,25 @@ pub enum Event {
         /// does not normalize (OpenCode's `usage.providerMetadata`).
         raw_usage: Option<Value>,
     },
+    /// Who served the response, from its headers, when a gateway says
+    /// (Bifrost): the first event of such a stream.
+    Served(Served),
+}
+
+/// What a gateway's response headers say about the request it served.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Served {
+    /// The gateway's id for the request (Bifrost's `x-bifrost-request-id`),
+    /// else the `x-request-id` sent with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// The upstream provider and model that ran it, after the gateway's
+    /// routing and fallbacks (`x-bifrost-routing-info-provider` and
+    /// `-model`); `None` when the gateway does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1254,7 +1274,9 @@ pub fn redact_urls(text: &str) -> String {
 
 pub type EventStream = BoxStream<'static, Result<Event, Error>>;
 
-#[derive(Debug, Clone, Default)]
+/// A provider's endpoint and credentials. Its `Debug` output never shows
+/// the key.
+#[derive(Clone, Default)]
 pub struct Provider {
     pub protocol: Protocol,
     /// The configured provider id (`deepseek`, `kimi-for-coding`), for
@@ -1275,6 +1297,26 @@ pub struct Provider {
     /// Hooks around the requests this provider sends (plugins' HTTP and
     /// WebSocket hooks); `None` costs nothing.
     pub hooks: Option<Hooks>,
+}
+
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provider")
+            .field("protocol", &self.protocol)
+            .field("name", &self.name)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "headers",
+                &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field("query", &self.query)
+            .field("auth", &self.auth)
+            .field("encoding", &self.encoding)
+            .field("compat", &self.compat)
+            .field("hooks", &self.hooks)
+            .finish()
+    }
 }
 
 impl Provider {
