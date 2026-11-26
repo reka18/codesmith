@@ -11,9 +11,11 @@ All notable changes to CodeSmith are listed here. Versions follow
   process cap, a request could miss the moment another session finished and
   wait until it timed out.
 - **Stopping a command on Linux signals only that command.** CodeSmith ran
-  `/bin/kill`, and the one in Ubuntu 24.04 reads only the first digit of a
-  process group: the command ignored the stop, and a group starting with 1
-  signalled every process you own. CodeSmith now signals the group itself.
+  `/bin/kill -TERM -<group>`, which procps's `kill` misreads. On Ubuntu
+  24.04 and Debian 12 it keeps only the group's first digit, so the command
+  ignored the stop, and a group starting with 1 signalled every process you
+  own. On Ubuntu 22.04 it signalled CodeSmith's own process group, so a stop
+  could end CodeSmith itself. CodeSmith now signals the group itself.
 - **The local bus: sessions on one machine work together.** Every
   CodeSmith session you have open joins a bus that only you can reach: no
   network listener, nothing hosted. A session's model can list the others

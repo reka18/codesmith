@@ -2358,8 +2358,9 @@ pub(super) async fn stop_child(
     child: &mut tokio::process::Child,
     grace: Duration,
 ) -> Option<Ending> {
-    // `kill(2)`, not `/bin/kill`: procps's (Ubuntu 24.04) reads `-TERM -1234`
-    // as group 1, which is every process the user has.
+    // `kill(2)`, not `/bin/kill`: procps's misreads `-TERM -12345` as group 1
+    // (every process the user has; procps 4, Ubuntu 24.04, Debian 12) or as
+    // 0 (this process's own group; procps 3, Ubuntu 22.04).
     if let Some(pid) = child.id() {
         signal_group(pid, Signal::Term);
         if let Ok(Ok(status)) = tokio::time::timeout(grace, child.wait()).await {
