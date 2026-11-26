@@ -82,10 +82,11 @@ mod turn;
 mod usage;
 mod view;
 
+pub(crate) use app::PickItem;
 pub(crate) use view::display_safe;
 
 use anyhow::{anyhow, Result};
-use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
+use app::{Action, App, Entry, Modal, Pick, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
 use codesmith_core::permission::{Approvals, Asker};
@@ -230,7 +231,25 @@ fn open_store() -> Option<Store> {
 }
 
 impl Runner {
+    /// As a session starts, fetch Bifrost's model list for the key afresh
+    /// (beside everything else), then refresh an open picker and say so if
+    /// the saved list stands in.
+    fn fetch_bifrost_models(&self) {
+        let Some(f) = codesmith_core::providers::bifrost::session_start(&self.loaded.config) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let notice = crate::cli::bifrost_wait(f).await;
+            let _ = tx.send(Ev::LocalModels);
+            if let Some(n) = notice {
+                let _ = tx.send(Ev::Notice(n));
+            }
+        });
+    }
+
     fn make(&self, resume: Option<String>) -> Result<Session> {
+        self.fetch_bifrost_models();
         let mut s = Session::new(
             &self.loaded,
             self.cwd.clone(),

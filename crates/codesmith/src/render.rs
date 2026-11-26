@@ -24,7 +24,17 @@ pub struct UsageLog {
     file: Option<std::fs::File>,
     model: String,
     session: String,
+    /// The estimated USD of a step (see [`Estimate`]).
+    estimate: Option<Estimate>,
+    /// What the gateway said about the step that ends next.
+    served: Option<codesmith_ai::Served>,
+    /// What the provider billed for the step that ends next.
+    billed: Option<f64>,
 }
+
+/// Works out a step's estimated USD from its model, who served it and its
+/// usage (see `Config::estimate`).
+pub type Estimate = Box<dyn Fn(&str, Option<&codesmith_ai::Served>, &Usage) -> Option<f64> + Send>;
 
 impl UsageLog {
     /// Open `path` for appending (created 0600), for a run of `session`
@@ -44,7 +54,16 @@ impl UsageLog {
             file: Some(file),
             model: model.to_string(),
             session: session.to_string(),
+            estimate: None,
+            served: None,
+            billed: None,
         })
+    }
+
+    /// Estimate each step's USD with `f`.
+    pub fn with_estimate(mut self, f: Estimate) -> Self {
+        self.estimate = Some(f);
+        self
     }
 
     fn write(&mut self, v: Value) {
@@ -61,9 +80,42 @@ impl UsageLog {
         }
     }
 
-    /// A model step's line.
+    /// A model step's line, with what was said about it since the last.
     pub fn step(&mut self, reason: &FinishReason, usage: &Usage) {
-        let v = usage_line(&self.model, &self.session, reason, usage);
+        let served = self.served.take();
+        let billed = self.billed.take();
+        let estimated = self
+            .estimate
+            .as_ref()
+            .and_then(|f| f(&self.model, served.as_ref(), usage));
+        let v = usage_line(
+            &self.model,
+            &self.session,
+            reason,
+            usage,
+            &StepExtra {
+                billed,
+                estimated,
+                served,
+            },
+        );
+        self.write(v);
+    }
+
+    /// Who served the step that ends next.
+    pub fn served(&mut self, s: &codesmith_ai::Served) {
+        self.served = Some(s.clone());
+    }
+
+    /// What the provider billed for the step that ends next.
+    pub fn billed(&mut self, b: Option<f64>) {
+        self.billed = b;
+    }
+
+    /// The run's own line: what the gateway's budget for the key moved by
+    /// over the run (see `run_total_line`).
+    pub fn run_total(&mut self, source: &str, budget: &str, usd: f64) {
+        let v = run_total_line(&self.session, &self.model, source, budget, usd);
         self.write(v);
     }
 
@@ -74,8 +126,27 @@ impl UsageLog {
     }
 }
 
-/// The usage log's line for one step.
-pub fn usage_line(model: &str, session: &str, reason: &FinishReason, u: &Usage) -> Value {
+/// What a step's line says beyond its usage.
+#[derive(Debug, Clone, Default)]
+pub struct StepExtra {
+    /// The USD the provider reported it billed, as it reported it.
+    pub billed: Option<f64>,
+    /// The USD worked out from the token counts and the model's rates.
+    pub estimated: Option<f64>,
+    /// What the gateway said about the request.
+    pub served: Option<codesmith_ai::Served>,
+}
+
+/// The usage log's line for one step. `usd` is only ever what the
+/// provider billed (more than 0); `usd_estimated` is CodeSmith's estimate
+/// from token counts and rates, and the two are never mixed.
+pub fn usage_line(
+    model: &str,
+    session: &str,
+    reason: &FinishReason,
+    u: &Usage,
+    extra: &StepExtra,
+) -> Value {
     let mut v = json!({
         "type": "step",
         "session": session,
@@ -88,10 +159,37 @@ pub fn usage_line(model: &str, session: &str, reason: &FinishReason, u: &Usage) 
         "reasoning": u.reasoning,
         "time": chrono::Utc::now().to_rfc3339(),
     });
-    if let Some(c) = u.cost.filter(|c| c.is_finite()) {
+    if let Some(c) = extra.billed.filter(|c| c.is_finite() && *c > 0.0) {
         v["usd"] = json!(c);
     }
+    if let Some(c) = extra.estimated.filter(|c| c.is_finite() && *c >= 0.0) {
+        v["usd_estimated"] = json!(c);
+    }
+    if let Some(s) = &extra.served {
+        if let Some(id) = &s.request_id {
+            v["request_id"] = json!(id);
+        }
+        if let (Some(p), Some(m)) = (&s.provider, &s.model) {
+            v["served_model"] = json!(format!("{p}/{m}"));
+        }
+    }
     v
+}
+
+/// The run's line from a gateway's budget: `usd_quota` is what the key's
+/// budget moved by between the run's start and end, as the gateway
+/// counts it. It is the whole key's spend over that time (concurrent
+/// calls on the key included) and may lag, so it is never a step's cost.
+pub fn run_total_line(session: &str, model: &str, source: &str, budget: &str, usd: f64) -> Value {
+    json!({
+        "type": "run",
+        "session": session,
+        "model": model,
+        "source": source,
+        "budget": budget,
+        "usd_quota": usd,
+        "time": chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 /// The usage log's line for one tool call. Only the path of a file tool's
@@ -123,6 +221,11 @@ impl Printer {
     pub fn with_usage_log(mut self, log: UsageLog) -> Self {
         self.usage_log = Some(log);
         self
+    }
+
+    /// The usage log, if the run keeps one.
+    pub fn usage_log(&mut self) -> Option<&mut UsageLog> {
+        self.usage_log.as_mut()
     }
 
     fn emit(&self, v: Value) {
@@ -309,6 +412,18 @@ impl Sink for Printer {
         }
     }
 
+    fn served(&mut self, s: &codesmith_ai::Served) {
+        if let Some(log) = &mut self.usage_log {
+            log.served(s);
+        }
+    }
+
+    fn step_billed(&mut self, billed: Option<f64>) {
+        if let Some(log) = &mut self.usage_log {
+            log.billed(billed);
+        }
+    }
+
     fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
         if let Some(log) = &mut self.usage_log {
             log.step(reason, usage);
@@ -366,8 +481,80 @@ impl Sink for Printer {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe, safe};
+    use super::{describe, safe, usage_line, StepExtra};
     use serde_json::json;
+
+    fn step(u: &codesmith_ai::Usage, extra: StepExtra) -> serde_json::Value {
+        let r = codesmith_ai::FinishReason::new(codesmith_ai::Reason::Stop, "stop");
+        usage_line("bifrost/openai/m", "ses_1", &r, u, &extra)
+    }
+
+    // `usd` is only ever a billed cost above 0; a price CodeSmith worked
+    // out (a context tier's, carried in the usage) never shows as `usd`.
+    #[test]
+    fn usd_is_billed_cost_only_and_the_estimate_is_its_own_field() {
+        let priced = codesmith_ai::Usage {
+            input: 10,
+            cost: Some(1.5),
+            ..Default::default()
+        };
+        let v = step(&priced, StepExtra::default());
+        assert!(
+            v.get("usd").is_none() && v.get("usd_estimated").is_none(),
+            "{v}"
+        );
+        for billed in [Some(0.0), Some(-1.0), Some(f64::NAN), None] {
+            let v = step(
+                &priced,
+                StepExtra {
+                    billed,
+                    ..Default::default()
+                },
+            );
+            assert!(v.get("usd").is_none(), "{billed:?}: {v}");
+        }
+        let v = step(
+            &priced,
+            StepExtra {
+                billed: Some(0.25),
+                estimated: Some(0.2),
+                served: Some(codesmith_ai::Served {
+                    request_id: Some("req-1".into()),
+                    provider: Some("openai".into()),
+                    model: Some("m-mini".into()),
+                }),
+            },
+        );
+        assert_eq!(v["usd"], 0.25);
+        assert_eq!(v["usd_estimated"], 0.2);
+        assert_eq!(v["request_id"], "req-1");
+        assert_eq!(v["served_model"], "openai/m-mini");
+        // An estimate of 0 is still written; a broken one is not.
+        let v = step(
+            &priced,
+            StepExtra {
+                estimated: Some(0.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["usd_estimated"], 0.0);
+        let v = step(
+            &priced,
+            StepExtra {
+                estimated: Some(f64::INFINITY),
+                ..Default::default()
+            },
+        );
+        assert!(v.get("usd_estimated").is_none());
+    }
+
+    #[test]
+    fn the_run_line_is_never_a_step() {
+        let v = super::run_total_line("ses_1", "bifrost/openai/m", "bifrost-quota", "b1", 0.5);
+        assert_eq!(v["type"], "run");
+        assert_eq!(v["usd_quota"], 0.5);
+        assert!(v.get("usd").is_none());
+    }
 
     // OSC 52 (clipboard), OSC 8 (links), title changes, C1 controls and
     // bidi overrides in untrusted text are shown, not sent; line breaks

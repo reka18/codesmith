@@ -179,6 +179,7 @@ fn cost_of(c: Option<crate::catalog::Cost>) -> Value {
 pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
     let catalog = config.models_dev.as_ref().map(|c| c.catalog());
     let claude_saved = std::sync::OnceLock::new();
+    let bifrost_models = std::sync::OnceLock::new();
     let info = |pid: &str, id: &str| {
         let c = catalog.as_ref()?;
         if pid == crate::providers::claude_agent::ID {
@@ -194,6 +195,13 @@ pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
                 }
             });
         }
+        if pid == crate::providers::bifrost::ID {
+            return bifrost_models
+                .get_or_init(|| config.live_models(pid))
+                .iter()
+                .find(|m| m.id == id)
+                .cloned();
+        }
         c.model(pid, id).cloned()
     };
     let provider_name = |pid: &str| {
@@ -207,6 +215,7 @@ pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
                     .and_then(|c| c.provider(pid))
                     .map(|p| p.info.name.clone())
             })
+            .or_else(|| crate::providers::builtin(pid).and_then(|p| p.name))
             .unwrap_or_else(|| pid.to_string())
     };
     let row = |pid: &str, id: &str, name: Option<String>| -> Option<ModelRow> {
@@ -256,6 +265,10 @@ pub fn available(config: &Config, kind: &str) -> Vec<ModelRow> {
         .keyed_catalog_providers()
         .into_iter()
         .chain(claude_code)
+        .chain(
+            crate::providers::bifrost::ready(config)
+                .then(|| crate::providers::bifrost::ID.to_string()),
+        )
         .chain(crate::providers::local::providers(config))
     {
         if !providers.contains(&id) {

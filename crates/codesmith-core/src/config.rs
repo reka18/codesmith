@@ -490,6 +490,11 @@ pub struct ModelConfig {
     /// sessions), `decision`, `image` or `video`. Unset keeps the catalog's.
     #[serde(rename = "type")]
     pub kind: Option<String>,
+    /// The protocol this model speaks, in place of its provider's
+    /// (`openai-chat`, `anthropic-messages`, `openai-responses`, …), for a
+    /// provider whose models don't all speak the same one. On Bifrost it
+    /// also picks the gateway surface (see [`crate::providers::bifrost`]).
+    pub protocol: Option<Protocol>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -682,6 +687,101 @@ impl Config {
         })
     }
 
+    /// The estimated USD of one step of `provider/model` with usage `u`:
+    /// each token count (input, output, cache read, cache write) at the
+    /// model's base rate, from the first source that prices it: the
+    /// model's configured `cost`, then (on Bifrost) the gateway's model
+    /// list, then the catalog. A price of 0 counts as unpriced, never as
+    /// free, and `None` when a count the step has lacks a rate. On Bifrost
+    /// the model priced is the one the gateway says ran (`served`), which
+    /// routing or a fallback may have changed. Base rates only: no context
+    /// tiers, batch rates or a gateway's own overrides.
+    pub fn estimate(
+        &self,
+        spec: &str,
+        served: Option<&codesmith_ai::Served>,
+        u: &codesmith_ai::Usage,
+    ) -> Option<f64> {
+        use crate::providers::bifrost;
+        let (p, m) = split_variant(spec).0.split_once('/')?;
+        let bifrost = p == bifrost::ID;
+        let model = match served.filter(|_| bifrost) {
+            Some(codesmith_ai::Served {
+                provider: Some(up),
+                model: Some(rm),
+                ..
+            }) if !up.is_empty() && !rm.is_empty() => {
+                if rm.starts_with(&format!("{up}/")) {
+                    rm.clone()
+                } else {
+                    format!("{up}/{rm}")
+                }
+            }
+            _ => m.to_string(),
+        };
+        let positive = |v: f64| (v.is_finite() && v > 0.0).then_some(v);
+        let mut sources: Vec<[Option<f64>; 4]> = Vec::new();
+        let configured = self.provider(p).and_then(|c| c.models.get(&model).cloned());
+        if let Some(c) = configured.as_ref().and_then(|c| c.cost) {
+            sources.push([
+                positive(c.input),
+                positive(c.output),
+                positive(c.cache_read),
+                positive(c.cache_write),
+            ]);
+        }
+        let mut request = None;
+        if bifrost {
+            let kept = crate::providers::live::load(p);
+            let rates = kept
+                .as_ref()
+                .zip(self.live_account(p))
+                .and_then(|(k, a)| bifrost::gateway_rates(k, &a, &model));
+            if let Some(r) = rates {
+                let rate = |k: &str| r.get(k).and_then(Value::as_f64).and_then(positive);
+                sources.push([
+                    rate("input"),
+                    rate("output"),
+                    rate("cache_read"),
+                    rate("cache_write"),
+                ]);
+                request = rate("request");
+            }
+        }
+        if let Some(c) = self.models_dev.as_ref().map(|c| c.catalog()) {
+            let cm = if bifrost {
+                bifrost::upstream_model(&c, &model)
+            } else {
+                configured
+                    .as_ref()
+                    .and_then(|c| c.id.clone())
+                    .and_then(|id| c.model(p, &id))
+                    .or_else(|| c.model(p, &model))
+            };
+            if let Some(b) = cm.and_then(|cm| cm.base_cost()) {
+                sources.push([
+                    positive(b.input),
+                    positive(b.output),
+                    positive(b.cache.read),
+                    positive(b.cache.write),
+                ]);
+            }
+        }
+        let counts = [u.input, u.output, u.cache_read, u.cache_write];
+        let mut total = 0.0;
+        for (i, n) in counts.iter().enumerate() {
+            if *n == 0 {
+                continue;
+            }
+            let rate = sources.iter().find_map(|s| s[i])?;
+            total += *n as f64 * rate / 1_000_000.0;
+        }
+        if counts.iter().all(|n| *n == 0) && request.is_none() {
+            return None;
+        }
+        Some(total + request.unwrap_or(0.0))
+    }
+
     /// A provider's models of the given types (chat when empty): the
     /// catalog's and the configured ones, by id. A configured `type`
     /// replaces the catalog's.
@@ -725,11 +825,6 @@ impl Config {
                 out.push(id.clone());
             }
         }
-        let templates = catalog
-            .as_ref()
-            .and_then(|c| c.provider(provider))
-            .map(|p| p.models.as_slice())
-            .unwrap_or(&[]);
         // Claude Code's saved list (`codesmith models claude-agent`).
         if provider == crate::providers::claude_agent::ID && types.contains(&"chat") {
             for m in crate::providers::claude_agent::catalog().models {
@@ -739,11 +834,7 @@ impl Config {
             }
         }
         // A kept live list stands in for the catalog's models.
-        let live = crate::providers::live::models(
-            provider,
-            self.live_account(provider).as_deref(),
-            templates,
-        );
+        let live = self.live_models(provider);
         for m in &live {
             if m.enabled
                 && types.contains(&m.kind.as_str())
@@ -1949,12 +2040,20 @@ impl Config {
         let catalog = self.models_dev.as_ref().map(|c| c.catalog());
         let cp = catalog.as_ref().and_then(|c| c.provider(pid));
         // A model of the provider's kept live list wins over the catalog's.
-        let live = live_model(
-            cp,
-            pid,
-            self.live_account(pid).as_deref(),
-            m.id.as_deref().unwrap_or(mid),
-        );
+        let wanted = m.id.as_deref().unwrap_or(mid);
+        let live = self.live_models(pid).into_iter().find(|lm| lm.id == wanted);
+        let bifrost = pid == crate::providers::bifrost::ID;
+        // A Bifrost model must be one the virtual key may use (`_` is the
+        // provider itself, for listing its models).
+        if bifrost && mid != "_" && !p.models.contains_key(mid) {
+            if let Some(acct) = self.live_account(pid) {
+                crate::providers::bifrost::check(
+                    crate::providers::live::load(pid).as_ref(),
+                    &acct,
+                    wanted,
+                )?;
+            }
+        }
         let cm = live.as_ref().or_else(|| {
             catalog.as_ref().and_then(|c| {
                 m.id.as_deref()
@@ -2014,8 +2113,15 @@ impl Config {
             package: catalog_package,
             catalog_url: cm.and_then(|cm| cm.settings.as_ref()?.base_url.as_deref()),
             model_id: &model_id,
+            model_protocol: m.protocol,
         })?;
-        let protocol = plugin.as_ref().map_or(protocol, |r| r.protocol);
+        // The model's own protocol wins over its provider's (Bifrost's route
+        // took it into account already, as it picks the URL too).
+        let protocol = m
+            .protocol
+            .unwrap_or_else(|| plugin.as_ref().map_or(protocol, |r| r.protocol));
+        // Bifrost's route gives the URL of the API the model speaks there.
+        let configured_url = configured_url.filter(|_| !bifrost);
         let wire_model = plugin
             .as_ref()
             .and_then(|r| r.model_id.clone())
@@ -2175,19 +2281,33 @@ impl Config {
         }
         // Generated reasoning variants, then the configured ones, which
         // merge into a generated one of the same name.
-        let mut variants = generated_variants(GeneratedVariants {
-            protocol,
-            provider_id: pid,
-            model_id: &model_id,
-            output: max_output,
-            catalog: cm,
-            catalog_package,
-            reasoning: m
-                .capabilities
-                .as_ref()
-                .and_then(|c| c.reasoning.as_ref())
-                .map(ReasoningConfig::to_catalog),
-        });
+        let configured_reasoning = m
+            .capabilities
+            .as_ref()
+            .and_then(|c| c.reasoning.as_ref())
+            .map(ReasoningConfig::to_catalog);
+        // A Bifrost model's levels come from its listing, spelled for the
+        // API it's reached through; one the listing knows nothing about
+        // follows the protocol's family rules.
+        let bifrost_variants = cm
+            .filter(|_| bifrost && configured_reasoning.is_none())
+            .and_then(|cm| crate::providers::bifrost::variants(cm, protocol))
+            .map(|l| l.iter().map(|v| (v.id.clone(), v.to_overlay())).collect());
+        let mut variants = match bifrost_variants {
+            Some(v) => v,
+            None if bifrost && configured_reasoning.is_none() => {
+                codesmith_ai::builtin_variants(protocol, &model_id, max_output)
+            }
+            None => generated_variants(GeneratedVariants {
+                protocol,
+                provider_id: pid,
+                model_id: &model_id,
+                output: max_output,
+                catalog: cm,
+                catalog_package,
+                reasoning: configured_reasoning,
+            }),
+        };
         if let Some(c) = &claude {
             variants.extend(crate::providers::claude_agent::variants(c, &model_id));
         }
@@ -2381,17 +2501,30 @@ pub fn is_local_url(url: &str) -> bool {
     }
 }
 
-/// A model of a provider's kept live list (see [`crate::providers::live`]).
-fn live_model(
-    cp: Option<&crate::catalog::Snapshot>,
-    pid: &str,
-    account: Option<&str>,
-    id: &str,
-) -> Option<crate::catalog::Model> {
-    let templates = cp.map(|p| p.models.as_slice()).unwrap_or(&[]);
-    crate::providers::live::models(pid, account, templates)
-        .into_iter()
-        .find(|m| m.id == id)
+impl Config {
+    /// A provider's kept live list as catalog models (see
+    /// [`crate::providers::live`]), for the account it must have been
+    /// fetched for; empty without one.
+    pub fn live_models(&self, pid: &str) -> Vec<crate::catalog::Model> {
+        let catalog = self.models_dev.as_ref().map(|c| c.catalog());
+        let account = self.live_account(pid);
+        if pid == crate::providers::bifrost::ID {
+            let Some(kept) = crate::providers::live::load(pid) else {
+                return vec![];
+            };
+            if account.is_none() || kept["account"].as_str() != account.as_deref() {
+                return vec![];
+            }
+            let raw = kept["models"].as_array().cloned().unwrap_or_default();
+            return crate::providers::bifrost::derive(&raw, catalog.as_deref());
+        }
+        let templates = catalog
+            .as_ref()
+            .and_then(|c| c.provider(pid))
+            .map(|p| p.models.as_slice())
+            .unwrap_or(&[]);
+        crate::providers::live::models(pid, account.as_deref(), templates)
+    }
 }
 
 /// A `compaction` setting of a provider or model: `Some` for
@@ -2419,6 +2552,15 @@ impl Config {
     /// hosted provider's key fingerprint (see [`crate::providers::hosted`]).
     pub fn live_account(&self, pid: &str) -> Option<String> {
         let p = self.provider(pid)?;
+        // Bifrost's is for the gateway and virtual key it was fetched with.
+        if pid == crate::providers::bifrost::ID {
+            let root =
+                crate::providers::bifrost::root(&p.settings, &crate::providers::process_env())?;
+            return Some(crate::providers::bifrost::account(
+                &root,
+                provider_key(pid, &p).as_deref(),
+            ));
+        }
         // A hosted provider's list is for the key it was fetched with.
         if crate::providers::hosted::hosted(pid) {
             return Some(crate::providers::hosted::account(
@@ -2454,6 +2596,7 @@ struct PluginRoute<'a> {
     package: Option<&'a str>,
     catalog_url: Option<&'a str>,
     model_id: &'a str,
+    model_protocol: Option<Protocol>,
 }
 
 impl Config {
@@ -2464,6 +2607,7 @@ impl Config {
             settings: &r.p.settings,
             configured_url: r.configured_url,
             configured_protocol: r.user.and_then(|u| u.protocol),
+            model_protocol: r.model_protocol,
             package: r.package,
             catalog_url: r.catalog_url,
             model_id: r.model_id,

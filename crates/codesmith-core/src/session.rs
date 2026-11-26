@@ -76,6 +76,13 @@ pub trait Sink: Send {
     /// a few times a second, until its call ends or moves it to the
     /// background. Under a flood only the latest output is sent.
     fn tool_output(&mut self, _id: &str, _delta: &str) {}
+    /// A gateway named who served the step's response (Bifrost's request
+    /// id and routed provider and model), as its stream started.
+    fn served(&mut self, _served: &codesmith_ai::Served) {}
+    /// The cost the provider reported it billed for the step that ends next
+    /// (`None`: it reported none), before any price CodeSmith works out;
+    /// sent just before that step's `step_end`.
+    fn step_billed(&mut self, _billed: Option<f64>) {}
     fn step_end(&mut self, _reason: &FinishReason, _usage: &Usage) {}
     fn retry(&mut self, _attempt: u32, _error: &str, _wait: Duration) {}
     /// A compaction started: its summary streams through
@@ -2432,6 +2439,7 @@ impl Session {
             };
             steps += 1;
             compacted_this_step = false;
+            sink.step_billed(usage.cost);
             let usage = self.price_step(&self.model_spec, usage);
             self.count_usage(&usage);
             self.measured(&usage);
@@ -4895,6 +4903,7 @@ impl Session {
                 Event::TextDelta(d) => sink.text(d),
                 Event::ReasoningDelta(d) => sink.reasoning(d),
                 Event::Media(m) => sink.media(m),
+                Event::Served(s) => sink.served(s),
                 _ => {}
             }
         })

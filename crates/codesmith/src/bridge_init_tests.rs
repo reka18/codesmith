@@ -505,3 +505,42 @@ fn a_key_from_the_environment_is_named_plainly() {
     let e = cli::key_from_env("CODESMITH_TEST_SURELY_UNSET_9Q").unwrap_err();
     assert!(format!("{e}").contains("isn't set"), "{e}");
 }
+
+#[test]
+fn a_bifrost_bridge_keeps_its_gateway_url_in_its_own_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("codesmith.json");
+    std::fs::write(&f, "{\n  \"repo_warning\": false\n}\n").unwrap();
+    set_bifrost_url(&f, "http://gw.test:8080").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+    assert_eq!(v["repo_warning"], false, "what was there stays");
+    assert_eq!(
+        v["providers"]["bifrost"]["settings"]["baseURL"],
+        "http://gw.test:8080"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // A new file, then a second URL replacing the first.
+    let g = dir.path().join("new.json");
+    set_bifrost_url(&g, "http://a").unwrap();
+    set_bifrost_url(&g, "http://b").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&g).unwrap()).unwrap();
+    assert_eq!(v["providers"]["bifrost"]["settings"]["baseURL"], "http://b");
+    // A file that isn't plain JSON is left alone.
+    let h = dir.path().join("comments.json");
+    std::fs::write(&h, "{ // mine\n}").unwrap();
+    assert!(set_bifrost_url(&h, "http://a").is_err());
+    assert_eq!(std::fs::read_to_string(&h).unwrap(), "{ // mine\n}");
+}
+
+#[test]
+fn bifrost_is_offered_to_a_bridge_with_its_key_variable() {
+    let cfg = codesmith_core::config::Config::default();
+    assert_eq!(
+        cli::key_var(&cfg, codesmith_core::providers::bifrost::ID).as_deref(),
+        Some("BIFROST_API_KEY")
+    );
+}
