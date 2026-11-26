@@ -3293,8 +3293,10 @@ mod tests {
         let mut c = start(&cwd, &base);
         let sid = c.new_session(&cwd).await;
         PARK_RESUME.lock().unwrap().push(sid.clone());
-        launch(&mut c, &sid, "sleep 0.2; echo done-held").await;
-        for _ in 0..200 {
+        // Long enough to outlast the turn that starts it on a loaded
+        // machine, so that turn doesn't report it itself.
+        launch(&mut c, &sid, "sleep 1; echo done-held").await;
+        for _ in 0..500 {
             if resumes(&sid) > 0 {
                 break;
             }
