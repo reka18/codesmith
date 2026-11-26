@@ -228,6 +228,27 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             };
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
+        // Gemini's own model list, for a real gateway's upstream.
+        ("GET", p) if p.ends_with("/models") && p != "/v1/models" => {
+            let models = st
+                .lock()
+                .unwrap()
+                .models
+                .get("")
+                .cloned()
+                .unwrap_or_default();
+            let list: Vec<Value> = models
+                .iter()
+                .filter_map(|m| m["id"].as_str())
+                .filter(|id| id.starts_with("test-gemini"))
+                .map(|id| {
+                    json!({"name": format!("models/{id}"), "displayName": id,
+                                 "supportedGenerationMethods": ["generateContent"]})
+                })
+                .collect();
+            let body = json!({"models": list}).to_string();
+            respond(&mut s, 200, "application/json", &[], &body).await;
+        }
         ("GET", "/datasheet") => {
             let body = st.lock().unwrap().datasheet.clone();
             match body {
@@ -252,9 +273,7 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
                 || p == "/anthropic/v1/messages"
                 || p == "/v1/messages"
                 || p == "/v1/responses"
-                || ((p.starts_with("/genai/v1beta/models/")
-                    || p.starts_with("/v1beta/models/"))
-                    && p.ends_with(":streamGenerateContent")) =>
+                || p.ends_with(":streamGenerateContent") =>
         {
             let (fail, headers, cost, tokens, tool) = {
                 let mut g = st.lock().unwrap();
