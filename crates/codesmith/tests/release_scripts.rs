@@ -1097,6 +1097,87 @@ fn release_sh_writes_the_manifest_the_signing_scripts_check() {
     assert!(!dist.join("BUILT-SHA256SUMS.tmp").exists());
 }
 
+/// Fixed: release.sh's install check ran the real install.sh against the
+/// unsigned build, which it refuses, so every release stopped there. It now
+/// signs a copy with a throwaway key and runs install.sh trusting only that,
+/// so the signature check still runs; a tarball that doesn't match the sums
+/// still fails. Needs the real minisign, so it runs only where that is.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn release_sh_install_check_verifies_a_throwaway_signature() {
+    let minisign = ["/opt/homebrew/bin/minisign", "/usr/local/bin/minisign"]
+        .into_iter()
+        .find(|p| Path::new(p).exists());
+    let Some(minisign) = minisign else {
+        return;
+    };
+    if !have_system_tools() {
+        return;
+    }
+    let script = fs::read_to_string(repo_root().join("scripts/release.sh")).unwrap();
+    let start = script.find("# >>> install check").unwrap();
+    let end = script.find("# <<< install check").unwrap();
+    let part = &script[start..end];
+    let run = |tamper: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let dist = dir.path().join("dist");
+        let name = "codesmith-2.0.0-aarch64-apple-darwin";
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(dist.join(name)).unwrap();
+        fs::copy(repo_root().join("install.sh"), repo.join("install.sh")).unwrap();
+        let bin = dist.join(name).join("codesmith");
+        fs::write(&bin, "#!/bin/sh\necho 'codesmith 2.0.0'\n").unwrap();
+        fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let tarball = format!("{name}.tar.gz");
+        let ok = Command::new("/usr/bin/tar")
+            .args(["-czf", &tarball, name])
+            .current_dir(&dist)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let mut sum = sha256(&dist.join(&tarball));
+        if tamper {
+            sum = "0".repeat(64);
+        }
+        fs::write(dist.join("SHA256SUMS"), format!("{sum}  {tarball}\n")).unwrap();
+        let bin_dir = Path::new(minisign).parent().unwrap();
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "set -eu\nsay() {{ printf '== %s\\n' \"$*\" >&2; }}\n\
+                 die() {{ printf 'release: error: %s\\n' \"$*\" >&2; exit 1; }}\n\
+                 {part}\nprintf '%s\\n' \"$installed\""
+            ))
+            .current_dir(&repo)
+            .env("dist", &dist)
+            .env("version", "2.0.0")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+            .env("TMPDIR", dir.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        // The real install.sh and the checkout are untouched.
+        assert_eq!(
+            fs::read(repo.join("install.sh")).unwrap(),
+            fs::read(repo_root().join("install.sh")).unwrap()
+        );
+        assert!(!dist.join("SHA256SUMS.minisig").exists());
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr,
+        )
+    };
+    let (ok, stdout, stderr) = run(false);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout.trim(), "codesmith 2.0.0");
+    assert!(stderr.contains("signature ok"), "{stderr}");
+    let (ok, _, stderr) = run(true);
+    assert!(!ok, "a tarball not matching SHA256SUMS installed: {stderr}");
+    assert!(stderr.contains("checksum mismatch"), "{stderr}");
+}
+
 // ---------------------------------------------------------------------------
 // release.sh --draft-upload preflight
 
