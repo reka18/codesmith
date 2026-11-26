@@ -5,6 +5,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Fixed: in an editor (ACP), a prompt sent straight after a cancel could
+  fail** with "Session already has an active ACP prompt" while the cancel
+  reloaded the session. It now waits for the session and runs.
 - **`codesmith bridge init NAME` sets up a tailbus bridge.** It asks in
   the terminal: headless (`codesmith run` for each message) or a relay to
   a session shared with `/bus share`; for a headless bridge, where it

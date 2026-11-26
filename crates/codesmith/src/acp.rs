@@ -1315,6 +1315,9 @@ struct Slot {
     queued: Mutex<Option<Value>>,
     /// Notified when a turn gives the session back or is stopped.
     idle: tokio::sync::Notify,
+    /// Stops settling a turn (and maybe reloading the session): while any
+    /// run, a prompt waits for them rather than failing as busy.
+    stopping: AtomicUsize,
     /// Closed, deleted or replaced: never resume it again.
     closed: AtomicBool,
     current: Current,
@@ -2061,6 +2064,7 @@ impl Agent {
             mode: Mutex::new(None),
             model: Mutex::new(None),
             stale: AtomicBool::new(false),
+            stopping: AtomicUsize::new(0),
             shown: Default::default(),
             approvals,
             jobs,
@@ -2694,7 +2698,9 @@ impl Agent {
                     *slot.running.lock().unwrap() = Some(Running::Prompt(rpc.clone()));
                     return Ok(Some(s));
                 }
-                if *slot.running.lock().unwrap() != Some(Running::Resumed) {
+                if *slot.running.lock().unwrap() != Some(Running::Resumed)
+                    && slot.stopping.load(Ordering::SeqCst) == 0
+                {
                     return Err(busy());
                 }
                 *queued = Some(rpc.clone());
@@ -2905,6 +2911,11 @@ impl Agent {
                 w.abort();
             }
         }
+        // Before the queued prompt is taken: a prompt arriving from here on
+        // waits for this stop to give the session back.
+        if reload {
+            slot.stopping.fetch_add(1, Ordering::SeqCst);
+        }
         let queued = slot.queued.lock().unwrap().take();
         // A wake holds the session while it starts a turn: let it finish,
         // so that turn is the one stopped here.
@@ -2928,6 +2939,9 @@ impl Agent {
             if let Some(running) = running {
                 self.cancelled(sid, slot, running, reload).await;
             }
+        }
+        if reload {
+            slot.stopping.fetch_sub(1, Ordering::SeqCst);
         }
         slot.idle.notify_waiters();
         // Last, so a client acting on it finds the session reloaded.
@@ -3268,6 +3282,41 @@ mod tests {
             .await;
         assert_eq!(resumes(&sid), 2);
         assert!(chunk_text(&m).unwrap().contains("done-"), "{m}");
+    }
+
+    // A prompt sent right after a cancel of a resumed turn waits for the
+    // cancel to give the session back, rather than failing as busy while
+    // the cancel reloads it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_prompt_right_after_a_cancel_waits_for_the_session() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        PARK_RESUME.lock().unwrap().push(sid.clone());
+        launch(&mut c, &sid, "sleep 0.2; echo done-held").await;
+        for _ in 0..200 {
+            if resumes(&sid) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(resumes(&sid), 1);
+        PARK_RESUME.lock().unwrap().retain(|s| *s != sid);
+        // No pause: the prompt races the cancel.
+        c.notify("session/cancel", json!({"sessionId": sid})).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "background echo done-later"}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, allow_once).await;
+        assert!(done.get("error").is_none(), "{done} {seen:?}");
+        assert!(
+            ["end_turn", "cancelled"]
+                .contains(&done["result"]["stopReason"].as_str().unwrap_or("")),
+            "{done}"
+        );
     }
 
     pub(super) async fn settle_pause(sid: &str) {
