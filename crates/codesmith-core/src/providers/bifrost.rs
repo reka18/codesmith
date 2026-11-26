@@ -505,7 +505,7 @@ impl Outcome {
                 ago(*saved)
             )),
             Outcome::Missing { error } => Some(format!(
-                "Bifrost: couldn't fetch this key's model list ({error}), and none is saved; models aren't checked until it can be fetched"
+                "Bifrost: couldn't fetch this key's model list ({error}), and none is saved; its models are refused until it can be fetched"
             )),
         }
     }
@@ -559,7 +559,10 @@ pub fn session_start_in(cfg: &crate::config::Config, path: &Path) -> Option<Pend
                 .await
                 .unwrap_or_else(|_| Err(anyhow!("the gateway took too long")));
             match r {
-                Ok(ids) => Outcome::Fresh(ids.len()),
+                Ok(ids) => {
+                    unlisted(&account, None);
+                    Outcome::Fresh(ids.len())
+                }
                 Err(e) => {
                     let error = codesmith_ai::bifrost::redact(
                         &format!("{e:#}"),
@@ -572,7 +575,10 @@ pub fn session_start_in(cfg: &crate::config::Config, path: &Path) -> Option<Pend
                             error,
                             saved: k["fetched"].as_u64().unwrap_or(0),
                         },
-                        None => Outcome::Missing { error },
+                        None => {
+                            unlisted(&account, Some((&root, &error)));
+                            Outcome::Missing { error }
+                        }
                     }
                 }
             }
@@ -595,10 +601,34 @@ pub async fn wait(f: Pending, limit: Duration) -> Option<Outcome> {
     tokio::time::timeout(limit, f).await.ok()
 }
 
+/// The keys whose session-start fetch failed with no list saved: the
+/// gateway's URL and why, by account.
+static UNLISTED: std::sync::Mutex<Vec<(String, String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Note that `account`'s list couldn't be fetched (`Some((root, why))`)
+/// and none is saved, or that it now can be (`None`).
+fn unlisted(account: &str, failed: Option<(&str, &str)>) {
+    let mut u = UNLISTED.lock().unwrap_or_else(|e| e.into_inner());
+    u.retain(|(a, _, _)| a != account);
+    if let Some((root, why)) = failed {
+        u.push((account.to_string(), root.to_string(), why.to_string()));
+    }
+}
+
 /// Whether `model` may be used with the kept list `kept` (for `account`):
-/// `Ok` when it's listed or no list is kept for this key.
+/// `Ok` when it's listed, or when no list is kept for this key and none
+/// has failed to come either (nothing has asked the gateway yet). When the
+/// gateway couldn't be reached at a session's start and no list is saved,
+/// every model is refused, as nothing says what the key allows.
 pub fn check(kept: Option<&Value>, account: &str, model: &str) -> Result<()> {
     let Some(k) = kept.filter(|k| k["account"].as_str() == Some(account)) else {
+        let u = UNLISTED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, root, why)) = u.iter().find(|(a, _, _)| a == account) {
+            return Err(anyhow!(
+                "bifrost/{model}: the Bifrost gateway at {root} couldn't be reached to list the models this key allows ({why}), and there's no saved list yet; check the URL, the key and the gateway, then try again"
+            ));
+        }
         return Ok(());
     };
     let ids: Vec<&str> = k["models"]
