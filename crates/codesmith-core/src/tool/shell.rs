@@ -2358,21 +2358,14 @@ pub(super) async fn stop_child(
     child: &mut tokio::process::Child,
     grace: Duration,
 ) -> Option<Ending> {
-    #[cfg(unix)]
+    // `kill(2)`, not `/bin/kill`: procps's (Ubuntu 24.04) reads `-TERM -1234`
+    // as group 1, which is every process the user has.
     if let Some(pid) = child.id() {
-        let signal = |sig: &'static str| {
-            tokio::process::Command::new("/bin/kill")
-                .arg(sig)
-                .arg(format!("-{pid}"))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-        };
-        let _ = signal("-TERM").await;
+        signal_group(pid, Signal::Term);
         if let Ok(Ok(status)) = tokio::time::timeout(grace, child.wait()).await {
             return Some(ending_of(status));
         }
-        let _ = signal("-KILL").await;
+        signal_group(pid, Signal::Kill);
     }
     let _ = child.kill().await;
     child.wait().await.ok().map(ending_of)
@@ -4744,10 +4737,7 @@ mod tests {
             .await
             .unwrap();
         let pid = jobs.shared.jobs.lock().unwrap()[0].pid.unwrap();
-        std::process::Command::new("/bin/kill")
-            .args(["-TERM", &format!("-{pid}")])
-            .status()
-            .unwrap();
+        assert!(signal_group(pid, Signal::Term));
         tokio::time::timeout(Duration::from_secs(1), jobs.wait_any())
             .await
             .unwrap();
