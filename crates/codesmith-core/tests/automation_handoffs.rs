@@ -613,7 +613,12 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
                 rusqlite::params![id, codesmith_core::store::now() - 1],
             );
         }
-        refuse(&w, mode.refuse && rng.next().is_multiple_of(3));
+        // The first iteration (always before the expiry) refuses and lets
+        // its runners finish, so every refusing seed has a failed handoff
+        // whatever the machine's timing; the rest refuse at random.
+        let forced = mode.refuse && i == 0;
+        let refusing = mode.refuse && rng.next().is_multiple_of(3);
+        refuse(&w, forced || refusing);
         if au::pending(&w.db, &id).unwrap().is_empty() && admitted_before.is_none() {
             w.due_now(&id);
         }
@@ -627,24 +632,33 @@ async fn random_kills(seed: u64, pair: bool, mode: Mode) {
             _ => rng.next() % 150,
         };
         tokio::time::sleep(Duration::from_millis(wait)).await;
-        match (second, rng.next() % 3) {
-            (Some(s), 0) => {
-                first.kill(&w.db).await;
-                tokio::time::timeout(DEADLINE, s.join(&w.db))
+        let kill = rng.next() % 3;
+        if forced {
+            for r in std::iter::once(first).chain(second) {
+                tokio::time::timeout(DEADLINE, r.join(&w.db))
                     .await
-                    .expect("the surviving runner finishes");
+                    .expect("the runner finishes");
             }
-            (Some(s), 1) => {
-                s.kill(&w.db).await;
-                first.kill(&w.db).await;
+        } else {
+            match (second, kill) {
+                (Some(s), 0) => {
+                    first.kill(&w.db).await;
+                    tokio::time::timeout(DEADLINE, s.join(&w.db))
+                        .await
+                        .expect("the surviving runner finishes");
+                }
+                (Some(s), 1) => {
+                    s.kill(&w.db).await;
+                    first.kill(&w.db).await;
+                }
+                (Some(s), _) => {
+                    s.kill(&w.db).await;
+                    tokio::time::timeout(DEADLINE, first.join(&w.db))
+                        .await
+                        .expect("the surviving runner finishes");
+                }
+                (None, _) => first.kill(&w.db).await,
             }
-            (Some(s), _) => {
-                s.kill(&w.db).await;
-                tokio::time::timeout(DEADLINE, first.join(&w.db))
-                    .await
-                    .expect("the surviving runner finishes");
-            }
-            (None, _) => first.kill(&w.db).await,
         }
         let ended = codesmith_core::store::now();
         refuse(&w, false);
@@ -774,7 +788,13 @@ fn check_invariants(w: &World, id: &str, mode: Mode) {
         assert!(posts.is_empty());
     } else {
         // State is committed exactly with each admission.
-        assert_eq!(a.state, json!(admitted), "{rows:?}");
+        // A program never admitted has committed no state at all.
+        let state = if admitted == 0 && a.state.is_null() {
+            json!(0)
+        } else {
+            a.state.clone()
+        };
+        assert_eq!(state, json!(admitted), "{rows:?}");
     }
 }
 
