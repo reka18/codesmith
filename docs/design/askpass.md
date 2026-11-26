@@ -1,6 +1,6 @@
 # Design: passwords for commands, from the terminal and the phone
 
-Status: **plan for approval.** Nothing here is built yet.
+Status: **plan; Ray's answers to its questions recorded, building not yet approved.** Nothing here is built yet.
 
 When a command the agent runs needs a password (`sudo`, an `ssh` key's
 passphrase, `git` over HTTPS), CodeSmith asks you for it. You type it in the
@@ -64,10 +64,14 @@ a project can set:
 - `CODESMITH_ASKPASS_TOKEN`: 32 random bytes, valid only while this command
   runs.
 - A `sudo` wrapper first on `PATH`. It runs the real `sudo` (found as a
-  root-owned setuid file) with `-A -k` added. A command calling
-  `/usr/bin/sudo` directly still has no terminal. If it uses the askpass at
-  all, the process checks below still apply, and `sudo -K` at the end clears
-  any timestamp it left.
+  root-owned setuid file) with `-A -k` added.
+- **A `sudo` that bypasses the wrapper is refused** (Ray, 2026-11-26), for
+  example `/usr/bin/sudo` called by path, or through `env`, `command` or a
+  script. The askpass request is refused unless `sudo`'s parent is the
+  wrapper. The wrapper is CodeSmith's own binary, checked by path and
+  inode. The refusal error says to call `sudo` by name. A command line
+  that names `sudo` by path is also refused before it runs. `sudo -K` at the
+  end of each command clears any timestamp, whatever ran.
 
 ### A request
 
@@ -232,8 +236,19 @@ device with `control` on the session.
   - **Clearing the plaintext is best effort.** Swift strings can't be
     zeroed, so iOS keeps the secret in a byte buffer it overwrites after
     sealing. Android uses a `CharArray`, never a `String`.
-- **Settings:** `remote.secret_prompts`, global config only, default
-  `true`. `false` keeps password prompts terminal-only.
+- **Asked for each session** (Ray, 2026-11-26). The first time a session
+  has a control device with an unlock key, which is when the session starts
+  if one is already paired, CodeSmith asks once: "Send password prompts in
+  this session to your phone too?" The question is asked where the session
+  is being driven: in the terminal, or on the phone when the phone started
+  it.
+  - The answer holds for that session only. It's never saved, so every new
+    session asks again.
+  - Until it's answered, password prompts stay terminal-only.
+  - A session with no terminal (a bridge, `codesmith run`) can only be
+    answered from the phone.
+  - `remote.secret_prompts: false` in the global config turns phone password
+    prompts off entirely, and nothing is asked.
 
 ### Touch ID for sudo (macOS, local only)
 
@@ -246,8 +261,16 @@ the password prompt above is only the fallback.
 
 If you're on the phone, a Touch ID dialog on the Mac's screen can't be
 answered. CodeSmith tells the phone it's waiting for Touch ID on the Mac,
-then shows the password prompt once `sudo` falls back. Open question 2 asks
-whether to detect this and skip Touch ID.
+then shows the password prompt once `sudo` falls back.
+
+**Every command asks, every time** (Ray, 2026-11-26). Each command that
+needs a password asks for it, or for Touch ID on the Mac. Being signed in to
+the phone, or having answered a moment ago, never counts. Nothing is
+remembered: no `sudo` grace period (`-k` and `-K`), no saved password, no
+"don't ask again". On the phone, each answer needs both the password typed
+and a passkey signature (Face ID, Touch ID or the device credential). The
+phone's biometric proves you're the one answering. It never stands in for
+the password, which CodeSmith doesn't have.
 
 ## Permissions and audit
 
@@ -280,7 +303,10 @@ whether to detect this and skip Touch ID.
   - a request from the agent's own command, not the real `sudo`;
   - a wrong, expired or reused token;
   - a parent outside the command's process group;
-  - another uid.
+  - another uid;
+  - a `sudo` that bypasses the wrapper (`/usr/bin/sudo`, `env sudo`,
+    `command sudo`, a script calling it by path), which fails with the error
+    saying to call `sudo` by name.
 - **What will run:** the prompt shows `sudo`'s real arguments, including
   when the `sudo` is hidden inside a script.
 - **Grace period:** a second `sudo` in the same command, and one in the next
@@ -300,7 +326,9 @@ whether to detect this and skip Touch ID.
   - another device's signature fails;
   - a `watch` device gets 403;
   - an expired request gets 404;
-  - with `remote.secret_prompts: false`, nothing is offered;
+  - with `remote.secret_prompts: false`, nothing is offered or asked;
+  - each new session asks once, a "no" or no answer keeps prompts
+    terminal-only, and the answer doesn't carry over to the next session;
   - the push has no content.
 - **First answer wins** between the terminal and the phone, and the other
   side closes its prompt.
@@ -310,12 +338,12 @@ whether to detect this and skip Touch ID.
   on Linux and macOS.
 - **Rate limits** and the audit lines.
 
-## Open questions
+## Decisions
 
-1. Should `remote.secret_prompts` default to `true` (as drafted, because you
-   want it on the phone), or be opt-in?
-2. With Touch ID set up and you on the phone, should CodeSmith skip Touch ID
-   for that `sudo` (`sudo` can't be told to; it would need a separate PAM
-   service for agent commands), or wait for the fallback as drafted?
-3. Should a command that calls the real `sudo` directly, bypassing the
-   wrapper, be refused outright rather than allowed through the checks?
+Ray decided these on 2026-11-26:
+
+1. Whether password prompts go to the phone is asked once in each new
+   session and holds for that session alone ([On the phone](#on-the-phone)).
+2. Every command that needs a password asks every time, for the password or
+   Touch ID. Nothing is remembered, and no `sudo` grace period applies.
+3. A `sudo` that bypasses CodeSmith's wrapper is refused.
