@@ -63,7 +63,7 @@ pub struct State {
 pub struct Gateway {
     pub url: String,
     pub state: Arc<Mutex<State>>,
-    stop: Arc<tokio::sync::Notify>,
+    down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Gateway {
@@ -71,27 +71,30 @@ impl Gateway {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
         let state = Arc::new(Mutex::new(state));
-        let stop = Arc::new(tokio::sync::Notify::new());
-        let (st, sp) = (state.clone(), stop.clone());
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (st, dn) = (state.clone(), down.clone());
         tokio::spawn(async move {
             loop {
-                let accepted = tokio::select! {
-                    a = l.accept() => a,
-                    _ = sp.notified() => return,
-                };
-                let Ok((s, _)) = accepted else { return };
+                let Ok((s, _)) = l.accept().await else { return };
+                if dn.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Down: the connection is closed unanswered.
+                    drop(s);
+                    continue;
+                }
                 let st = st.clone();
                 tokio::spawn(async move {
                     let _ = serve(s, st).await;
                 });
             }
         });
-        Gateway { url, state, stop }
+        Gateway { url, state, down }
     }
 
-    /// Stop listening: the gateway is down from now on.
+    /// The gateway is down from now on: every new connection is closed
+    /// unanswered. The port stays held, so another test's gateway can't
+    /// take it and answer in its place (a freed port can be reused at once).
     pub fn stop(&self) {
-        self.stop.notify_waiters();
+        self.down.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn seen(&self) -> Vec<Seen> {
