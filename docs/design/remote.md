@@ -172,8 +172,9 @@ SHA-256("codesmith-pair-check/1\n" + code + "\n" + machine_node_id_hex + "\n" + 
 Node ids are lower-cased. The clients currently take the first 4 bytes as a
 big-endian integer mod 1,000,000, shown as `123 456`.
 
-**Proposed change:** show 12 digits (`123 456 789 012`, the first 5 bytes,
-about 40 bits). Someone who sees your QR has up to 180 s to make device keys
+**Proposed change:** show 12 digits (`123 456 789 012`: the first 8 bytes
+as a big-endian integer mod 10^12, zero-padded, about 40 bits; 8 bytes
+rather than 5 keeps the digits evenly spread). The app team supports this. Someone who sees your QR has up to 180 s to make device keys
 until one matches the code you'll compare. Six digits takes about a million
 tries, which is seconds on one machine. Twelve digits takes about a trillion,
 which can't be done in that window. The wire is unchanged; only the shown
