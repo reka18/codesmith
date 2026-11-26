@@ -3,16 +3,8 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.6.0 — 2026-11-26
 
-- **A Bifrost model is refused when the gateway can't list the key's
-  models and none is saved yet**, with an error naming the gateway's URL,
-  instead of running unchecked.
-- **Bifrost's Responses and Gemini APIs** are reached with a model's
-  `protocol` setting (`<base>/v1/responses`,
-  `<base>/genai/v1beta/models/…`), with the gateway's request id and
-  routed model on Gemini streams too, and Gemini's effort levels sent as
-  `thinkingConfig`.
 - **Bifrost is a built-in provider.** `bifrost` reaches models through a
   [Bifrost](https://github.com/maximhq/bifrost) gateway with a virtual
   key (`BIFROST_BASE_URL` and `BIFROST_API_KEY`, or `settings.baseURL`
@@ -25,6 +17,14 @@ All notable changes to CodeSmith are listed here. Versions follow
   outside it is refused. Each model offers the effort levels it has
   reached directly. Every request carries a fresh `x-request-id`, and
   `codesmith bridge init` offers Bifrost. See `docs/configuration.md`.
+- **Bifrost's Responses and Gemini APIs** are reached with a model's
+  `protocol` setting (`<base>/v1/responses`,
+  `<base>/genai/v1beta/models/…`), with the gateway's request id and
+  routed model on Gemini streams too, and Gemini's effort levels sent as
+  `thinkingConfig`.
+- **A Bifrost model is refused when the gateway can't list the key's
+  models and none is saved yet**, with an error naming the gateway's URL,
+  instead of running unchecked.
 - **A model's `protocol` setting** picks the protocol it speaks, in place
   of its provider's.
 - **`--usage-log` step lines gain `usd_estimated`**, CodeSmith's estimate
@@ -34,9 +34,6 @@ All notable changes to CodeSmith are listed here. Versions follow
   provider reported billing, above 0: a context-tier price CodeSmith
   worked out no longer appears as `usd`. A run on Bifrost ends with a
   `type: "run"` line, `usd_quota`, what the key's budget moved by.
-- **Fixed: in an editor (ACP), a prompt sent straight after a cancel could
-  fail** with "Session already has an active ACP prompt" while the cancel
-  reloaded the session. It now waits for the session and runs.
 - **`codesmith bridge init NAME` sets up a tailbus bridge.** It asks in
   the terminal: headless (`codesmith run` for each message) or a relay to
   a session shared with `/bus share`; for a headless bridge, where it
@@ -61,6 +58,9 @@ All notable changes to CodeSmith are listed here. Versions follow
 - `/bus share NAME` points at `codesmith bridge init`, and a bridge's run
   with no key now suggests `codesmith auth login PROVIDER --home DIR`
   instead of a `HOME=` prefix.
+- **Fixed: in an editor (ACP), a prompt sent straight after a cancel could
+  fail** with "Session already has an active ACP prompt" while the cancel
+  reloaded the session. It now waits for the session and runs.
 
 ## 0.5.1 — 2026-11-25
 
