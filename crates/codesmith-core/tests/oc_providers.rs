@@ -53,6 +53,7 @@ impl Case {
             settings: &self.settings,
             configured_url: self.settings.base_url.as_deref(),
             configured_protocol: None,
+            model_protocol: None,
             package: self.package,
             catalog_url: self.catalog_url,
             model_id: self.model,

@@ -1441,7 +1441,11 @@ pub async fn stream(
     req: &Request,
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(p, request(p, client, req)).await?;
-    Ok(drive(resp, Decode::for_request(req)))
+    let served = crate::bifrost::served(p, &resp);
+    Ok(crate::bifrost::with_served(
+        served,
+        drive(resp, Decode::for_request(req)),
+    ))
 }
 
 /// A `compaction` output item as a checkpoint.

@@ -4213,6 +4213,9 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         None => cwd,
     };
     let mut loaded = config::load(&cwd)?;
+    // A session's start fetches Bifrost's model list for the key, beside
+    // the rest of the start; the model is checked against it below.
+    let bifrost_list = codesmith_core::providers::bifrost::session_start(&loaded.config);
     // `--tools` / `--no-tools`: deny everything else, after every rule.
     let narrowed = match (&args.tools, args.no_tools) {
         (Some(list), _) => Some(codesmith_core::tool::narrow::parse(list).map_err(|e| anyhow!(e))?),
@@ -4299,6 +4302,10 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
             db,
         )
     };
+    let bifrost_notice = match bifrost_list {
+        Some(f) => bifrost_wait(f).await,
+        None => None,
+    };
     let mut session = match &args.effort {
         None => open(model_arg, db)?,
         Some(level) => {
@@ -4354,10 +4361,23 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
     let json = args.format == Format::Json;
     let mut sink = render::Printer::new(json, args.thinking);
     if let Some(path) = &args.usage_log {
+        let cfg = loaded.config.clone();
         let log = render::UsageLog::open(path, &session.model_spec, &session.id)
-            .with_context(|| format!("opening the usage log {}", path.display()))?;
+            .with_context(|| format!("opening the usage log {}", path.display()))?
+            .with_estimate(Box::new(move |spec, served, u| {
+                cfg.estimate(spec, served, u)
+            }));
         sink = sink.with_usage_log(log);
     }
+    if let Some(n) = &bifrost_notice {
+        sink.notice(n);
+    }
+    // With a usage log, a run on Bifrost reads the key's budget at its
+    // start (beside the turn) and end, for a billed total of the run.
+    let quota = match &args.usage_log {
+        Some(_) => run_quota(&loaded.config, &session.model),
+        None => None,
+    };
     if !json {
         eprintln!(
             "\x1b[2m> {} · {}/{} · {}\x1b[0m",
@@ -4399,6 +4419,13 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         }
         None => run_turn(&mut session, &message, custom.as_ref(), media, &mut sink).await,
     };
+    if let Some(q) = quota {
+        if let Some((budget, usd)) = q.finish().await {
+            if let Some(log) = sink.usage_log() {
+                log.run_total("bifrost-quota", &budget, usd);
+            }
+        }
+    }
     // A run that never stored its session leaves no mark behind.
     if let Some(db) = &archive {
         if db.get(&session.id)?.is_none() {
@@ -4412,6 +4439,82 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         session.title.as_deref(),
     );
     result
+}
+
+/// Wait for a session-start fetch of Bifrost's model list: what to tell
+/// the user about it, if anything.
+pub(crate) async fn bifrost_wait(f: codesmith_core::providers::bifrost::Pending) -> Option<String> {
+    use codesmith_core::providers::bifrost;
+    match bifrost::wait(f, bifrost::START_WAIT + std::time::Duration::from_secs(1)).await {
+        Some(o) => o.notice(),
+        None => Some("Bifrost: the model list is taking long; using the saved list".into()),
+    }
+}
+
+/// As a server's (or an editor's) session starts, fetch Bifrost's model
+/// list for the key afresh, saying on stderr when the saved list stands in.
+/// The session itself goes on at once with the list saved so far.
+pub(crate) fn serve_bifrost_fetch(cfg: &config::Config) {
+    if let Some(f) = codesmith_core::providers::bifrost::session_start(cfg) {
+        tokio::spawn(async move {
+            if let Some(n) = bifrost_wait(f).await {
+                eprintln!("{n}");
+            }
+        });
+    }
+}
+
+/// A run's reads of the Bifrost virtual key's budget: the one at its start,
+/// running beside the turn.
+struct RunQuota {
+    client: reqwest::Client,
+    provider: codesmith_ai::Provider,
+    root: String,
+    start: tokio::task::JoinHandle<Option<Vec<codesmith_core::providers::bifrost::Budget>>>,
+}
+
+impl RunQuota {
+    /// Read the budget again: the budget and what it moved by since the
+    /// start, or `None` when there is no budget, a read failed, or the
+    /// budget's cycle reset in between.
+    async fn finish(self) -> Option<(String, f64)> {
+        use codesmith_core::providers::bifrost;
+        let before = tokio::time::timeout(bifrost::QUOTA_TIMEOUT, self.start)
+            .await
+            .ok()?
+            .ok()??;
+        if before.is_empty() {
+            return None;
+        }
+        let after = bifrost::quota(&self.client, &self.provider, &self.root).await?;
+        bifrost::spent(&before, &after)
+    }
+}
+
+/// Start reading the budget for a run on Bifrost, unless its `quota`
+/// setting is `false`.
+fn run_quota(cfg: &config::Config, m: &config::ModelRef) -> Option<RunQuota> {
+    use codesmith_core::providers::{bifrost, process_env};
+    if m.provider_id != bifrost::ID {
+        return None;
+    }
+    let p = cfg.provider(bifrost::ID)?;
+    if p.settings.plugin.quota == Some(false) {
+        return None;
+    }
+    let root = bifrost::root(&p.settings, &process_env())?;
+    let client = reqwest::Client::new();
+    let provider = m.provider.clone();
+    let start = tokio::spawn({
+        let (client, provider, root) = (client.clone(), provider.clone(), root.clone());
+        async move { bifrost::quota(&client, &provider, &root).await }
+    });
+    Some(RunQuota {
+        client,
+        provider,
+        root,
+        start,
+    })
 }
 
 /// The prompt of `codesmith run`, then its background commands, as
@@ -4547,7 +4650,26 @@ async fn list_provider_models(loaded: &config::Loaded, pid: &str) -> Result<()> 
     if let Some(ids) =
         codesmith_core::providers::live::refresh(&client, &pid, &m.provider, &settings).await
     {
-        for id in ids? {
+        // A gateway that can't be reached: Bifrost's saved list for this
+        // key, said to be one.
+        let ids = match ids {
+            Err(e) if pid == codesmith_core::providers::bifrost::ID => {
+                let saved: Vec<String> = loaded
+                    .config
+                    .live_models(&pid)
+                    .into_iter()
+                    .filter(|m| m.kind == "chat")
+                    .map(|m| m.id)
+                    .collect();
+                if saved.is_empty() {
+                    return Err(e);
+                }
+                eprintln!("warning: {e:#}; listing the models saved for this key before");
+                saved
+            }
+            other => other?,
+        };
+        for id in ids {
             println!("{pid}/{id}");
         }
         return Ok(());

@@ -1990,6 +1990,7 @@ impl Agent {
                 current: slot.current.clone(),
             }) as Arc<dyn Questioner>
         });
+        crate::serve_bifrost_fetch(&slot.loaded.config);
         let mut s = Session::new(
             &slot.loaded,
             slot.cwd.clone(),

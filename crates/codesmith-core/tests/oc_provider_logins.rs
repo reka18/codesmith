@@ -206,6 +206,7 @@ fn input<'a>(
         settings: s,
         configured_url: s.base_url.as_deref(),
         configured_protocol: None,
+        model_protocol: None,
         package: None,
         catalog_url: None,
         model_id: "test-model",

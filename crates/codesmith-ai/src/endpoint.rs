@@ -347,6 +347,7 @@ pub(crate) async fn execute(
 ) -> Result<reqwest::Response, Error> {
     let (client, mut req) = p.authorized(rb).await?;
     let again = req.try_clone();
+    let mut sent = crate::bifrost::stamp(p, &mut req);
     if let Some(h) = &p.hooks {
         h.0.request(&mut req);
     }
@@ -354,11 +355,16 @@ pub(crate) async fn execute(
     if let (Auth::Dynamic(a), Some(mut again)) = (&p.auth, again) {
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED && a.rejected(&client).await {
             a.authorize(&client, &mut again).await?;
+            // A request sent again is a new request: a new id.
+            sent = crate::bifrost::stamp(p, &mut again);
             if let Some(h) = &p.hooks {
                 h.0.request(&mut again);
             }
             resp = client.execute(again).await?;
         }
+    }
+    if let Some(id) = sent {
+        resp.extensions_mut().insert(crate::bifrost::SentId(id));
     }
     if let Some(h) = &p.hooks {
         h.0.response(&mut resp);

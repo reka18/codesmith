@@ -570,6 +570,7 @@ impl Server {
         } else {
             (prompter.clone(), Some(prompter.clone()))
         };
+        crate::serve_bifrost_fetch(&self.loaded.config);
         let s = Session::new(
             &self.loaded,
             self.cwd.clone(),

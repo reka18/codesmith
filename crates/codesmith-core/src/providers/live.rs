@@ -94,6 +94,12 @@ pub fn derive(
     }
     if kept["account"]
         .as_str()
+        .is_some_and(super::bifrost::is_account)
+    {
+        return super::bifrost::derive(&raw, None);
+    }
+    if kept["account"]
+        .as_str()
         .is_some_and(|a| a.starts_with("key:"))
     {
         return super::hosted::derive(provider, &raw, templates);
@@ -119,6 +125,18 @@ pub async fn refresh(
     settings: &crate::config::ProviderSettings,
 ) -> Option<Result<Vec<String>>> {
     match provider_id {
+        super::bifrost::ID => Some(
+            async {
+                let root = super::bifrost::root(settings, &super::process_env()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Bifrost needs the gateway's URL: set {} or settings.baseURL on the bifrost provider",
+                        super::bifrost::URL_VAR
+                    )
+                })?;
+                super::bifrost::refresh(client, &file(), p, &root).await
+            }
+            .await,
+        ),
         super::digitalocean::ID => Some(
             async {
                 let login = crate::auth::entry(super::digitalocean::ID).ok_or_else(|| {

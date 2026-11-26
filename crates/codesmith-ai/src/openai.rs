@@ -1333,7 +1333,11 @@ pub async fn stream(
 ) -> Result<EventStream, Error> {
     let resp = crate::endpoint::send(p, request(p, client, req)).await?;
     let compat = Compat::for_provider(p, &req.model);
-    Ok(drive(resp, Decode::for_request(&compat, req)))
+    let served = crate::bifrost::served(p, &resp);
+    Ok(crate::bifrost::with_served(
+        served,
+        drive(resp, Decode::for_request(&compat, req)),
+    ))
 }
 
 /// Compatibility overrides Chat cannot honour: a declared reasoning field
