@@ -215,12 +215,17 @@ fn is_summary_request(body: &serde_json::Value) -> bool {
 /// a reply. The requests after the first.
 async fn compacting(context: u64, output: u64, prompt: u64) -> (T, Vec<serde_json::Value>) {
     let mut t = start(limited(context, output)).await;
-    t.push([with_usage(
-        "Earlier answer",
-        json!({"prompt_tokens": prompt, "completion_tokens": 10}),
-    )]);
+    // All queued at once: the first turn leaves a background summary running,
+    // which may ask for its reply before the next prompt is sent.
+    t.push([
+        with_usage(
+            "Earlier answer",
+            json!({"prompt_tokens": prompt, "completion_tokens": 10}),
+        ),
+        text("## Objective\n- Preserve the task"),
+        text("Continued"),
+    ]);
     t.prompt("Earlier question").await.unwrap();
-    t.push([text("## Objective\n- Preserve the task"), text("Continued")]);
     t.prompt(&"Recent request ".repeat(400)).await.unwrap();
     let reqs = t.requests()[1..].to_vec();
     (t, reqs)
@@ -254,18 +259,25 @@ async fn oc_session_fits_the_summary_output_to_the_room_an_unchanged_conversatio
 #[tokio::test(flavor = "multi_thread")]
 async fn oc_session_stops_after_required_automatic_compaction_fails() {
     let mut t = start(limited(4_000, 50)).await;
-    t.push([with_usage(
-        "Earlier answer",
-        json!({"prompt_tokens": 3_950, "completion_tokens": 10}),
-    )]);
-    t.prompt("Earlier question").await.unwrap();
     let refused = || {
         status(
             400,
             json!({"error": {"message": "summary unavailable", "type": "invalid_request_error"}}),
         )
     };
-    t.push([refused(), refused(), refused(), text("Must not run")]);
+    // All queued at once: the background summary may ask before the next
+    // prompt is sent.
+    t.push([
+        with_usage(
+            "Earlier answer",
+            json!({"prompt_tokens": 3_950, "completion_tokens": 10}),
+        ),
+        refused(),
+        refused(),
+        refused(),
+        text("Must not run"),
+    ]);
+    t.prompt("Earlier question").await.unwrap();
     let e = t
         .prompt(&"Recent exact request ".repeat(180))
         .await

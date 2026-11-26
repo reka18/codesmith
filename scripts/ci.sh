@@ -23,8 +23,9 @@ cargo fmt --all --check
 step "cargo clippy --all-targets --workspace -- -D warnings"
 cargo clippy --all-targets --workspace -- -D warnings
 
+# Run every test target even after one fails, so one run shows all failures.
 step "cargo test --workspace"
-cargo test --workspace
+cargo test --workspace --no-fail-fast
 
 if command -v shellcheck >/dev/null 2>&1; then
   step "shellcheck"

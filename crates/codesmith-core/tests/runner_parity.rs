@@ -1445,20 +1445,25 @@ async fn spending_of_mixed_billed_and_unbilled_steps_survives_a_reload() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turn_ends_while_its_background_command_runs_and_resumes_when_it_finishes() {
     let mut t = plain().await;
+    // The command runs until the test lets it go, so a turn that waited for
+    // it would not return in time, however slow the machine.
+    let gate = t.path("go");
+    let command = format!(
+        "i=0; while [ ! -f '{}' ] && [ $i -lt 1200 ]; do sleep 0.05; i=$((i+1)); done; echo bg-finished",
+        gate.display()
+    );
     t.push([
         call(
             "c1",
             "shell",
-            json!({"command": "sleep 1; echo bg-finished", "description": "slow", "background": true}),
+            json!({"command": command, "description": "slow", "background": true}),
         ),
         text("Started it."),
     ]);
-    let started = std::time::Instant::now();
-    t.prompt("start it").await.unwrap();
-    assert!(
-        started.elapsed() < Duration::from_millis(900),
-        "the turn waited"
-    );
+    tokio::time::timeout(Duration::from_secs(30), t.prompt("start it"))
+        .await
+        .expect("the turn waited")
+        .unwrap();
     assert_eq!(t.s.background_running(), 1);
     assert_eq!(texts(&t.s), ["Started it."]);
 
@@ -1467,6 +1472,7 @@ async fn a_turn_ends_while_its_background_command_runs_and_resumes_when_it_finis
     t.s.resume_background(&mut sink).await.unwrap();
     assert_eq!(t.requests().len(), 2);
 
+    std::fs::write(&gate, "").unwrap();
     t.s.wait_background().await;
     assert_eq!(t.s.background_finished(), 1);
     t.push([text("It printed bg-finished.")]);
