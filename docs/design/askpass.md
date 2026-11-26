@@ -47,7 +47,7 @@ CodeSmith says why.
 | `sudo`'s grace period gives later commands root silently | Every `sudo` ignores cached credentials (`-k`), and CodeSmith removes the timestamp (`sudo -K`) when each command ends. |
 | The gateway, a relay or the network | The phone encrypts to the helper's key. The gateway and the relay forward only ciphertext, inside iroh's TLS. |
 | A phone that's unlocked but in the wrong hands | Every secret prompt on the phone needs a passkey signature (Face ID, Touch ID or the device credential). The Mac checks it. |
-| Over-the-shoulder, screenshots, keyboards | Masked fields. The phone blocks screenshots and turns off keyboard learning and autofill. |
+| Over-the-shoulder, screenshots, keyboards | Masked fields, with keyboard learning and autofill off. Android blocks screenshots. iOS can't, but blanks its secure field in screenshots and hides the prompt's details while the screen is captured. |
 | Replay | A request id, an expiry, and a passkey signature over both. |
 
 ## How it works
@@ -105,17 +105,29 @@ a project can set:
 
 ### Sealing
 
-The answer is sealed with HPKE (RFC 9180, base mode, DHKEM X25519 +
-HKDF-SHA256 + ChaCha20-Poly1305) to the helper's one-time key. The
-associated data is
-`"codesmith-askpass/1\n" + request id + "\n" + kind + "\n" + SHA-256 of the
-program's arguments`, so a sealed answer opens only for the request it was
-made for.
+The answer is sealed with HPKE (RFC 9180, base mode, DHKEM(X25519,
+HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305) to the helper's one-time key.
+CodeSmith uses the `hpke` crate (rust-hpke), and so does the app's shared
+Rust transport crate, so both ends run the same implementation.
+
+| Part | Value |
+|---|---|
+| `info` | the fixed bytes `codesmith-askpass/1` |
+| AAD | `"codesmith-askpass/1\n" + request id + "\n" + kind + "\n" + argv_sha256`, UTF-8 |
+| `argv_sha256` | computed by the Mac only: SHA-256 over each argument's raw bytes followed by one NUL byte (terminated, so `[]` and `[""]` differ), as lower-case hex. The phone copies it from the event into the AAD as-is and never recomputes it. |
+| Plaintext | UTF-8, no trailing newline (the helper adds the newline `sudo` and `ssh` expect), at most 4 KiB. A `secret` is the password, a `plain` is the text typed (a username), a `confirm` is `yes`. A "no" is a refusal, never sealed. |
+| `sealed` | base64url without padding of `enc` (32 bytes) followed by the ciphertext |
+
+A sealed answer therefore opens only for the request it was made for.
 
 - **The terminal** seals in the TUI process as you press Enter. The
   plaintext lives only in the input buffer, which is zeroized at once.
 - **A phone** seals on the phone. Plaintext exists only on the phone and in
   the helper.
+- **Test vectors** ship in this document before the phone phase is built,
+  made with rust-hpke: key pair, plaintext, `info`, AAD, `enc` and
+  ciphertext, for each kind, plus a check of RFC 9180's A.2 vectors for
+  this suite (DHKEM(X25519), HKDF-SHA256, ChaCha20-Poly1305).
 
 ### In the terminal
 
@@ -143,14 +155,37 @@ A modal outside the transcript:
 This needs remote access ([remote.md](remote.md)) through Phase B, and a
 device with `control` on the session.
 
-- **Event:** `secret_prompt {id, kind, program, argv, command, cwd, expires,
-  hpke_pk}`, on the session's stream and in the open prompts sent on
-  connect. It never carries a secret.
+- **Event:** `secret_prompt`, on the session's stream and in the open
+  prompts sent on connect. It never carries a secret.
+
+  ```json
+  {"type": "secret_prompt", "id": "<request id>", "kind": "secret|plain|confirm",
+   "prompt": "[sudo] password for ray:", "program": "sudo",
+   "argv": ["apt-get", "install", "-y", "libssl-dev"], "argv_sha256": "<hex>",
+   "command": "make deps", "cwd": "/Users/ray/src/app",
+   "session_title": "fix-the-build", "expires_in": 120, "hpke_pk": "<base64url, 32 bytes>"}
+  ```
+
+  - `prompt` is the program's own text, such as `sudo`'s line or `ssh`'s
+    host-key fingerprint. A `confirm` can't be shown without it.
+  - `argv` is for display only: strings, with any non-UTF-8 bytes escaped.
+    `argv_sha256` is what's bound into the seal.
+  - `cwd` is always absolute.
+  - `expires_in` is seconds from sending, so the phone counts down from when
+    it receives the event, whatever its clock says.
+- **Who gets it:** only devices with `control` on the session and an unlock
+  key. A device without a key never gets the event, rather than showing a
+  prompt it can't answer.
+- **Closing it:** `prompt_resolved {id, kind: "secret"}` when it's answered
+  elsewhere, refused or expired. The same `id` is used, as in S15 of the
+  remote requirements.
 - **Push:** a wake-up of kind `attention`, with no content, as for any
   prompt.
 - **Answer:** `POST /v1/sessions/{id}/secrets/{rid}` with
   `{sealed, unlock: {method: "passkey", signature}}`. The signature is the
-  unlock key's ES256 signature over these exact bytes:
+  unlock key's ES256 signature, DER-encoded and base64 as for the terminal
+  unlock (T4/T7), over these exact bytes (UTF-8, `\n` between lines, no
+  trailing newline):
 
   ```
   codesmith-secret-answer/1
@@ -158,27 +193,47 @@ device with `control` on the session.
   <device node id>
   <session id>
   <request id>
-  <SHA-256 of the sealed bytes, hex>
+  <SHA-256 of the decoded sealed bytes, lower-case hex>
   ```
+
+  A refusal is `{refuse: true, unlock: {method: "passkey", signature}}`,
+  signed over the same lines without the last one, headed
+  `codesmith-secret-refuse/1`.
 
   The Mac checks the signature against the unlock key from pairing, then
   forwards the sealed bytes. Only `passkey` is accepted. Typing the Mac's
   remote password to send another password would add nothing.
-- **Replies:** 404 when the request isn't open (answered, refused or
-  expired), 403 `forbidden_scope` for a `watch` device, 401 `unlock_failed`
-  for a bad signature. A refusal is `{refuse: true}` with a signature.
+- **Replies:**
+
+  | Status | When | Request |
+  |---|---|---|
+  | 200 | sent or refused | closed |
+  | 400 `bad_request` | `sealed` is malformed or the wrong length | stays open |
+  | 401 `unlock_failed` | a bad signature | stays open: one more try (a cancelled biometric, say); the second failure refuses it |
+  | 403 `forbidden_scope` | a `watch` device | stays open |
+  | 404 `not_found` | not open: answered, refused or expired | — |
 - **App requirements:**
   - a masked secure field (iOS `isSecureTextEntry`, Android
-    `TYPE_TEXT_VARIATION_PASSWORD` with `FLAG_SECURE` on the screen);
-  - no suggestions, autofill, logging or analytics;
-  - the plaintext cleared as soon as it's sealed;
-  - a screen showing the program, its arguments and the session;
-  - the answer sealed on the device;
-  - nothing kept after sending.
-- **Settings:**
-  - `remote.secret_prompts`, global config only, default `true`. `false`
-    keeps password prompts terminal-only.
-  - Off on a machine whose devices have no unlock key.
+    `TYPE_TEXT_VARIATION_PASSWORD`) with no suggestions, autofill, logging
+    or analytics;
+  - the answer sealed on the device, in the shared Rust crate;
+  - nothing kept after sending;
+  - a card that opens a secure sheet, shown like a question: it doesn't
+    steal focus while you're typing, and later prompts queue behind it;
+  - the sheet showing the prompt text, the program and its arguments, the
+    agent's command, the folder and the session title;
+  - `argv` never put in a notification, a log or the app's cache, because
+    it can hold secrets of its own (`mysql -pPASS`).
+- **Limits the app states plainly:**
+  - **iOS can't block screenshots.** Its secure field is blanked in
+    screenshots and recordings, and the app hides the prompt's details
+    while the screen is being captured. Blocking screenshots
+    (`FLAG_SECURE`) is Android only.
+  - **Clearing the plaintext is best effort.** Swift strings can't be
+    zeroed, so iOS keeps the secret in a byte buffer it overwrites after
+    sealing. Android uses a `CharArray`, never a `String`.
+- **Settings:** `remote.secret_prompts`, global config only, default
+  `true`. `false` keeps password prompts terminal-only.
 
 ### Touch ID for sudo (macOS, local only)
 
@@ -230,8 +285,15 @@ whether to detect this and skip Touch ID.
   when the `sudo` is hidden inside a script.
 - **Grace period:** a second `sudo` in the same command, and one in the next
   command, both ask again.
-- **Sealing:** a sealed answer for one request doesn't open for another. A
-  changed byte fails. The gateway only ever holds ciphertext.
+- **Sealing:**
+  - a sealed answer for one request doesn't open for another, and a changed
+    byte fails;
+  - the gateway only ever holds ciphertext;
+  - CodeSmith passes the published vectors and RFC 9180's A.2 vectors;
+  - `argv_sha256` tells `[]` from `[""]` and keeps non-UTF-8 bytes exact.
+- **Replies:** a bad signature leaves one more try, then refuses. A
+  malformed `sealed` gets 400 and leaves the request open. A device without
+  an unlock key never gets the event.
 - **The phone:**
   - the right signature sends;
   - a replayed or altered signature fails;
