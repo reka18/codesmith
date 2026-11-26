@@ -82,10 +82,11 @@ mod turn;
 mod usage;
 mod view;
 
+pub(crate) use app::PickItem;
 pub(crate) use view::display_safe;
 
 use anyhow::{anyhow, Result};
-use app::{Action, App, Entry, Modal, Pick, PickItem, Picker};
+use app::{Action, App, Entry, Modal, Pick, Picker};
 use bridge::{ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
 use codesmith_core::permission::{Approvals, Asker};

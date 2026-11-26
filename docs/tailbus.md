@@ -35,6 +35,11 @@ It asks, in the terminal:
      refuses them.
    - **A provider**, from the providers the bridge's home knows, with
      untested ones tagged as elsewhere.
+     For [Bifrost](configuration.md#bifrost) it first asks for the
+     gateway's URL, which goes in the bridge home's `codesmith.json`
+     (`providers.bifrost.settings.baseURL`); the virtual key then goes
+     in `secrets` as `BIFROST_API_KEY`, and the models offered are the
+     ones the gateway lists for that key, each with its own levels.
    - **A sign-in made for the bridge**: a key, pasted (it offers the
      provider's key page) or taken from an environment variable you name,
      and never shown; a Claude Code token for `claude-agent` (it runs

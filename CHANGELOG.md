@@ -5,6 +5,27 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **Bifrost is a built-in provider.** `bifrost` reaches models through a
+  [Bifrost](https://github.com/maximhq/bifrost) gateway with a virtual
+  key (`BIFROST_BASE_URL` and `BIFROST_API_KEY`, or `settings.baseURL`
+  and `settings.apiKey`), sent in `x-bf-vk`. Model ids are Bifrost's
+  (`bifrost/openai/<model>`), passed through unchanged. An id starting
+  with `anthropic/` goes to Bifrost's Anthropic Messages route; every
+  other one to its unified Chat API. The model list is the one the
+  gateway gives your key, fetched afresh as each session starts and kept
+  under a hash of the key for when the gateway can't be reached; a model
+  outside it is refused. Each model offers the effort levels it has
+  reached directly. Every request carries a fresh `x-request-id`, and
+  `codesmith bridge init` offers Bifrost. See `docs/configuration.md`.
+- **A model's `protocol` setting** picks the protocol it speaks, in place
+  of its provider's.
+- **`--usage-log` step lines gain `usd_estimated`**, CodeSmith's estimate
+  from the token counts and the model's base rates (its configured
+  `cost`, then a Bifrost gateway's prices, then the catalog), and on
+  Bifrost `request_id` and `served_model`. `usd` is now only a cost the
+  provider reported billing, above 0: a context-tier price CodeSmith
+  worked out no longer appears as `usd`. A run on Bifrost ends with a
+  `type: "run"` line, `usd_quota`, what the key's budget moved by.
 - **`codesmith bridge init NAME` sets up a tailbus bridge.** It asks in
   the terminal: headless (`codesmith run` for each message) or a relay to
   a session shared with `/bus share`; for a headless bridge, where it

@@ -914,6 +914,16 @@ async fn headless_setup(
     if let Some(w) = codesmith_core::providers::verified::warning(&c.id, &printable(&c.name)) {
         eprintln!("warning: {w}");
     }
+    // Bifrost has no default host: the bridge's config names its gateway.
+    let mut loaded = loaded;
+    if c.id == codesmith_core::providers::bifrost::ID {
+        let url = ask_bifrost_url(ask, &loaded.config)?;
+        if !configured && in_repo {
+            bridge_dir(&home::config_dir(bridge_home))?;
+        }
+        set_bifrost_url(&cfg_file, &url)?;
+        loaded = config::load_home(bridge_home)?;
+    }
     let (provider, secrets) = sign_in(ask, cwd, root, bridge_home, &loaded, c).await?;
     if provider == codesmith_core::providers::claude_agent::ID {
         match codesmith_ai::claude_agent::which(&codesmith_ai::claude_agent::process_env()) {
@@ -923,8 +933,12 @@ async fn headless_setup(
             ),
         }
     }
-    let spec = pick_model(ask, &loaded.config, &provider)?;
-    let (model, efforts) = pick_effort(ask, &loaded.config, &spec)?;
+    let (model, efforts) = if provider == codesmith_core::providers::bifrost::ID {
+        bifrost_model(ask, &loaded.config, &secrets).await?
+    } else {
+        let spec = pick_model(ask, &loaded.config, &provider)?;
+        pick_effort(ask, &loaded.config, &spec)?
+    };
     Ok((
         Mode::Headless {
             model,
@@ -1058,9 +1072,145 @@ async fn sign_in(
     }
 }
 
+/// The Bifrost gateway's URL, asked for (`BIFROST_BASE_URL` or the
+/// configured one as the default).
+fn ask_bifrost_url(ask: &Ask, cfg: &config::Config) -> Result<String> {
+    use codesmith_core::providers::{bifrost, process_env};
+    let current = cfg
+        .provider(bifrost::ID)
+        .and_then(|p| bifrost::root(&p.settings, &process_env()))
+        .unwrap_or_default();
+    for _ in 0..5 {
+        let u = ask.text("\nThe Bifrost gateway's URL (http://HOST:PORT)", &current)?;
+        let u = bifrost::normalize_root(&u);
+        let host = u
+            .strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"))
+            .and_then(|r| r.split('/').next())
+            .filter(|h| !h.is_empty() && !h.contains(char::is_whitespace));
+        match host {
+            Some(_) => return Ok(u),
+            None => eprintln!("{} isn't an http(s) URL.", printable(&u)),
+        }
+    }
+    bail!("no gateway URL given")
+}
+
+/// Write the gateway's URL to the bridge's config, keeping what's there.
+fn set_bifrost_url(file: &Path, url: &str) -> Result<()> {
+    let mut v: serde_json::Value = match std::fs::read_to_string(file) {
+        Ok(t) => serde_json::from_str(&t).with_context(|| {
+            format!(
+                "{} isn't plain JSON; add the gateway URL to it yourself",
+                file.display()
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", file.display())),
+    };
+    if !v.is_object() {
+        bail!("{} isn't a JSON object", file.display());
+    }
+    v["providers"]["bifrost"]["settings"]["baseURL"] = serde_json::json!(url);
+    let mut text = serde_json::to_string_pretty(&v)?;
+    text.push('\n');
+    paths::write_private(file, text.as_bytes())
+        .with_context(|| format!("writing {}", file.display()))
+}
+
+/// The model and effort of a Bifrost bridge, from the list the gateway
+/// gives the bridge's key (read from its secret file), with each model's
+/// own levels.
+async fn bifrost_model(
+    ask: &Ask,
+    cfg: &config::Config,
+    secrets: &[(String, PathBuf)],
+) -> Result<(String, Vec<String>)> {
+    use codesmith_core::providers::{bifrost, process_env};
+    let pid = bifrost::ID;
+    let key = secrets
+        .iter()
+        .find(|(v, _)| v == bifrost::KEY_VAR)
+        .map(|(v, f)| read_secret_file(v, f))
+        .transpose()?;
+    let listed = match (
+        key,
+        cfg.provider(pid)
+            .and_then(|p| bifrost::root(&p.settings, &process_env())),
+    ) {
+        (Some(key), Some(root)) => {
+            let mut m = cfg.resolve_model(&format!("{pid}/_"))?;
+            m.provider.api_key = Some(key.clone());
+            let client = reqwest::Client::new();
+            match bifrost::fetch(&client, &m.provider, &root).await {
+                Ok(data) => {
+                    let catalog = cfg.models_dev.as_ref().map(|c| c.catalog());
+                    bifrost::derive(&bifrost::normalize(&data), catalog.as_deref())
+                        .into_iter()
+                        .filter(|m| m.kind == "chat")
+                        .collect()
+                }
+                Err(e) => {
+                    let e = codesmith_ai::bifrost::redact(&format!("{e:#}"), Some(&key));
+                    eprintln!(
+                        "Couldn't list the gateway's models for this key: {}",
+                        printable(&e)
+                    );
+                    vec![]
+                }
+            }
+        }
+        _ => vec![],
+    };
+    let items: Vec<crate::tui::PickItem> = listed
+        .iter()
+        .map(|m| crate::tui::PickItem {
+            id: format!("{pid}/{}", m.id),
+            label: format!("{pid}/{}", m.id),
+            detail: if m.name != m.id {
+                m.name.clone()
+            } else {
+                String::new()
+            },
+            current: false,
+        })
+        .collect();
+    let spec = pick_model_from(ask, cfg, pid, items, |spec| {
+        let id = spec.split_once('/').map_or("", |(_, m)| m);
+        listed.is_empty() || listed.iter().any(|m| m.id == id)
+    })?;
+    let id = spec.split_once('/').map_or("", |(_, m)| m);
+    let levels = match listed.iter().find(|m| m.id == id) {
+        Some(m) => {
+            let protocol = bifrost::protocol_for(
+                id,
+                cfg.provider(pid)
+                    .and_then(|p| p.models.get(id).and_then(|c| c.protocol).or(p.protocol)),
+            );
+            match bifrost::variants(m, protocol) {
+                Some(v) => v.into_iter().map(|v| v.id).collect(),
+                None => level_ids(cfg, &spec),
+            }
+        }
+        None => level_ids(cfg, &spec),
+    };
+    choose_effort(ask, &spec, levels)
+}
+
 /// The model, from the provider's models as the bridge's home sees them.
 fn pick_model(ask: &Ask, cfg: &config::Config, pid: &str) -> Result<String> {
     let items = crate::tui::provider_pick::model_items(cfg, "", pid);
+    pick_model_from(ask, cfg, pid, items, |_| true)
+}
+
+/// The model, from `items`; `allowed` says whether a typed one may be used.
+fn pick_model_from(
+    ask: &Ask,
+    cfg: &config::Config,
+    pid: &str,
+    items: Vec<crate::tui::PickItem>,
+    allowed: impl Fn(&str) -> bool,
+) -> Result<String> {
     let all: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
     let mut shown = all.clone();
     for _ in 0..6 {
@@ -1120,6 +1270,13 @@ fn pick_model(ask: &Ask, cfg: &config::Config, pid: &str) -> Result<String> {
                 }
             }
         };
+        if !allowed(&spec) {
+            eprintln!(
+                "{} isn't among the models the gateway lists for this key.",
+                printable(&spec)
+            );
+            continue;
+        }
         if check_model(cfg, &spec) {
             return Ok(spec);
         }
@@ -1141,11 +1298,21 @@ fn check_model(cfg: &config::Config, spec: &str) -> bool {
 /// the variant (or without one, for the provider's default), and the
 /// levels a request may name.
 fn pick_effort(ask: &Ask, cfg: &config::Config, spec: &str) -> Result<(String, Vec<String>)> {
+    let levels = level_ids(cfg, spec);
+    choose_effort(ask, spec, levels)
+}
+
+/// The effort levels `spec` resolves to.
+fn level_ids(cfg: &config::Config, spec: &str) -> Vec<String> {
     let variants = cfg
         .resolve_model(spec)
         .map(|m| m.variants)
         .unwrap_or_default();
-    let levels = crate::tui::effort::levels(&variants);
+    crate::tui::effort::levels(&variants)
+}
+
+/// The effort, from `levels`.
+fn choose_effort(ask: &Ask, spec: &str, levels: Vec<String>) -> Result<(String, Vec<String>)> {
     if levels.is_empty() {
         eprintln!("{} has no effort levels.", printable(spec));
         return Ok((spec.to_string(), Vec::new()));
