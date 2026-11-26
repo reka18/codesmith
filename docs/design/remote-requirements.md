@@ -1,8 +1,8 @@
 # Requirements: remote access from a phone
 
-Status: **draft, agreed with the CodeSmith Mobile team on 2026-11-26,
-awaiting Ray's approval.** Nothing here is built yet, and nothing will be
-until Ray approves it. The app team confirmed every **Changed** item and
+Status: **agreed with the CodeSmith Mobile team on 2026-11-26, with Ray's
+answers to the open questions recorded.** Nothing here is built yet, and
+nothing will be until Ray approves building. The app team confirmed every **Changed** item and
 added the requirements marked **(app)**, which the phones already depend on.
 
 This is the checklist CodeSmith must meet for remote access. The reasons and
@@ -53,8 +53,8 @@ phone or other client. The **gateway** is `codesmith __remoted`.
 | P4 | The pairing code is 16 bytes from the OS RNG as base64url without padding, valid 180 s, single use, one live code per gateway, and replaced when it expires until the dialog is closed. |
 | P5 | `POST /v1/pair/claim {code, device: {name, platform}, push?, unlock_key?}`. The device id is the connection's node id, never the body. The name has control characters stripped and is cut to 64 characters. Statuses as in the brief's A5. |
 | P6 | **Changed** (brief: one global limit). The claim rate limit is per device key: more than 5 bad claims in 60 s lock that key out for 5 minutes (429), and a locked key's claims don't burn the live code. |
-| P7 | **Changed** (brief: the code's last four characters). The check code shown on both screens is derived from SHA-256 over `"codesmith-pair-check/1\n" + code + "\n" + machine id + "\n" + device id` (ids lower-case hex). Six digits: the first 4 bytes big-endian mod 10^6, shown `ddd ddd` (what the phones do today). Twelve digits (open question 1, which the app team supports): the first 8 bytes as a big-endian u64 mod 10^12, zero-padded, shown `ddd ddd ddd ddd`. It must match the app's vectors (P11). |
-| P11 | CodeSmith's link builder and check code pass the app's `transport/fixtures/pairing.json`: every valid link parses and round-trips, and every check-code vector matches (for example code `pn00cOpwBxfLmPR62H1EaQ` with its machine and device ids gives `570 409`). |
+| P7 | **Changed** (brief: the code's last four characters). The check code shown on both screens is derived from SHA-256 over `"codesmith-pair-check/1\n" + code + "\n" + machine id + "\n" + device id` (ids lower-case hex). It has 12 digits (Ray, 2026-11-26): the first 8 bytes as a big-endian u64, mod 10^12, zero-padded, shown `ddd ddd ddd ddd`. It must match the app's vectors (P11). |
+| P11 | CodeSmith's link builder and check code pass the app's `transport/fixtures/pairing.json`: every valid link parses and round-trips, and every check-code vector matches For example:<br>• code `pn00cOpwBxfLmPR62H1EaQ`, machine `aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c`, device `f8820d751e90d88eca3b848440efc98ae226f1552a6fb5c76c7ad09c96832dc6` gives `779 852 318 371`;<br>• the same code and machine with device `2862abb1…2dc6` give `425 748 398 457`;<br>• code `0123456789abcdef_-xy`, device `65b2276e47` followed by 54 zeros, gives `203 664 825 594`.<br>The full ids are in pairing.json. |
 | P8 | The terminal asks `Allow "<name>" (<platform>, <10-hex short id>) to control "<session>"?`, with the check code, and `[y] yes [w] watch only [a] all sessions [n] no`. A paired device's prompt says "(paired device)" and adds only the new grant. |
 | P9 | Only `y` or `yes` allows. Enter alone, `n`, Esc or 90 s without an answer refuses. **Changed:** `a` asks a second time (`Type "all" to confirm`). |
 | P10 | The confirmation is read from the controlling terminal, never stdin. With no terminal, or a piped answer, pairing refuses. |
@@ -110,7 +110,7 @@ unlock.
 
 | Id | Requirement |
 |---|---|
-| T1 | A control device may open an interactive terminal in the session's directory: at most 4 per device and 16 per machine. `remote.terminal: false` turns them off, and a `watch` device gets 403. |
+| T1 | A control device may open an interactive terminal in the session's directory: at most 4 per device and 16 per machine. `remote.terminal: false` turns them off, and a `watch` device gets 403. It's a plain terminal, like serve's session terminals: its shell doesn't run under the session's permission rules, and the unlock is its protection (Ray, 2026-11-26). |
 | T2 | Routes: `POST`/`GET /v1/sessions/{id}/terminals`, `PUT`/`DELETE /v1/terminals/{pty}`, and an attach upgrade carrying framed data, resize, cursor and exit messages. |
 | T3 | With `remote.terminal_unlock` on (the default), every open needs an unlock, checked on the machine. One unlock covers one terminal. `remote.terminal_unlock: false`, set only in the global config, turns it off. |
 | T4 | Passkey: the claim may carry `unlock_key: {alg: "ES256", spki}`, where `spki` is standard base64 with padding of the DER SubjectPublicKeyInfo. It's a P-256 key in the Secure Enclave or Android Keystore that needs biometrics or the device credential for each signature, separate from the iroh key. It's replaced only by pairing again. |
@@ -119,7 +119,7 @@ unlock.
 | T6a | A wrong signature or password answers 401 `unlock_failed`. |
 | T7 | A passkey signature is DER ECDSA P-256 over SHA-256 of the exact bytes in remote.md (`codesmith-terminal-unlock/1`, purpose, machine, device, session, pty or `-`, challenge). |
 | T8 | A challenge is single use, expires in 60 s, and is bound to its purpose, device, session and pty. |
-| T9 | Five failed unlocks in a row lock terminals for that device for 15 minutes (open question 3). While locked, an open answers 429 `{"error": {"code": "unlock_locked", "message"}, "retry_after": <seconds>}`. |
+| T9 | Ten failed unlocks in a row lock terminals for that device for 5 minutes (Ray, 2026-11-26). While locked, an open answers 429 `{"error": {"code": "unlock_locked", "message"}, "retry_after": <seconds>}`. |
 | T10 | Reattaching from the device that opened the terminal needs no new unlock. Any other device unlocks with purpose `attach`. |
 | T11 | Opening, closing, attaching, unlocks, failures and lockouts are audited. What's typed, passwords and signatures never are. |
 
@@ -172,6 +172,4 @@ Status as the app team reported it on 2026-11-26.
   against ours (1.91; the app team builds it on 1.100), its licence, and what
   it adds to the binary's size and build time (the app's stripped arm64
   Android library with iroh is about 12.6 MB).
-- Ray answers the open questions in remote.md: the check code length, whether
-  remote terminals are plain, and the lockout numbers.
-- The app team confirms every **Changed** item above.
+- Ray approves building.
