@@ -122,7 +122,9 @@ struct Spare {
 /// The slots processes hold (see [`Pool::max_processes`]).
 struct Slots {
     taken: Mutex<usize>,
-    /// Bumped whenever a slot is given back or a process becomes idle.
+    /// Bumped whenever a slot is given back or a process becomes idle. Bump
+    /// for an idle process only after unlocking its session: a waiter woken
+    /// sooner cannot stop it, and no other wake-up may come.
     changed: watch::Sender<u64>,
 }
 
@@ -821,6 +823,7 @@ impl Registry {
         drop(st);
         self.0.prewarmed.fetch_add(1, Ordering::SeqCst);
         self.arm_idle(&entry);
+        self.0.slots.bump();
         Warm::Bound
     }
 
@@ -973,6 +976,9 @@ impl Registry {
         }
         .await;
         self.release(&entry, &mut st, &request).await;
+        drop(st);
+        // A waiting request may now stop this process for room.
+        self.0.slots.bump();
         r
     }
 
@@ -989,8 +995,6 @@ impl Registry {
     async fn release(&self, entry: &Arc<Entry>, st: &mut EntryState, request: &Request) {
         entry.active.lock().unwrap().take();
         entry.used.store(self.tick(), Ordering::SeqCst);
-        // A waiting request may now stop this process for room.
-        self.0.slots.bump();
         if request.session_id.is_none() {
             stop(st).await;
             if let Some(r) = st.record.take() {
