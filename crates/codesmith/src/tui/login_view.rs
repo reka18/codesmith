@@ -56,6 +56,54 @@ pub enum Outcome {
     SetupToken {
         choice: usize,
     },
+    /// Hand the terminal to `codesmith` with these arguments (`bridge
+    /// init NAME`, `auth login --home DIR`, `auth login --to-file PATH`),
+    /// and take it back when that ends.
+    Handoff(Vec<String>),
+}
+
+/// The ways to sign in elsewhere, each with what it asks and the
+/// `codesmith` arguments it runs.
+pub const ELSEWHERE: [(&str, &str, &str); 3] = [
+    (
+        "Set up a tailbus bridge (codesmith bridge init)",
+        "Bridge name",
+        "lowercase letters, digits and hyphens",
+    ),
+    (
+        "Save a login in another CodeSmith home, such as a bridge's",
+        "Home folder",
+        "an existing folder, not your own home",
+    ),
+    (
+        "Write a key or Claude Code token to a file, for a bridge's secrets",
+        "File",
+        "created readable only by you",
+    ),
+];
+
+/// What `codesmith` is run with for elsewhere choice `what` and its answer.
+pub fn elsewhere_args(what: usize, answer: &str) -> Result<Vec<String>, String> {
+    let a = answer.trim().to_string();
+    if a.is_empty() {
+        return Err(format!("{} is required", ELSEWHERE[what].1));
+    }
+    match what {
+        0 if !crate::bridge_init::valid_name(&a) => Err(format!(
+            "{a:?} can't be a bridge's name: use lowercase letters, digits and hyphens{}",
+            crate::bridge_init::suggest_name(&a)
+                .map(|s| format!(" (such as {s})"))
+                .unwrap_or_default()
+        )),
+        0 => Ok(vec!["bridge".into(), "init".into(), a]),
+        // `--flag=VALUE`, so a value starting with `-` stays a value.
+        1 => Ok(vec!["auth".into(), "login".into(), format!("--home={a}")]),
+        _ => Ok(vec![
+            "auth".into(),
+            "login".into(),
+            format!("--to-file={a}"),
+        ]),
+    }
 }
 
 /// One answer asked for.
@@ -107,6 +155,16 @@ pub enum Stage {
     Done {
         ok: bool,
         message: String,
+    },
+    /// Signing in for a bridge or another home: which way.
+    Elsewhere {
+        sel: usize,
+    },
+    /// What that way asks: a name, a folder or a file.
+    ElsewhereAsk {
+        what: usize,
+        value: String,
+        error: Option<String>,
     },
 }
 
@@ -164,6 +222,21 @@ impl LoginView {
             .collect()
     }
 
+    /// Whether the list ends with the row for signing in elsewhere: when
+    /// nothing is typed, or what is typed is part of its words.
+    pub fn elsewhere_shown(&self) -> bool {
+        let f = self.filter.to_lowercase();
+        f.is_empty()
+            || ["bridge", "home", "elsewhere", "file", "tailbus"]
+                .iter()
+                .any(|w| w.contains(&f) || f.contains(w))
+    }
+
+    /// The list's rows: its providers, and the row for signing in elsewhere.
+    fn list_len(&self) -> usize {
+        self.shown().len() + usize::from(self.elsewhere_shown())
+    }
+
     /// Open on provider `id`: its sign-in methods when it has any, else
     /// selected in the list (with its note). `false` when it is not listed.
     pub fn focus(&mut self, id: &str) -> bool {
@@ -183,7 +256,7 @@ impl LoginView {
     pub fn refresh(&mut self, choices: Vec<Choice>, client_help: BTreeMap<String, String>) {
         self.choices = choices;
         self.client_help = client_help;
-        self.sel = self.sel.min(self.shown().len().saturating_sub(1));
+        self.sel = self.sel.min(self.list_len().saturating_sub(1));
     }
 
     /// A login's progress.
@@ -406,6 +479,7 @@ impl LoginView {
             Stage::Waiting {
                 paste: true, typed, ..
             } => typed.extend(clean(line)),
+            Stage::ElsewhereAsk { value, .. } => value.extend(clean(line)),
             _ => {}
         }
     }
@@ -436,8 +510,12 @@ impl LoginView {
                     self.sel = self.sel.saturating_sub(1);
                 } else if k.code == KeyCode::Down || (typed.is_none() && hit("dialog.select.next"))
                 {
-                    self.sel = (self.sel + 1).min(shown.len().saturating_sub(1));
+                    self.sel = (self.sel + 1).min(self.list_len().saturating_sub(1));
                 } else if k.code == KeyCode::Enter {
+                    if self.sel == shown.len() && self.elsewhere_shown() {
+                        self.stage = Stage::Elsewhere { sel: 0 };
+                        return Outcome::Nothing;
+                    }
                     if let Some(&choice) = shown.get(self.sel) {
                         if self.choices[choice].methods.is_empty()
                             && !self.choices[choice].state.saved()
@@ -566,6 +644,49 @@ impl LoginView {
                 }
                 Outcome::Nothing
             }
+            Stage::Elsewhere { sel } => {
+                let cur = *sel;
+                if k.code == KeyCode::Esc {
+                    self.stage = Stage::List;
+                } else if k.code == KeyCode::Up || hit("dialog.select.prev") {
+                    self.stage = Stage::Elsewhere {
+                        sel: cur.saturating_sub(1),
+                    };
+                } else if k.code == KeyCode::Down || hit("dialog.select.next") {
+                    self.stage = Stage::Elsewhere {
+                        sel: (cur + 1).min(ELSEWHERE.len() - 1),
+                    };
+                } else if k.code == KeyCode::Enter {
+                    self.stage = Stage::ElsewhereAsk {
+                        what: cur,
+                        value: String::new(),
+                        error: None,
+                    };
+                }
+                Outcome::Nothing
+            }
+            Stage::ElsewhereAsk { what, value, error } => {
+                let what = *what;
+                match k.code {
+                    KeyCode::Esc => self.stage = Stage::Elsewhere { sel: what },
+                    KeyCode::Backspace => {
+                        value.pop();
+                    }
+                    KeyCode::Enter => match elsewhere_args(what, value) {
+                        Ok(args) => {
+                            self.stage = Stage::Elsewhere { sel: what };
+                            return Outcome::Handoff(args);
+                        }
+                        Err(e) => *error = Some(e),
+                    },
+                    _ => {
+                        if let Some(c) = typed {
+                            value.push(c);
+                        }
+                    }
+                }
+                Outcome::Nothing
+            }
         }
     }
 
@@ -573,6 +694,9 @@ impl LoginView {
         let name = |i: usize| super::view::display_safe(&self.choices[i].name);
         match &self.stage {
             Stage::List | Stage::Done { .. } => "Sign in".into(),
+            Stage::Elsewhere { .. } | Stage::ElsewhereAsk { .. } => {
+                "Sign in · for a bridge or another home".into()
+            }
             Stage::Methods { choice, .. }
             | Stage::Ask { choice, .. }
             | Stage::Waiting { choice, .. } => format!("Sign in · {}", name(*choice)),
@@ -616,6 +740,7 @@ impl LoginView {
                 }
                 let rows = rows.max(1);
                 let top = (self.sel + 1).saturating_sub(rows);
+                let extra = self.elsewhere_shown();
                 for (pos, &i) in shown.iter().enumerate().skip(top).take(rows) {
                     let c = &self.choices[i];
                     let color = match &c.state {
@@ -643,6 +768,17 @@ impl LoginView {
                             fg(p.warning),
                         ),
                     ]));
+                }
+                let at = shown.len();
+                if extra && at >= top && at < top + rows {
+                    out.push(Line::from(Span::styled(
+                        format!("  {}", crate::cli::ELSEWHERE_LABEL),
+                        if self.sel == at {
+                            selected
+                        } else {
+                            fg(p.accent)
+                        },
+                    )));
                 }
                 out.push(Line::default());
                 let mut keys = hint("enter", "sign in");
@@ -784,6 +920,51 @@ impl LoginView {
                     keys.extend(hint("enter", "use the pasted URL"));
                 }
                 keys.extend(hint("esc", "cancel"));
+                out.push(Line::from(keys));
+            }
+            Stage::Elsewhere { sel } => {
+                out.push(Line::from(Span::styled(
+                    "A login for a tailbus bridge or another CodeSmith home, not yours. It runs in the terminal, and CodeSmith comes back when it's done.",
+                    fg(p.dialog_muted),
+                )));
+                out.push(Line::default());
+                for (i, (label, ..)) in ELSEWHERE.iter().enumerate() {
+                    out.push(Line::from(Span::styled(
+                        format!(" {label} "),
+                        if i == *sel {
+                            selected
+                        } else {
+                            fg(p.dialog_text)
+                        },
+                    )));
+                }
+                out.push(Line::default());
+                let mut keys = hint("enter", "choose");
+                keys.extend(hint("esc", "back"));
+                out.push(Line::from(keys));
+            }
+            Stage::ElsewhereAsk { what, value, error } => {
+                let (label, title, placeholder) = ELSEWHERE[*what];
+                out.push(Line::from(Span::styled(label, fg(p.dialog_muted))));
+                out.push(Line::default());
+                let mut spans = vec![Span::styled(
+                    format!("{title}: "),
+                    fg(p.primary).add_modifier(Modifier::BOLD),
+                )];
+                if value.is_empty() {
+                    spans.push(Span::styled(placeholder, fg(p.dialog_muted)));
+                } else {
+                    spans.push(Span::styled(safe(value), fg(p.dialog_text)));
+                }
+                spans.push(Span::styled("▏", fg(p.primary)));
+                out.push(Line::from(spans));
+                if let Some(e) = error {
+                    out.push(Line::default());
+                    out.push(Line::from(Span::styled(safe(e), fg(p.error))));
+                }
+                out.push(Line::default());
+                let mut keys = hint("enter", "run it in the terminal");
+                keys.extend(hint("esc", "back"));
                 out.push(Line::from(keys));
             }
             Stage::Done { ok, message } => {
@@ -1221,6 +1402,103 @@ mod tests {
         assert_eq!(view(&a).stage, Stage::List);
         view_mut(&mut a).event(LoginEv::Url("https://x.example".into()));
         assert!(!frame(&a).contains("x.example"));
+    }
+
+    #[test]
+    fn the_list_ends_with_a_way_to_sign_in_for_a_bridge_or_another_home() {
+        let (mut a, _d) = picker();
+        let n = view(&a).shown().len();
+        assert!(view(&a).elsewhere_shown());
+        // Down to the last row: past every provider.
+        for _ in 0..n + 3 {
+            a.on_key(key(KeyCode::Down));
+        }
+        assert_eq!(view(&a).sel, n);
+        let f = frame(&a);
+        assert!(f.contains(crate::cli::ELSEWHERE_LABEL), "{f}");
+        a.on_key(key(KeyCode::Enter));
+        let f = frame(&a);
+        assert!(f.contains("for a bridge or another home"), "{f}");
+        for (label, ..) in ELSEWHERE {
+            assert!(f.contains(label), "{label}\n{f}");
+        }
+        // Set up a bridge: a name tailbus can't take is refused there.
+        a.on_key(key(KeyCode::Enter));
+        a.on_key(key(KeyCode::Enter));
+        assert!(frame(&a).contains("Bridge name is required"));
+        type_text(&mut a, "My Bot");
+        assert_eq!(a.on_key(key(KeyCode::Enter)), None);
+        let f = frame(&a);
+        assert!(f.contains("such as my-bot"), "{f}");
+        for _ in 0.."My Bot".len() {
+            a.on_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut a, "coder");
+        assert_eq!(
+            a.on_key(key(KeyCode::Enter)),
+            Some(Action::Login(Outcome::Handoff(vec![
+                "bridge".into(),
+                "init".into(),
+                "coder".into()
+            ])))
+        );
+        // Another home and a file run `auth login` with the answer, which
+        // can be pasted.
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Enter));
+        a.on_paste("/b/coder/home\nignored");
+        assert_eq!(
+            a.on_key(key(KeyCode::Enter)),
+            Some(Action::Login(Outcome::Handoff(vec![
+                "auth".into(),
+                "login".into(),
+                "--home=/b/coder/home".into()
+            ])))
+        );
+        a.on_key(key(KeyCode::Down));
+        a.on_key(key(KeyCode::Enter));
+        type_text(&mut a, "/b/key");
+        assert_eq!(
+            a.on_key(key(KeyCode::Enter)),
+            Some(Action::Login(Outcome::Handoff(vec![
+                "auth".into(),
+                "login".into(),
+                "--to-file=/b/key".into()
+            ])))
+        );
+        // Esc goes back a step at a time.
+        a.on_key(key(KeyCode::Esc));
+        assert_eq!(view(&a).stage, Stage::List);
+        // Filtering for a provider hides the row; for a bridge it shows.
+        type_text(&mut a, "groq");
+        assert!(!view(&a).elsewhere_shown());
+        assert!(!frame(&a).contains(crate::cli::ELSEWHERE_LABEL));
+        view_mut(&mut a).filter.clear();
+        type_text(&mut a, "bridge");
+        assert!(view(&a).elsewhere_shown());
+        assert_eq!(view(&a).shown().len(), 0);
+        a.on_key(key(KeyCode::Enter));
+        assert_eq!(view(&a).stage, Stage::Elsewhere { sel: 0 });
+    }
+
+    #[test]
+    fn elsewhere_answers_become_codesmith_arguments() {
+        assert_eq!(
+            elsewhere_args(0, " coder "),
+            Ok(vec!["bridge".into(), "init".into(), "coder".into()])
+        );
+        assert!(elsewhere_args(0, "").is_err());
+        assert!(elsewhere_args(0, "../x").is_err());
+        assert!(elsewhere_args(0, "-rf").is_err(), "no option smuggled in");
+        assert!(elsewhere_args(1, "  ").is_err());
+        // A path is one argument, whatever is in it.
+        assert_eq!(
+            elsewhere_args(2, "--oauth; rm -rf ~")
+                .unwrap()
+                .last()
+                .map(String::as_str),
+            Some("--to-file=--oauth; rm -rf ~")
+        );
     }
 
     #[test]

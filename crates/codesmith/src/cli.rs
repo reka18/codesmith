@@ -225,6 +225,13 @@ enum Command {
         #[command(subcommand)]
         what: crate::busctl::BusCmd,
     },
+    /// Set up a tailbus bridge that hands other agents' messages to
+    /// CodeSmith: a headless `codesmith run`, or a relay to a session you
+    /// have open.
+    Bridge {
+        #[command(subcommand)]
+        what: crate::bridge_init::BridgeCmd,
+    },
     /// Upgrade CodeSmith to the latest or a specific release.
     #[command(visible_alias = "update")]
     Upgrade {
@@ -685,6 +692,17 @@ enum AuthCmd {
         /// otherwise the token is read from standard input.
         #[arg(long)]
         token: bool,
+        /// Save the login in another CodeSmith home's auth store (the
+        /// `home` a tailbus bridge runs CodeSmith with), not your own. The
+        /// folder must exist and can't be your own home.
+        #[arg(long, value_name = "DIR", conflicts_with = "to_file")]
+        home: Option<PathBuf>,
+        /// Write the key, or a Claude Code token for claude-agent, to this
+        /// file (created readable only by you) instead of an auth store: a
+        /// tailbus bridge's `secrets` reads it. An existing file is
+        /// replaced only when you say so at a terminal; a symlink never is.
+        #[arg(long, value_name = "PATH")]
+        to_file: Option<PathBuf>,
     },
     /// List providers with saved keys and where each provider's key comes from.
     List,
@@ -1548,6 +1566,7 @@ async fn run(cli: Cli) -> Result<()> {
         }) => crate::links::run(check).await,
         Some(Command::Debug { what }) => debug(cwd, what),
         Some(Command::Bus { what }) => crate::busctl::run(cwd, what).await,
+        Some(Command::Bridge { what }) => crate::bridge_init::run_cmd(&cwd, what).await,
         Some(Command::Upgrade {
             target,
             method,
@@ -1914,7 +1933,7 @@ fn pick_mcp_server(
 }
 
 /// A line typed in the terminal; `None` when stdin is not one.
-fn read_line(prompt: &str) -> Result<Option<String>> {
+pub(crate) fn read_line(prompt: &str) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() {
         return Ok(None);
     }
@@ -1925,7 +1944,7 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
     Ok(Some(line.trim().to_string()))
 }
 
-fn read_secret(prompt: &str) -> Result<String> {
+pub(crate) fn read_secret(prompt: &str) -> Result<String> {
     let mut line = String::new();
     if std::io::stdin().is_terminal() {
         // Echo goes off before the prompt shows, so a key typed or pasted
@@ -1965,6 +1984,21 @@ struct PluginLogin {
     cli: bool,
     fields: Vec<String>,
     cwd: PathBuf,
+    /// Another home the login is for (`--home`): its config is read, not
+    /// yours or the project's.
+    home: Option<PathBuf>,
+}
+
+/// The config a login reads: another home's (`--home`, a bridge's), or
+/// the one for `cwd`.
+pub(crate) fn login_config(
+    cwd: &std::path::Path,
+    home: Option<&std::path::Path>,
+) -> Result<config::Loaded> {
+    match home {
+        Some(h) => config::load_home(h),
+        None => config::load(cwd),
+    }
 }
 
 /// A key or code typed into a login: never shown, logged or printed with
@@ -2083,10 +2117,16 @@ async fn plugin_login_with(
         cli,
         fields,
         cwd,
+        home,
     } = login;
     // Claude Code keeps its own login: check it and save its models; no
     // credential is asked for or saved.
     if provider == providers::claude_agent::ID {
+        if home.is_some() {
+            return Err(anyhow!(
+                "Claude Code's own login is yours, not another home's: sign it in with a Claude Code token (--token)"
+            ));
+        }
         let loaded = config::load(&cwd)?;
         let p = loaded.config.provider(provider).unwrap_or_default();
         let state = providers::claude_agent::check(&providers::claude_agent::connection(&p)).await;
@@ -2102,7 +2142,7 @@ async fn plugin_login_with(
                 "the Azure CLI is not installed (no `az` on PATH): install it and run `az login`, or log in with a key"
             ));
         }
-        let loaded = config::load(&cwd)?;
+        let loaded = login_config(&cwd, home.as_deref())?;
         let settings = loaded
             .config
             .provider(provider)
@@ -2134,7 +2174,7 @@ async fn plugin_login_with(
             client_id.as_deref(),
             register,
             &fields,
-            &cwd,
+            &login_config(&cwd, home.as_deref())?,
             io,
         )
         .await
@@ -2192,7 +2232,7 @@ async fn plugin_login_with(
         )));
     }
     if provider == providers::copilot::ID {
-        let loaded = config::load(&cwd)?;
+        let loaded = login_config(&cwd, home.as_deref())?;
         let settings = loaded
             .config
             .provider(provider)
@@ -2232,7 +2272,7 @@ async fn browser_login(
     client_id: Option<&str>,
     register: bool,
     fields: &[String],
-    cwd: &std::path::Path,
+    loaded: &config::Loaded,
     mut io: LoginIo,
 ) -> Result<String> {
     if register && provider != codesmith_core::providers::chatgpt::ID {
@@ -2248,7 +2288,6 @@ async fn browser_login(
             .read_line(&format!("{title}: "))?
             .filter(|a| !a.is_empty()))
     };
-    let loaded = config::load(cwd)?;
     let settings = loaded
         .config
         .provider(provider)
@@ -2452,6 +2491,7 @@ pub(crate) struct LoginRequest {
 pub(crate) async fn run_login(
     file: &std::path::Path,
     cwd: &std::path::Path,
+    home: Option<&std::path::Path>,
     req: LoginRequest,
     io: LoginIo,
 ) -> Result<String> {
@@ -2472,12 +2512,13 @@ pub(crate) async fn run_login(
     };
     let base = PluginLogin {
         cwd: cwd.to_path_buf(),
+        home: home.map(std::path::Path::to_path_buf),
         ..Default::default()
     };
     let login = match kind {
         Kind::Key => {
             let key = key.ok_or_else(|| anyhow!("no key entered"))?;
-            let loaded = config::load(cwd)?;
+            let loaded = login_config(cwd, home)?;
             let given = answers
                 .into_iter()
                 .map(|(k, v)| (k, serde_json::Value::String(v)))
@@ -2493,7 +2534,10 @@ pub(crate) async fn run_login(
         Kind::ClaudeToken { .. } => {
             let key = key.ok_or_else(|| anyhow!("no token entered"))?;
             let done = crate::claude_token::save(file, &key.0)?;
-            crate::claude_token::restart_claude_code().await;
+            // Only this process's Claude Code signs in with your own token.
+            if home.is_none() {
+                crate::claude_token::restart_claude_code().await;
+            }
             return Ok(done);
         }
         Kind::Browser { .. } | Kind::Device if provider == providers::copilot::ID => {
@@ -2631,19 +2675,325 @@ fn pick_index(answer: &str, ids: &[&str]) -> Option<usize> {
         .or_else(|| ids.iter().position(|id| id.eq_ignore_ascii_case(a)))
 }
 
+/// Where `codesmith auth login` puts what it signs in to.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Target {
+    /// Your own auth store.
+    Own,
+    /// Another home's auth store (`--home`), such as a tailbus bridge's.
+    Home(PathBuf),
+    /// A file of its own (`--to-file`), for a bridge's `secrets`.
+    File(PathBuf),
+}
+
+impl Target {
+    fn from_args(
+        cwd: &std::path::Path,
+        home: Option<PathBuf>,
+        to_file: Option<PathBuf>,
+    ) -> Result<Target> {
+        Ok(match (home, to_file) {
+            (Some(h), _) => Target::Home(codesmith_core::home::resolve(&absolute(cwd, &h), cwd)?),
+            (None, Some(f)) => Target::File(absolute(cwd, &f)),
+            (None, None) => Target::Own,
+        })
+    }
+
+    /// The auth store logins go in (none for a file).
+    fn auth_file(&self) -> Option<PathBuf> {
+        match self {
+            Target::Own => Some(paths::auth_file()),
+            Target::Home(h) => Some(codesmith_core::home::auth_file(h)),
+            Target::File(_) => None,
+        }
+    }
+
+    fn home(&self) -> Option<&std::path::Path> {
+        match self {
+            Target::Home(h) => Some(h),
+            _ => None,
+        }
+    }
+}
+
+/// `p` against `cwd` when it's relative, with a leading `~/` as your home.
+pub(crate) fn absolute(cwd: &std::path::Path, p: &std::path::Path) -> PathBuf {
+    let text = p.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("~/") {
+        if let Some(h) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            return PathBuf::from(h).join(rest);
+        }
+    }
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        cwd.join(p)
+    }
+}
+
+/// Your own config without any project's, for what decides nothing but
+/// what a login is called and which variable a key goes in.
+fn own_config(cwd: &std::path::Path) -> Result<config::Loaded> {
+    config::load_from(
+        cwd,
+        &config::Sources {
+            project: false,
+            ..config::Sources::from_env()
+        },
+    )
+}
+
+/// No environment: what a tailbus bridge's run sees of yours.
+pub(crate) fn no_env() -> codesmith_core::providers::Env {
+    Arc::new(|_: &str| None)
+}
+
+/// Whether a way in makes a login another home can use on its own: a key,
+/// a Claude Code token, or a provider's OAuth (into that home's auth
+/// store; a file holds only a key or a token, and only a key that needs
+/// no other answer). Claude Code's own login, an AWS profile, Google's
+/// Application Default Credentials and the Azure CLI rest on files in
+/// your own home, so they aren't offered.
+pub(crate) fn portable(
+    kind: codesmith_core::providers::signin::Kind,
+    to_file: bool,
+    asks_more: bool,
+) -> bool {
+    use codesmith_core::providers::signin::Kind;
+    match kind {
+        Kind::Key => !(to_file && asks_more),
+        Kind::ClaudeToken { .. } => true,
+        Kind::Browser { .. } | Kind::Device => !to_file,
+        Kind::ClaudeCode | Kind::AwsProfile | Kind::VertexProject | Kind::AzureCli => false,
+    }
+}
+
+/// `choices` with only the [`portable`] ways in, and without the
+/// providers that have none left.
+pub(crate) fn portable_choices(
+    choices: Vec<codesmith_core::providers::signin::Choice>,
+    to_file: bool,
+) -> Vec<codesmith_core::providers::signin::Choice> {
+    choices
+        .into_iter()
+        .filter_map(|mut c| {
+            c.methods
+                .retain(|m| portable(m.kind, to_file, m.fields.iter().any(|f| f.required)));
+            (!c.methods.is_empty()).then_some(c)
+        })
+        .collect()
+}
+
+/// The environment variable a run reads `provider`'s key from, which a
+/// bridge's `secrets` names: Claude Code's token variable for claude-agent.
+pub(crate) fn key_var(c: &config::Config, provider: &str) -> Option<String> {
+    if provider == codesmith_core::providers::claude_agent::ID {
+        return Some(codesmith_ai::claude_agent::token::VAR.to_string());
+    }
+    c.provider(provider).and_then(|p| p.env.first().cloned())
+}
+
+/// Whether `a` is a yes.
+pub(crate) fn is_yes(a: &str) -> bool {
+    let a = a.trim();
+    a.eq_ignore_ascii_case("y") || a.eq_ignore_ascii_case("yes")
+}
+
+/// The value of the environment variable `name` (a leading `$` allowed),
+/// which is never shown.
+pub(crate) fn key_from_env(name: &str) -> Result<String> {
+    let name = name.trim().trim_start_matches('$');
+    let plain = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !plain {
+        return Err(anyhow!(
+            "{:?} isn't an environment variable's name",
+            printable(name)
+        ));
+    }
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
+        _ => Err(anyhow!("${name} isn't set here, or is empty")),
+    }
+}
+
+/// A key for `name`, at a terminal: taken from an environment variable
+/// the person names, or pasted unseen (after offering its key page).
+/// Without a terminal, read from stdin.
+pub(crate) fn ask_key(name: &str, key_page: Option<&str>, var: Option<&str>) -> Result<String> {
+    if !std::io::stdin().is_terminal() {
+        return read_secret("");
+    }
+    let hint = var.map(|v| format!(" (such as {v})")).unwrap_or_default();
+    let from = read_line(&format!(
+        "Take the key from an environment variable? Type its name{hint}, or press Enter to paste the key: "
+    ))?
+    .unwrap_or_default();
+    if !from.trim().is_empty() {
+        let k = key_from_env(&from)?;
+        eprintln!(
+            "Took the key from ${} (not shown).",
+            from.trim().trim_start_matches('$')
+        );
+        return Ok(k);
+    }
+    if let Some(url) = key_page {
+        eprintln!("Create a key at {url}");
+        let open = read_line("Open it in the browser? [y/N] ")?.unwrap_or_default();
+        if is_yes(&open) {
+            codesmith_core::mcp::oauth::open_browser(url);
+        }
+    }
+    read_secret(&format!("API key for {name} (it is not shown): "))
+}
+
+/// Whether `path` may take a credential: `false` when nothing is there,
+/// `true` when a file is and you agree at a terminal to replace it. Asked
+/// before the key is; without a terminal an existing file is refused.
+pub(crate) fn may_write(path: &std::path::Path) -> Result<bool> {
+    if !codesmith_core::home::secret_exists(path)? {
+        return Ok(false);
+    }
+    match read_line(&format!(
+        "{} already exists. Replace it? [y/N] ",
+        path.display()
+    ))? {
+        Some(a) if is_yes(&a) => Ok(true),
+        Some(_) => Err(anyhow!("{} was left as it was", path.display())),
+        None => Err(anyhow!(
+            "{} already exists: remove it first, or run this at a terminal to replace it",
+            path.display()
+        )),
+    }
+}
+
+/// Write `secret` for `provider` to `path`; what to say when done (never
+/// the secret).
+pub(crate) fn save_to_file(
+    path: &std::path::Path,
+    provider: &str,
+    var: Option<&str>,
+    secret: &str,
+    replace: bool,
+    what: &str,
+) -> Result<String> {
+    codesmith_core::home::write_secret(path, secret, replace)?;
+    let mut done = format!(
+        "Wrote the {what} for {provider} to {} (readable only by you).",
+        path.display()
+    );
+    if let Some(v) = var {
+        done.push_str(&format!(
+            "\nA tailbus bridge reads it with this in its table:\n  [bridges.NAME.secrets]\n  {v} = {}",
+            crate::bridge_init::toml_str(&path.display().to_string())
+        ));
+    }
+    Ok(done)
+}
+
+/// `codesmith auth login PROVIDER --to-file PATH`: a key (or for
+/// claude-agent a Claude Code token) written to `path` alone.
+fn file_login(
+    cwd: &std::path::Path,
+    provider: &str,
+    path: &std::path::Path,
+    token: bool,
+) -> Result<String> {
+    use codesmith_core::providers::{self, claude_agent, signin};
+    let is_token = token || provider == claude_agent::ID;
+    if is_token && provider != claude_agent::ID {
+        return Err(anyhow!("--token is for claude-agent (Claude Code)"));
+    }
+    let loaded = own_config(cwd)?;
+    let p = loaded.config.provider(provider).unwrap_or_default();
+    if !is_token {
+        let form = providers::key_form(provider, &p.settings, &no_env());
+        if let Some(f) = form
+            .as_ref()
+            .and_then(|f| f.fields.iter().find(|f| f.required))
+        {
+            return Err(anyhow!(
+                "{provider}'s login asks for {} beside the key, which a file can't hold: use --home DIR to save it in a bridge's home",
+                f.key
+            ));
+        }
+        let methods = signin::methods(provider, &p, &no_env());
+        if !methods.is_empty() && !methods.iter().any(|m| m.kind == signin::Kind::Key) {
+            return Err(anyhow!(
+                "{provider} doesn't sign in with a key, and --to-file takes a key or a Claude Code token: use --home DIR to save its login in a bridge's home"
+            ));
+        }
+    }
+    let replace = may_write(path)?;
+    if is_token {
+        let t = read_token(true)?;
+        let t = codesmith_ai::claude_agent::token::validate(&t).map_err(anyhow::Error::msg)?;
+        return save_to_file(
+            path,
+            claude_agent::ID,
+            Some(codesmith_ai::claude_agent::token::VAR),
+            &t,
+            replace,
+            "Claude Code token",
+        );
+    }
+    let var = key_var(&loaded.config, provider);
+    let key = ask_key(provider, signin::key_page(provider), var.as_deref())?;
+    save_to_file(path, provider, var.as_deref(), &key, replace, "key")
+}
+
 /// `codesmith auth login` without a provider: the sign-in picker in the
 /// terminal (a numbered list), or the list and how to sign in when there
-/// is no terminal to ask in.
-async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<()> {
+/// is no terminal to ask in. For your own auth store it ends with a way
+/// to sign in for a bridge or another home.
+async fn login_picker(cwd: &std::path::Path, target: &Target) -> Result<()> {
     use codesmith_core::providers::{self, signin};
-    let loaded = config::load(cwd)?;
-    let env = providers::process_env();
-    let choices = signin::choices(&loaded.config, file, &env);
+    let (loaded, file, env) = match target {
+        Target::Own => (
+            config::load(cwd)?,
+            paths::auth_file(),
+            providers::process_env(),
+        ),
+        Target::Home(h) => (
+            config::load_home(h)?,
+            codesmith_core::home::auth_file(h),
+            no_env(),
+        ),
+        Target::File(_) => (own_config(cwd)?, PathBuf::new(), no_env()),
+    };
+    let mut choices = signin::choices(&loaded.config, &file, &env);
+    if *target != Target::Own {
+        choices = portable_choices(choices, matches!(target, Target::File(_)));
+    }
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         println!("{}", login_guidance(&choices));
+        match target {
+            Target::Own => {}
+            Target::Home(h) => println!(
+                "Add --home {} to the command.",
+                codesmith_core::retry::shell_word(&h.display().to_string())
+            ),
+            Target::File(p) => println!(
+                "Add --to-file {} to the command.",
+                codesmith_core::retry::shell_word(&p.display().to_string())
+            ),
+        }
         return Err(anyhow!(
             "Pass a provider id when running without an interactive terminal"
         ));
+    }
+    match target {
+        Target::Own => {}
+        Target::Home(h) => eprintln!(
+            "Signing in for the CodeSmith home {}: the login goes in {}.",
+            h.display(),
+            file.display()
+        ),
+        Target::File(p) => eprintln!(
+            "The key or Claude Code token goes in {}, readable only by you.",
+            p.display()
+        ),
     }
     for (i, c) in choices.iter().enumerate() {
         let tag = if codesmith_core::providers::verified::verified(&c.id) {
@@ -2651,15 +3001,21 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         } else {
             format!(" · {}", codesmith_core::providers::verified::TAG)
         };
-        eprintln!(
-            "  {:>2}. {:<30} {}{tag}",
-            i + 1,
-            printable(&c.name),
-            printable(&c.state.describe())
-        );
+        let state = match target {
+            Target::File(_) => String::new(),
+            _ => printable(&c.state.describe()),
+        };
+        eprintln!("  {:>2}. {:<30} {state}{tag}", i + 1, printable(&c.name),);
+    }
+    let elsewhere = (*target == Target::Own).then_some(choices.len() + 1);
+    if let Some(n) = elsewhere {
+        eprintln!("  {n:>2}. {ELSEWHERE_LABEL}");
     }
     let ids: Vec<&str> = choices.iter().map(|c| c.id.as_str()).collect();
     let answer = read_line("Provider to sign in to (number or id): ")?.unwrap_or_default();
+    if elsewhere.is_some_and(|n| answer.trim() == n.to_string()) {
+        return Box::pin(elsewhere_picker(cwd)).await;
+    }
     let c = pick_index(&answer, &ids)
         .map(|i| &choices[i])
         .ok_or_else(|| anyhow!("no provider {:?}", printable(&answer)))?;
@@ -2676,7 +3032,7 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
     }
     // The ways in, then signing out when a login is saved.
     let mut rows: Vec<String> = c.methods.iter().map(|m| m.label.clone()).collect();
-    if c.state.saved() {
+    if c.state.saved() && !matches!(target, Target::File(_)) {
         rows.push("Sign out".into());
     }
     let pick = if rows.len() == 1 {
@@ -2690,14 +3046,39 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         pick_index(&answer, &labels).ok_or_else(|| anyhow!("no choice {:?}", printable(&answer)))?
     };
     if pick == c.methods.len() {
-        println!("{}", logout(file, &c.id)?);
+        println!("{}", logout(&file, &c.id)?);
         return Ok(());
     }
     let m = &c.methods[pick];
+    if let Target::File(path) = target {
+        let replace = may_write(path)?;
+        let done = match m.kind {
+            signin::Kind::ClaudeToken { create } => {
+                let t = read_token(create)?;
+                let t =
+                    codesmith_ai::claude_agent::token::validate(&t).map_err(anyhow::Error::msg)?;
+                save_to_file(
+                    path,
+                    codesmith_core::providers::claude_agent::ID,
+                    Some(codesmith_ai::claude_agent::token::VAR),
+                    &t,
+                    replace,
+                    "Claude Code token",
+                )?
+            }
+            _ => {
+                let var = key_var(&loaded.config, &c.id);
+                let key = ask_key(&printable(&c.name), c.key_page, var.as_deref())?;
+                save_to_file(path, &c.id, var.as_deref(), &key, replace, "key")?
+            }
+        };
+        println!("{done}");
+        return Ok(());
+    }
     let p = loaded.config.provider(&c.id).unwrap_or_default();
     let mut client_id = None;
     if matches!(m.kind, signin::Kind::Browser { .. } | signin::Kind::Device) {
-        if let Some(why) = signin::client_id_missing(&c.id, &p, file, &env) {
+        if let Some(why) = signin::client_id_missing(&c.id, &p, &file, &providers::process_env()) {
             eprintln!("{}", printable(&why));
             client_id = read_line("Client id of your OAuth app (empty to cancel): ")?
                 .filter(|s| !s.is_empty());
@@ -2716,11 +3097,19 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
     }
     let key = match m.kind {
         signin::Kind::ClaudeToken { create } => Some(Secret(read_token(create)?)),
+        signin::Kind::Key if *target != Target::Own => {
+            let var = key_var(&loaded.config, &c.id);
+            Some(Secret(ask_key(
+                &printable(&c.name),
+                c.key_page,
+                var.as_deref(),
+            )?))
+        }
         signin::Kind::Key => {
             if let Some(url) = c.key_page {
                 eprintln!("Create a key at {url}");
                 let open = read_line("Open it in the browser? [y/N] ")?.unwrap_or_default();
-                if open.eq_ignore_ascii_case("y") || open.eq_ignore_ascii_case("yes") {
+                if is_yes(&open) {
                     codesmith_core::mcp::oauth::open_browser(url);
                 }
             }
@@ -2742,9 +3131,54 @@ async fn login_picker(cwd: &std::path::Path, file: &std::path::Path) -> Result<(
         answers,
         client_id,
     };
-    println!("{}", run_login(file, cwd, req, LoginIo::terminal()).await?);
-    adopt_after_login(cwd, &signed_in);
+    if let Target::Home(h) = target {
+        paths::private_dir(&codesmith_core::home::data_dir(h))?;
+    }
+    let done = run_login(&file, cwd, target.home(), req, LoginIo::terminal()).await?;
+    println!("{done}");
+    match target {
+        Target::Own => adopt_after_login(cwd, &signed_in),
+        _ if !done.contains(&file.display().to_string()) => {
+            println!("It is saved in {}.", file.display())
+        }
+        _ => {}
+    }
     Ok(())
+}
+
+/// The sign-in picker's row for signing in elsewhere.
+pub(crate) const ELSEWHERE_LABEL: &str = "For a bridge or another home…";
+
+/// The sign-in picker's ways to sign in elsewhere: a whole tailbus
+/// bridge, a login in another home, or a key in a file.
+async fn elsewhere_picker(cwd: &std::path::Path) -> Result<()> {
+    eprintln!("  1. Set up a tailbus bridge (codesmith bridge init)");
+    eprintln!("  2. Save a login in another CodeSmith home, such as a bridge's (--home)");
+    eprintln!(
+        "  3. Write a key or Claude Code token to a file, for a bridge's secrets (--to-file)"
+    );
+    let answer = read_line("Which (number): ")?.unwrap_or_default();
+    match answer.trim() {
+        "1" => {
+            let name = read_line("Bridge name (lowercase letters, digits and hyphens): ")?
+                .unwrap_or_default();
+            crate::bridge_init::run(cwd, &name, None).await
+        }
+        "2" => {
+            let dir = read_line("The home folder (it must exist): ")?.unwrap_or_default();
+            let h = codesmith_core::home::resolve(&absolute(cwd, std::path::Path::new(&dir)), cwd)?;
+            Box::pin(login_picker(cwd, &Target::Home(h))).await
+        }
+        "3" => {
+            let file = read_line("The file to write it to: ")?.unwrap_or_default();
+            if file.trim().is_empty() {
+                return Err(anyhow!("no file entered"));
+            }
+            let path = absolute(cwd, std::path::Path::new(file.trim()));
+            Box::pin(login_picker(cwd, &Target::File(path))).await
+        }
+        a => Err(anyhow!("no choice {:?}", printable(a))),
+    }
 }
 
 /// After a login: when no model is chosen in codesmith.json, make the
@@ -2797,6 +3231,8 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             cli,
             fields,
             token,
+            home,
+            to_file,
         } => {
             let flagged = token
                 || profile.is_some()
@@ -2811,7 +3247,8 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             if flagged {
                 return Err(anyhow!("name the provider these options are for"));
             }
-            login_picker(cwd, &file).await?;
+            let target = Target::from_args(cwd, home, to_file)?;
+            login_picker(cwd, &target).await?;
         }
         AuthCmd::Login {
             provider: Some(provider),
@@ -2825,15 +3262,50 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
             cli,
             fields,
             token,
+            home,
+            to_file,
         } => {
+            let target = Target::from_args(cwd, home, to_file)?;
+            if let Target::File(path) = &target {
+                let other = profile.is_some()
+                    || enterprise.is_some()
+                    || project.is_some()
+                    || location.is_some()
+                    || client_id.is_some()
+                    || oauth
+                    || register
+                    || cli
+                    || !fields.is_empty();
+                if other {
+                    return Err(anyhow!(
+                        "--to-file takes a key or a Claude Code token; for a login with OAuth or other answers, use --home DIR"
+                    ));
+                }
+                warn_untested(&provider);
+                println!("{}", file_login(cwd, &provider, path, token)?);
+                return Ok(());
+            }
+            let elsewhere = target.home().map(std::path::Path::to_path_buf);
+            let file = target.auth_file().unwrap_or(file);
+            if let Some(h) = &elsewhere {
+                paths::private_dir(&codesmith_core::home::data_dir(h))?;
+            }
             warn_untested(&provider);
+            // Another home can't use your Claude Code login: only a token.
+            let token = token
+                || (elsewhere.is_some() && provider == codesmith_core::providers::claude_agent::ID);
             if token {
                 if provider != codesmith_core::providers::claude_agent::ID {
                     return Err(anyhow!("--token is for claude-agent (Claude Code)"));
                 }
                 println!("{}", token_login(&file)?);
-                crate::claude_token::restart_claude_code().await;
-                adopt_after_login(cwd, &provider);
+                match &elsewhere {
+                    None => {
+                        crate::claude_token::restart_claude_code().await;
+                        adopt_after_login(cwd, &provider);
+                    }
+                    Some(_) => println!("It is saved in {}.", file.display()),
+                }
                 return Ok(());
             }
             let login = PluginLogin {
@@ -2847,13 +3319,20 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 cli,
                 fields: fields.clone(),
                 cwd: cwd.to_path_buf(),
+                home: elsewhere.clone(),
             };
             if let Some(done) = plugin_login(&file, &provider, login).await? {
                 println!("{done}");
-                adopt_after_login(cwd, &provider);
+                if elsewhere.is_none() {
+                    adopt_after_login(cwd, &provider);
+                }
                 return Ok(());
             }
-            let loaded = config::load(cwd)?;
+            let loaded = login_config(cwd, elsewhere.as_deref())?;
+            let env = match elsewhere {
+                Some(_) => no_env(),
+                None => codesmith_core::providers::process_env(),
+            };
             let form = codesmith_core::providers::key_form(
                 &provider,
                 &loaded
@@ -2861,7 +3340,7 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                     .provider(&provider)
                     .unwrap_or_default()
                     .settings,
-                &codesmith_core::providers::process_env(),
+                &env,
             );
             let given = parse_fields(&fields)?;
             if form.is_none() && !given.is_empty() {
@@ -2870,12 +3349,24 @@ async fn auth_cmd(cwd: &std::path::Path, what: AuthCmd) -> Result<()> {
                 ));
             }
             let label = form.as_ref().map_or("API key", |f| f.label);
-            let key = read_secret(&format!("{label} for {provider}: "))?;
+            let key = match &elsewhere {
+                Some(_) => {
+                    let var = key_var(&loaded.config, &provider);
+                    ask_key(
+                        &provider,
+                        codesmith_core::providers::signin::key_page(&provider),
+                        var.as_deref(),
+                    )?
+                }
+                None => read_secret(&format!("{label} for {provider}: "))?,
+            };
             println!(
                 "{}",
                 save_key_login(&file, &loaded, &provider, &key, given, true)?
             );
-            adopt_after_login(cwd, &provider);
+            if elsewhere.is_none() {
+                adopt_after_login(cwd, &provider);
+            }
         }
         AuthCmd::List => {
             let loaded = config::load(cwd)?;

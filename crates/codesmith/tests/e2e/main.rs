@@ -33,6 +33,8 @@
 //! - `run_bridge`: `run` as a headless agent for a bridge: the prompt on
 //!   stdin alone, `--effort`, `--tools`, `--no-tools`, `--no-mcp`,
 //!   `--usage-log`.
+//! - `bridge`: signing in for a tailbus bridge (`auth login --home` and
+//!   `--to-file`) and `bridge init` in a pseudo-terminal.
 //! - `worktree`: `run -w`.
 //! - `tui`: the interactive UI in a pseudo-terminal.
 //! - `catalog`: the models.dev catalog: listing, resolution, background
@@ -49,6 +51,7 @@ mod model;
 
 mod acp;
 mod automation;
+mod bridge;
 mod catalog;
 mod delegation;
 mod folder;

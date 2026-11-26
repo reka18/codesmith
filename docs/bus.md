@@ -135,7 +135,7 @@ session."
 |---|---|
 | `/bus` | This session's name, the other sessions, what's shared and what's waiting. |
 | `/bus name NAME` | What other sessions call this one. |
-| `/bus share NAME` | Let [tailbus](tailbus.md) reach this session through a relay. |
+| `/bus share NAME` | Let [tailbus](tailbus.md) reach this session through a relay (`codesmith bridge init NAME` sets up the bridge). |
 | `/bus unshare` | Stop that. |
 | `/bus pause` · `/bus resume` | Take no new requests (they wait), and take them again. |
 
@@ -157,7 +157,8 @@ for [tailbus bridges](tailbus.md).
 A Claude Code session, or any other agent on your tailnet, can reach a
 CodeSmith session that's open on your screen: share it with `/bus share
 NAME`, and give tailbus a bridge that runs `codesmith bus relay --to NAME`.
-See [tailbus](tailbus.md).
+`codesmith bridge init NAME` (choose Relay) sets that bridge up, and `/bus
+share` says so. See [tailbus](tailbus.md).
 
 ## Limits
 

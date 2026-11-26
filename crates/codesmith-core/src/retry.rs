@@ -367,26 +367,43 @@ pub fn missing_key(model: &crate::config::ModelRef) -> Option<String> {
     let saved = crate::paths::auth_file();
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let own = crate::bus::user_home();
-    let other_home = match (&home, &own) {
-        (Some(h), Some(o)) => h != o,
-        _ => false,
-    };
-    let login = if other_home {
-        format!(
-            "HOME={} codesmith auth login {pid}",
-            home.as_ref()
-                .map(|h| h.display().to_string())
-                .unwrap_or_default()
-        )
-    } else {
-        format!("codesmith auth login {pid}")
-    };
+    let login = login_command(pid, home.as_deref(), own.as_deref());
     Some(format!(
-        "No API key for {name}: none in {} or in the keys saved at {}.\n  Save one for this home:  {login}\n  or set {} (a tailbus bridge passes it with `secrets`).",
+        "No API key for {name}: none in {} or in the keys saved at {}.\n  Save one for this home:  {login}\n  or set {} (a tailbus bridge passes it with `secrets`; `codesmith bridge init` sets one up).",
         vars.join(" or "),
         saved.display(),
         vars[0],
     ))
+}
+
+/// The command that saves a key for `pid` where a run with `HOME=home`
+/// reads it: plain `auth login` in your own home, else `auth login
+/// --home`, which you run as yourself in your own shell.
+fn login_command(
+    pid: &str,
+    home: Option<&std::path::Path>,
+    own: Option<&std::path::Path>,
+) -> String {
+    match (home, own) {
+        (Some(h), Some(o)) if h != o => format!(
+            "codesmith auth login {pid} --home {}",
+            shell_word(&h.display().to_string())
+        ),
+        _ => format!("codesmith auth login {pid}"),
+    }
+}
+
+/// `s` as one word for a POSIX shell: as it is when nothing in it is
+/// special, else in single quotes.
+pub fn shell_word(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%=,".contains(c));
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
 }
 
 /// The scheme, host and port of the URL a transport error names.
@@ -919,6 +936,40 @@ mod advice_tests {
         .unwrap();
         assert!(a.starts_with("Anthropic rejected the API key."), "{a}");
         assert!(a.contains("claude-agent/opus"), "{a}");
+    }
+
+    #[test]
+    fn a_missing_key_in_another_home_names_auth_login_with_that_home() {
+        use std::path::Path;
+        let own = Path::new("/Users/me");
+        assert_eq!(
+            login_command("fireworks", Some(own), Some(own)),
+            "codesmith auth login fireworks"
+        );
+        assert_eq!(
+            login_command("fireworks", None, Some(own)),
+            "codesmith auth login fireworks"
+        );
+        // A bridge's home: `--home`, not a `HOME=` prefix (which would also
+        // move the config and the rest of what `auth login` reads).
+        assert_eq!(
+            login_command("fireworks", Some(Path::new("/b/home")), Some(own)),
+            "codesmith auth login fireworks --home /b/home"
+        );
+        assert_eq!(
+            login_command("groq", Some(Path::new("/b/my home's")), Some(own)),
+            r"codesmith auth login groq --home '/b/my home'\''s'"
+        );
+    }
+
+    #[test]
+    fn shell_words_quote_only_what_needs_it() {
+        assert_eq!(shell_word("/a/b-c_d.e"), "/a/b-c_d.e");
+        assert_eq!(shell_word(""), "''");
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("$(rm -rf ~)"), "'$(rm -rf ~)'");
+        assert_eq!(shell_word("it's"), r"'it'\''s'");
+        assert_eq!(shell_word("鍵"), "'鍵'");
     }
 
     #[test]

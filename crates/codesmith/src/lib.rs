@@ -22,6 +22,7 @@
 #![allow(clippy::needless_doctest_main)]
 
 mod acp;
+mod bridge_init;
 mod busctl;
 mod claude_token;
 mod cli;

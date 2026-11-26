@@ -353,8 +353,19 @@ async fn a_run_with_no_key_fails_at_once_and_says_how_to_give_it_one() {
         out.both()
     );
     assert!(out.stderr.contains("FIREWORKS_API_KEY"), "{}", out.both());
+    // The world's HOME isn't the account's, as under a bridge: the login
+    // goes in that home with `--home`, run as you in your own shell.
     assert!(
-        out.stderr.contains("codesmith auth login fireworks"),
+        out.stderr.contains(&format!(
+            "codesmith auth login fireworks --home {}",
+            e.home.display()
+        )),
+        "{}",
+        out.both()
+    );
+    assert!(!out.stderr.contains("HOME="), "{}", out.both());
+    assert!(
+        out.stderr.contains("codesmith bridge init"),
         "{}",
         out.both()
     );

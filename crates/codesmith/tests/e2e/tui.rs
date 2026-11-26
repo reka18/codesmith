@@ -105,28 +105,28 @@ fn plain(raw: &str) -> String {
 }
 
 /// The UI running in a pseudo-terminal, read and typed into.
-struct Ui {
+pub(crate) struct Ui {
     child: tokio::process::Child,
     stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
     /// Everything read so far.
-    screen: String,
+    pub(crate) screen: String,
     /// Where the chunk that held the last `wait_for` match starts, so the
     /// next wait also sees text that arrived in that same chunk.
     since: usize,
     /// The terminal as drawn: diff-based redraws split text in the byte
     /// stream, so waits also look at the screen itself.
-    term: vt100::Parser,
+    pub(crate) term: vt100::Parser,
 }
 
 impl Ui {
     /// The UI with `args`, or `None` where `script(1)` is missing.
-    fn start(e: &Env, args: &str) -> Option<Ui> {
+    pub(crate) fn start(e: &Env, args: &str) -> Option<Ui> {
         Self::start_with(e, args, &[])
     }
 
     /// [`start`](Self::start) with more environment variables.
-    fn start_with(e: &Env, args: &str, vars: &[(&str, &str)]) -> Option<Ui> {
+    pub(crate) fn start_with(e: &Env, args: &str, vars: &[(&str, &str)]) -> Option<Ui> {
         if !std::path::Path::new("/usr/bin/script").exists() {
             eprintln!("skipped: script(1) is not installed");
             return None;
@@ -160,7 +160,7 @@ impl Ui {
     }
 
     /// Read output until `text` is drawn (after what was read before).
-    async fn wait_for(&mut self, text: &str) {
+    pub(crate) async fn wait_for(&mut self, text: &str) {
         let mut buf = [0u8; 8192];
         // Text read before this wait but after the previous match's chunk
         // began counts too: two expected texts often arrive in one read.
@@ -226,13 +226,13 @@ impl Ui {
         assert_eq!(seen, Ok(true), "{raw:?} was not written:\n{screen:?}");
     }
 
-    async fn send(&mut self, bytes: &[u8]) {
+    pub(crate) async fn send(&mut self, bytes: &[u8]) {
         self.stdin.write_all(bytes).await.unwrap();
         self.stdin.flush().await.unwrap();
     }
 
     /// Read all the UI writes until it exits.
-    async fn read_to_end(&mut self) {
+    pub(crate) async fn read_to_end(&mut self) {
         let mut buf = [0u8; 8192];
         let (stdout, term, screen) = (&mut self.stdout, &mut self.term, &mut self.screen);
         let _ = tokio::time::timeout(Duration::from_secs(20), async {
@@ -1362,7 +1362,7 @@ async fn a_bang_command_that_reads_the_terminal_fails_at_once() {
 
 /// No `claude` where the sign-in tests look (they must never run a real
 /// one): `PATH` is only the system folders.
-fn no_claude_path() -> Option<(&'static str, &'static str)> {
+pub(crate) fn no_claude_path() -> Option<(&'static str, &'static str)> {
     let dirs = ["/usr/bin", "/bin"];
     if dirs
         .iter()

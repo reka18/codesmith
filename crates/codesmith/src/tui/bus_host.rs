@@ -10,11 +10,23 @@ use super::Runner;
 use codesmith_core::bus::{self, client, Joined, Kind, Message};
 use codesmith_core::session::Session;
 
+/// What `/bus share NAME` says once the session is shared.
+pub(super) fn share_hint(name: &str) -> String {
+    let bridge = if crate::bridge_init::valid_name(name) {
+        name
+    } else {
+        "NAME"
+    };
+    format!(
+        "⇄ Shared as {name}: a tailbus bridge running `codesmith bus relay --to {name}` reaches this session. To set one up, run `codesmith bridge init {bridge}` in a terminal and choose Relay."
+    )
+}
+
 /// The `/bus` help.
 pub const HELP: &str =
     "/bus — this session on the local bus: its name, the other sessions, and messages waiting
 /bus name NAME — what other sessions call this one
-/bus share NAME — let tailbus reach this session through `codesmith bus relay --to NAME`
+/bus share NAME — let tailbus reach this session through `codesmith bus relay --to NAME` (`codesmith bridge init NAME` sets up the bridge)
 /bus unshare — stop that
 /bus pause — take no new requests (they wait) · /bus resume";
 
@@ -349,9 +361,7 @@ impl Runner {
             "share" if !arg.is_empty() => {
                 tokio::spawn(async move {
                     match b.share(&arg).await {
-                        Ok(()) => say(format!(
-                            "⇄ Shared as {arg}: a tailbus bridge running `codesmith bus relay --to {arg}` reaches this session."
-                        )),
+                        Ok(()) => say(share_hint(&arg)),
                         Err(e) => say(format!("⇄ {e}")),
                     }
                 });
@@ -383,5 +393,21 @@ impl Runner {
             }
             _ => self.app.notice(HELP),
         }
+    }
+}
+
+#[cfg(test)]
+mod share_hint_tests {
+    use super::share_hint;
+
+    #[test]
+    fn sharing_points_at_bridge_init() {
+        let h = share_hint("reviewer");
+        assert!(h.contains("Shared as reviewer"), "{h}");
+        assert!(h.contains("codesmith bus relay --to reviewer"), "{h}");
+        assert!(h.contains("codesmith bridge init reviewer"), "{h}");
+        // A share name tailbus can't take as an agent's isn't offered as one.
+        let h = share_hint("Review Bot");
+        assert!(h.contains("codesmith bridge init NAME"), "{h}");
     }
 }
