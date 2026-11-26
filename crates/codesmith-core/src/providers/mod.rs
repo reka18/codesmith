@@ -7,6 +7,7 @@
 
 pub mod azure;
 pub mod bedrock;
+pub mod bifrost;
 pub mod chatgpt;
 pub mod claude_agent;
 pub mod cloudflare;
@@ -100,6 +101,9 @@ pub struct Settings {
     /// OpenAI (Sign in with ChatGPT): opt in to OpenAI's agent
     /// registration when no client id is given.
     pub register: Option<bool>,
+    /// Bifrost: whether `codesmith run --usage-log` reads the virtual key's
+    /// budget before and after the run for a billed total (default on).
+    pub quota: Option<bool>,
 }
 
 /// What a provider plugin is given.
@@ -111,6 +115,8 @@ pub struct Input<'a> {
     pub configured_url: Option<&'a str>,
     /// The configured protocol, which always wins.
     pub configured_protocol: Option<Protocol>,
+    /// The model's own configured protocol (`models.<id>.protocol`).
+    pub model_protocol: Option<Protocol>,
     /// The model's catalog package and (unexpanded) catalog base URL.
     pub package: Option<&'a str>,
     pub catalog_url: Option<&'a str>,
@@ -275,6 +281,8 @@ pub const PROVIDERS: &[(&str, &str, &[&str])] = &[
         &["CLOUDFLARE_API_TOKEN", "CF_AIG_TOKEN"],
     ),
     (poe::ID, "Poe", &["POE_API_KEY"]),
+    // The gateway's URL comes from BIFROST_BASE_URL or settings.baseURL.
+    (bifrost::ID, bifrost::NAME, &[bifrost::KEY_VAR]),
     // Claude Code's own login; CodeSmith takes no key for it.
     (claude_agent::ID, "Claude Agent", &[]),
     (
@@ -330,6 +338,7 @@ pub fn route(input: &Input) -> anyhow::Result<Option<Route>> {
         cloudflare::GATEWAY => return cloudflare::gateway(input).map(Some),
         cloudflare::WORKERS => return cloudflare::workers(input).map(Some),
         poe::ID => return poe::route(input).map(Some),
+        bifrost::ID => return bifrost::route(input).map(Some),
         digitalocean::ID => return digitalocean::route(input).map(Some),
         snowflake::ID => return snowflake::route(input).map(Some),
         sap::ID => return sap::route(input).map(Some),
