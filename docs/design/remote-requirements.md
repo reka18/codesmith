@@ -74,7 +74,7 @@ phone or other client. The **gateway** is `codesmith __remoted`.
 | S9 | A prompt shows in the terminal and on every control device at once. The first answer wins, and every side gets `prompt_resolved`. |
 | S10 | A key press answers only the prompt that was on screen when it was pressed, and terminal input is ignored for 300 ms after a prompt appears or is replaced. |
 | S11 | In the terminal, a turn a device started shows `📱 From <device name>`. |
-| S12 | **(app)** `GET /v1/sessions` items include at least `id`, `title`, `agent`, `model` and `directory`. `GET /v1/sessions/{id}` has `busy` as a JSON boolean and `messages` in serve's record format: a role, then parts with a type and data (text as a string or `{text}`; `tool_call {id, name, input}`; `tool_result {id, name, content, is_error}`). |
+| S12 | **(app)** `GET /v1/sessions` items include at least `id`, `title`, `agent`, `model`, `directory` and `busy` (a JSON boolean), so a phone can check whether a session is busy without downloading its transcript. `GET /v1/sessions/{id}` has `busy` as a JSON boolean and `messages` in serve's record format: a role, then parts with a type and data (text as a string or `{text}`; `tool_call {id, name, input}`; `tool_result {id, name, content, is_error}`). |
 | S13 | **(app)** Events carry at least these fields: `text.delta`, `reasoning.delta`, `tool_start {id, name, input}`, `tool_output {id, delta}`, `tool_end {id, output, error}`, `permission {id, action, resources[], title}`, `notice.message`, `retry.error`, and `done.error` (null or absent when clean). Every boolean is a JSON boolean, never a string. |
 | S14 | **(app)** No event's serialised size exceeds 1 MiB. A larger `tool_output` delta or `tool_end` output is cut with a truncation marker, and the full text can be fetched later. (The phones end a stream on a line over 8 MiB or an event over 16 MiB.) |
 | S15 | **(app)** `prompt_resolved.id` is the same id as the `permission` or `question` event it resolves. |
@@ -100,6 +100,7 @@ phone or other client. The **gateway** is `codesmith __remoted`.
 | C6 | `permission` events carry `origin`, and for edit, write and patch, a unified diff of at most 256 KiB. |
 | C7 | `remote.prompt_timeout` (default `30m`, `0` forever) replaces serve's fixed 30 s refusal for sessions with a control grant. |
 | C8 | A `watch` device gets 403 `forbidden_scope` on every control route. |
+| C10 | **(app)** When a session actually goes idle, its stream gets `session_status {busy: false}`, also when an abort's `done {error: "aborted"}` was sent before the turn had stopped. (Today serve can send that `done` while the session still reports busy, and sends nothing when it finally stops, so the phones poll.) |
 | C9 | Never offered to devices: shell commands outside a turn, fork, delete, archive, the environment, and editing saved permission rules. |
 
 ## T. The remote terminal (Phase B2)
