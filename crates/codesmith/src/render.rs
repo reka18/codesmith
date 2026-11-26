@@ -481,8 +481,80 @@ impl Sink for Printer {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe, safe};
+    use super::{describe, safe, usage_line, StepExtra};
     use serde_json::json;
+
+    fn step(u: &codesmith_ai::Usage, extra: StepExtra) -> serde_json::Value {
+        let r = codesmith_ai::FinishReason::new(codesmith_ai::Reason::Stop, "stop");
+        usage_line("bifrost/openai/m", "ses_1", &r, u, &extra)
+    }
+
+    // `usd` is only ever a billed cost above 0; a price CodeSmith worked
+    // out (a context tier's, carried in the usage) never shows as `usd`.
+    #[test]
+    fn usd_is_billed_cost_only_and_the_estimate_is_its_own_field() {
+        let priced = codesmith_ai::Usage {
+            input: 10,
+            cost: Some(1.5),
+            ..Default::default()
+        };
+        let v = step(&priced, StepExtra::default());
+        assert!(
+            v.get("usd").is_none() && v.get("usd_estimated").is_none(),
+            "{v}"
+        );
+        for billed in [Some(0.0), Some(-1.0), Some(f64::NAN), None] {
+            let v = step(
+                &priced,
+                StepExtra {
+                    billed,
+                    ..Default::default()
+                },
+            );
+            assert!(v.get("usd").is_none(), "{billed:?}: {v}");
+        }
+        let v = step(
+            &priced,
+            StepExtra {
+                billed: Some(0.25),
+                estimated: Some(0.2),
+                served: Some(codesmith_ai::Served {
+                    request_id: Some("req-1".into()),
+                    provider: Some("openai".into()),
+                    model: Some("m-mini".into()),
+                }),
+            },
+        );
+        assert_eq!(v["usd"], 0.25);
+        assert_eq!(v["usd_estimated"], 0.2);
+        assert_eq!(v["request_id"], "req-1");
+        assert_eq!(v["served_model"], "openai/m-mini");
+        // An estimate of 0 is still written; a broken one is not.
+        let v = step(
+            &priced,
+            StepExtra {
+                estimated: Some(0.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["usd_estimated"], 0.0);
+        let v = step(
+            &priced,
+            StepExtra {
+                estimated: Some(f64::INFINITY),
+                ..Default::default()
+            },
+        );
+        assert!(v.get("usd_estimated").is_none());
+    }
+
+    #[test]
+    fn the_run_line_is_never_a_step() {
+        let v = super::run_total_line("ses_1", "bifrost/openai/m", "bifrost-quota", "b1", 0.5);
+        assert_eq!(v["type"], "run");
+        assert_eq!(v["usd_quota"], 0.5);
+        assert!(v.get("usd").is_none());
+    }
 
     // OSC 52 (clipboard), OSC 8 (links), title changes, C1 controls and
     // bidi overrides in untrusted text are shown, not sent; line breaks
