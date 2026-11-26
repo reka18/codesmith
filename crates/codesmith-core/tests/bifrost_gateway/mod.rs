@@ -50,6 +50,9 @@ pub struct State {
     pub fail_first: usize,
     /// Answer the model list with this status.
     pub list_status: Option<u16>,
+    /// A real gateway's pricing datasheet to serve at `/datasheet`, when
+    /// this fake is its upstream.
+    pub datasheet: Option<String>,
     pub seen: Vec<Seen>,
     pub quota_calls: usize,
 }
@@ -223,6 +226,13 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             };
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
+        ("GET", "/datasheet") => {
+            let body = st.lock().unwrap().datasheet.clone();
+            match body {
+                Some(b) => respond(&mut s, 200, "application/json", &[], &b).await,
+                None => respond(&mut s, 404, "application/json", &[], "{}").await,
+            }
+        }
         ("GET", "/api/governance/virtual-keys/quota") => {
             let answer = {
                 let mut g = st.lock().unwrap();
@@ -233,7 +243,11 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             let (status, body) = answer.unwrap_or((404, json!({"error": "no"})));
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
-        ("POST", "/v1/chat/completions") | ("POST", "/anthropic/v1/messages") => {
+        // `/v1/messages` is Anthropic's own path, for a real gateway's
+        // upstream.
+        ("POST", "/v1/chat/completions")
+        | ("POST", "/anthropic/v1/messages")
+        | ("POST", "/v1/messages") => {
             let (fail, headers, cost, tokens) = {
                 let mut g = st.lock().unwrap();
                 let fail = g.fail_first > 0;

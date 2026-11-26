@@ -265,3 +265,211 @@ async fn the_quota_setting_turns_the_reads_off() {
     assert!(!g.seen().iter().any(|s| s.path.ends_with("/quota")));
     assert!(!log_lines(&log).iter().any(|l| l["type"] == "run"));
 }
+
+/// Against a real Bifrost built from source (`CODESMITH_BIFROST_BIN`),
+/// with the fake gateway as its OpenAI and Anthropic upstream: the key's
+/// filtered list, both APIs, the request id and routed model, and the
+/// quota. Not run by default: `cargo test -p codesmith --test e2e
+/// bifrost::real -- --ignored`. `CODESMITH_BIFROST_DATASHEET` names a
+/// copy of Bifrost's pricing datasheet to serve it locally, as a gateway
+/// won't start without one.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn real_bifrost_end_to_end() {
+    let Some(bin) = std::env::var_os("CODESMITH_BIFROST_BIN") else {
+        eprintln!("skipped: set CODESMITH_BIFROST_BIN to a bifrost-http binary");
+        return;
+    };
+    const ALPHA: &str = "sk-bf-real-e2e-alpha";
+    const BRAVO: &str = "sk-bf-real-e2e-bravo";
+    let up = Gateway::start(State {
+        tokens: (100, 20, 0, 0),
+        ..Default::default()
+    })
+    .await;
+    up.set_models(
+        "",
+        vec![
+            json!({"id": "test-gpt-1", "object": "model", "created": 1767225600, "owned_by": "test"}),
+            json!({"id": "test-gpt-2", "object": "model", "created": 1767225600, "owned_by": "test"}),
+            json!({"id": "claude-test-9-1", "type": "model", "display_name": "Claude Test",
+                   "created_at": "2026-01-01T00:00:00Z"}),
+        ],
+    );
+    let datasheet = std::env::var_os("CODESMITH_BIFROST_DATASHEET")
+        .map(|p| std::fs::read_to_string(p).expect("the datasheet"));
+    let pricing = datasheet.is_some();
+    up.with(|s| s.datasheet = datasheet);
+    let dir = tempfile::tempdir().unwrap();
+    let port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let provider = |models: &[&str]| {
+        json!({"keys": [{"name": "upstream", "value": "upstream-test-key", "models": models, "weight": 1}],
+               "network_config": {"base_url": up.url, "default_request_timeout_in_seconds": 30}})
+    };
+    let vk = |id: &str, value: &str, openai: &[&str], anthropic: &[&str]| {
+        json!({"id": id, "name": id, "value": value, "is_active": true, "provider_configs": [
+            {"provider": "openai", "allowed_models": openai, "key_ids": ["*"], "weight": 1.0},
+            {"provider": "anthropic", "allowed_models": anthropic, "key_ids": ["*"], "weight": 1.0}]})
+    };
+    let config = json!({
+        "client": {"enable_logging": true, "allowed_origins": ["*"]},
+        "config_store": {"enabled": true, "type": "sqlite", "config": {"path": dir.path().join("config.db")}},
+        "logs_store": {"enabled": true, "type": "sqlite", "config": {"path": dir.path().join("logs.db")}},
+        "providers": {
+            "openai": provider(&["*"]),
+            "anthropic": provider(&["*"]),
+        },
+        "governance": {
+            "virtual_keys": [
+                vk("vk-alpha", ALPHA, &["test-gpt-1"], &["claude-test-9-1"]),
+                vk("vk-bravo", BRAVO, &["test-gpt-2"], &[]),
+            ],
+            "budgets": [{"id": "bud-alpha", "max_limit": 100.0, "reset_duration": "1M",
+                         "virtual_key_id": "vk-alpha"}]
+        }
+    });
+    let mut config = config;
+    if pricing {
+        config["framework"] = json!({"pricing": {"pricing_url": format!("{}/datasheet", up.url)}});
+    }
+    std::fs::write(dir.path().join("config.json"), config.to_string()).unwrap();
+    let mut gw = tokio::process::Command::new(bin)
+        .args([
+            "-app-dir",
+            dir.path().to_str().unwrap(),
+            "-host",
+            "127.0.0.1",
+            "-port",
+            &port.to_string(),
+            "-log-level",
+            "warn",
+        ])
+        .stdout(std::fs::File::create(dir.path().join("out.log")).unwrap())
+        .stderr(std::fs::File::create(dir.path().join("err.log")).unwrap())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::new();
+    let mut up_ok = false;
+    // Bifrost takes a while to start (its pricing sync).
+    for _ in 0..360 {
+        if client
+            .get(format!("{base}/health"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status().is_success())
+        {
+            up_ok = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(
+        up_ok,
+        "bifrost didn't start:\n{}",
+        std::fs::read_to_string(dir.path().join("err.log")).unwrap_or_default()
+    );
+
+    let e = world("bifrost/openai/test-gpt-1");
+    let run_with = |key: &'static str, args: Vec<String>| {
+        let mut c = e.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        c.env("BIFROST_BASE_URL", &base).env("BIFROST_API_KEY", key);
+        async move { finish(c.spawn().unwrap()).await }
+    };
+    // Each key's own list.
+    let a = run_with(ALPHA, vec!["models".into(), "bifrost".into()]).await;
+    a.ok();
+    let b = run_with(BRAVO, vec!["models".into(), "bifrost".into()]).await;
+    b.ok();
+    eprintln!("alpha lists:\n{}\nbravo lists:\n{}", a.stdout, b.stdout);
+    assert!(
+        a.stdout.contains("bifrost/openai/test-gpt-1"),
+        "{}",
+        a.both()
+    );
+    assert!(
+        !a.stdout.contains("bifrost/openai/test-gpt-2"),
+        "{}",
+        a.both()
+    );
+    assert!(
+        b.stdout.contains("bifrost/openai/test-gpt-2"),
+        "{}",
+        b.both()
+    );
+    assert!(
+        !b.stdout.contains("bifrost/openai/test-gpt-1"),
+        "{}",
+        b.both()
+    );
+
+    // Chat, with the usage log.
+    let log = e.path("usage.jsonl");
+    let out = run_with(
+        ALPHA,
+        vec![
+            "run".into(),
+            "--format".into(),
+            "json".into(),
+            "--usage-log".into(),
+            log.display().to_string(),
+            "hi".into(),
+        ],
+    )
+    .await;
+    out.ok();
+    assert_eq!(out.text(), "Hello there.");
+    let lines = log_lines(&log);
+    eprintln!("usage log: {lines:?}");
+    let step = lines.iter().find(|l| l["type"] == "step").unwrap();
+    assert!(
+        step["request_id"].as_str().is_some_and(|s| !s.is_empty()),
+        "{step}"
+    );
+    assert_eq!(step["served_model"], "openai/test-gpt-1", "{step}");
+    let to_up = up.seen();
+    let chat = to_up
+        .iter()
+        .find(|s| s.path == "/v1/chat/completions")
+        .expect("reached the upstream");
+    assert_eq!(chat.body["model"], "test-gpt-1");
+    assert!(
+        chat.header("x-bf-vk").is_none(),
+        "the virtual key stays at the gateway"
+    );
+
+    // The Messages route.
+    let out = run_with(
+        ALPHA,
+        vec![
+            "run".into(),
+            "-m".into(),
+            "bifrost/anthropic/claude-test-9-1".into(),
+            "--format".into(),
+            "json".into(),
+            "hello".into(),
+        ],
+    )
+    .await;
+    eprintln!("anthropic run: {}", out.both());
+    out.ok();
+    assert_eq!(out.text(), "Hello from Claude.");
+
+    // A model this key may not use.
+    let out = run_with(
+        BRAVO,
+        vec![
+            "run".into(),
+            "-m".into(),
+            "bifrost/openai/test-gpt-1".into(),
+            "hi".into(),
+        ],
+    )
+    .await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    let _ = gw.kill().await;
+}
