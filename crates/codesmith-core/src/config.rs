@@ -1175,6 +1175,24 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     Ok(loaded)
 }
 
+/// The config a run with `HOME=home` sees, as a tailbus bridge runs it:
+/// that home's global config alone (no `$CODESMITH_CONFIG`, no project
+/// files, none of yours), with the process-wide models.dev catalog.
+pub fn load_home(home: &Path) -> Result<Loaded> {
+    let sources = Sources {
+        global_dir: crate::home::config_dir(home),
+        file: None,
+        content: None,
+        project: false,
+        trust: crate::trust::Mode::Store(crate::trust::store_path()),
+    };
+    let mut loaded = load_from(home, &sources)?;
+    let c = &loaded.config.catalog;
+    let options = crate::catalog::Options::resolve(c.fetch, c.url.as_deref());
+    loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
+    Ok(loaded)
+}
+
 /// Remove `providers.*.swap` from a config document that is not the global
 /// config file, noting each one as `<id> in <source>`: a swap runs
 /// commands, so a project (or anything else) may not set one.
@@ -2557,6 +2575,28 @@ fn cache_setting(p: &ProviderConfig, m: &ModelConfig) -> Option<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Another home's config is its global config alone: a project file
+    /// in or above it (a home inside a repository) is not read.
+    #[test]
+    fn another_homes_config_is_its_global_config_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().canonicalize().unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("codesmith.json"), r#"{"model": "project/m"}"#).unwrap();
+        let home = repo.join("bridge/home");
+        std::fs::create_dir_all(crate::home::config_dir(&home)).unwrap();
+        std::fs::write(home.join("codesmith.json"), r#"{"model": "inside/m"}"#).unwrap();
+        assert_eq!(load_home(&home).unwrap().config.model, None);
+        std::fs::write(
+            crate::home::config_dir(&home).join("codesmith.json"),
+            r#"{"model": "bridge/m"}"#,
+        )
+        .unwrap();
+        let loaded = load_home(&home).unwrap();
+        assert_eq!(loaded.config.model.as_deref(), Some("bridge/m"));
+        assert!(loaded.config.models_dev.is_some());
+    }
 
     #[test]
     fn known_inputs_cover_deepseek_and_gemini() {
