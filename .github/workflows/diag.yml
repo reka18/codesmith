@@ -1,0 +1,35 @@
+# Temporary: find why stopped commands ignore SIGTERM on GitHub's Linux runner.
+name: signal-diag
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Signal state of the step shell and its children
+        run: |
+          echo "step shell:"; grep -E 'Sig(Blk|Ign|Cgt)' /proc/$$/status
+          echo "sh -c child:"; sh -c "grep -E 'Sig(Blk|Ign)' /proc/self/status"
+          echo "bash -c child:"; bash -c "grep -E 'Sig(Blk|Ign)' /proc/self/status"
+          echo "SHELL=$SHELL"; ls -l /bin/sh; ps -o pid,ppid,pgid,sid,comm -p $$ -p $PPID
+          echo "subreaper chain:"; p=$$; while [ "$p" -gt 1 ]; do grep -E '^(Name|PPid)' /proc/$p/status | tr '\n' ' '; echo; p=$(awk '/^PPid/{print $2}' /proc/$p/status); done
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the shell tests
+        run: cargo test -p codesmith-core --lib --no-run
+      - name: One failing test, traced
+        run: |
+          sudo apt-get install -y -qq strace >/dev/null
+          strace -f -o /tmp/st -e trace=kill,tgkill,rt_sigprocmask,rt_sigaction,execve,setsid,exit_group,wait4 \
+            cargo test -p codesmith-core --lib -- --exact tool::shell::tests::cancelling_a_foreground_command_fails_its_call --nocapture || true
+          echo "== execve"; grep execve /tmp/st | grep -v ENOENT | tail -20
+          echo "== kills"; grep -E 'kill\(' /tmp/st | tail -20
+          echo "== SIGTERM dispositions and masks after execve of sh/sleep"; grep -E 'rt_sigaction\(SIGTERM|rt_sigprocmask\(SIG_(SETMASK|BLOCK)' /tmp/st | tail -30
+          echo "== signals received"; grep -E '\-\-\- SIG|\+\+\+ killed' /tmp/st | tail -30
