@@ -1,6 +1,7 @@
 # Design: remote access from a phone
 
-Status: **draft for approval.** Nothing here is built yet.
+Status: **design settled; building not yet approved.** Ray answered the open
+questions on 2026-11-26. Nothing here is built yet.
 
 Remote access lets you pair a phone with a CodeSmith session by scanning a QR
 code, then follow and drive that session from the phone. The phone and the
@@ -169,16 +170,15 @@ so you can confirm that the phone asking is the one in your hand:
 SHA-256("codesmith-pair-check/1\n" + code + "\n" + machine_node_id_hex + "\n" + device_node_id_hex)
 ```
 
-Node ids are lower-cased. The clients currently take the first 4 bytes as a
-big-endian integer mod 1,000,000, shown as `123 456`.
+Node ids are lower-cased. The code shown has 12 digits: the first 8 bytes of
+the hash as a big-endian integer, mod 10^12, zero-padded and shown in groups
+of three (`123 456 789 012`). Taking 8 bytes rather than 5 keeps the digits
+evenly spread.
 
-**Proposed change:** show 12 digits (`123 456 789 012`: the first 8 bytes
-as a big-endian integer mod 10^12, zero-padded, about 40 bits; 8 bytes
-rather than 5 keeps the digits evenly spread). The app team supports this. Someone who sees your QR has up to 180 s to make device keys
-until one matches the code you'll compare. Six digits takes about a million
-tries, which is seconds on one machine. Twelve digits takes about a trillion,
-which can't be done in that window. The wire is unchanged; only the shown
-length changes.
+Why 12 and not 6: someone who sees your QR has up to 180 s to make device
+keys until one matches the code you'll compare. Six digits take about a
+million tries, which is seconds on one machine. Twelve take about a
+trillion, which can't be done in that window.
 
 ### The confirmation
 
@@ -261,6 +261,9 @@ daemon, with these limits:
 - `remote.terminal: false` turns them off;
 - a `watch` device gets 403.
 
+It's a plain terminal, like `serve`'s session terminals: its shell doesn't
+run under the session's permission rules. The unlock is its protection.
+
 The routes are `POST /v1/sessions/{id}/terminals` to open, `GET` to list,
 `PUT`/`DELETE /v1/terminals/{pty}` to resize, rename or close, and an
 attach upgrade carrying framed data, resize, cursor and exit messages.
@@ -307,8 +310,8 @@ The challenge is single use, expires in 60 s, and is stored with the exact
 purpose, device, session and pty it was issued for. A signature for any
 other values fails.
 
-- **Lockout:** 5 failed unlocks in a row lock terminals for that device for
-  15 minutes. Every unlock, failure and lockout is audited, never the
+- **Lockout:** 10 failed unlocks in a row lock terminals for that device for
+  5 minutes. Every unlock, failure and lockout is audited, never the
   password or signature.
 - **Attaching:** reattaching to a terminal it opened needs no new unlock
   from the same device. A different device attaching must unlock with
@@ -393,10 +396,10 @@ with relays off and fake device keys:
 - **Dormant by default:** with nothing opted in, no socket opens and no relay
   is contacted.
 
-## Open questions for approval
+## Decisions on the open questions
 
-1. The 12-digit check code instead of 6 (see [The check code](#the-check-code)).
-2. Whether a remote terminal's shell runs under the session's permission
-   rules or as a plain terminal. As designed, it's a plain terminal, like
-   `serve`'s session terminals: the unlock is its protection.
-3. Lockout numbers: 5 failures, 15 minutes.
+Ray decided these on 2026-11-26:
+
+1. The check code has 12 digits (see [The check code](#the-check-code)).
+2. A remote terminal is a plain terminal; the unlock is its protection.
+3. The lockout is 10 failed unlocks in a row, then 5 minutes.
