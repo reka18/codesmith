@@ -1031,10 +1031,16 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   with Claude's own `thinking` and `effort`. Every other upstream goes to
   Bifrost's unified API, `<base>/v1/chat/completions`, a Claude model
   served by another upstream (`fireworks/anthropic/<model>`) included.
-  A model's `protocol` setting picks another:
+  A model's `protocol` setting picks another of Bifrost's APIs:
+  `openai-responses` goes to `<base>/v1/responses` (over HTTP, never a
+  WebSocket), and `google-gemini` to Bifrost's Gemini route,
+  `<base>/genai/v1beta/models/<id>:streamGenerateContent`:
 
   ```jsonc
-  "bifrost": { "models": { "openai/gpt-4o": { "protocol": "openai-responses" } } }
+  "bifrost": { "models": {
+    "openai/gpt-4o": { "protocol": "openai-responses" },
+    "gemini/gemini-2.5-pro": { "protocol": "google-gemini" }
+  } }
   ```
 
 - **The model list** is the gateway's `GET <base>/v1/models` for your key,
@@ -1048,16 +1054,24 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   a hash of the gateway URL and key, never the key itself, so another key
   never shows it; the kept list is used only when the fetch at the start
   fails, and the session says so. With no list saved for the key either,
-  models aren't checked until one can be fetched.
+  a Bifrost model is refused (in `codesmith run -m`, a bridge's run, and
+  choosing one in the terminal UI, `serve` or ACP), with an error saying
+  the gateway at your URL couldn't be reached to list the models the key
+  allows and that there's no saved list yet: check the URL, the key and
+  the gateway, then try again.
 - **Effort.** A model offers the levels the same model offers reached
   directly: what Bifrost's list says about its reasoning (OpenRouter
   style `reasoning.supported_efforts`, or `supported_parameters`), else
   the catalog's entry for the model at the end of the id
   (`fireworks/anthropic/<claude>` gets Claude's levels), else the
-  protocol's family rules. On the unified API a level is sent as
-  Bifrost's `reasoning` object, `{"effort": "high"}` (or `{"max_tokens":
-  N}` for a token budget); on the Anthropic route, as `thinking` and
-  `output_config.effort`, which Bifrost passes through.
+  protocol's family rules. When Bifrost's list names a model's levels,
+  they win over the catalog's, even where the two differ. On the unified
+  API a level is sent as Bifrost's `reasoning` object, `{"effort":
+  "high"}` (or `{"max_tokens": N}` for a token budget); on the Anthropic
+  route, as `thinking` and `output_config.effort`, which Bifrost passes
+  through; on the Responses API, as `reasoning.effort`; on the Gemini
+  route, as `generationConfig.thinkingConfig` (`thinkingLevel`, or
+  `thinkingBudget`).
 - **Request ids.** Every request carries a fresh UUID in `x-request-id`,
   a retry included: Bifrost drops a request whose id it has already
   logged. The session id goes in `x-bf-agent-correlation-id`. With

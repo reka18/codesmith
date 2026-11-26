@@ -40,6 +40,17 @@ fn catalog() -> Arc<ModelsDev> {
           "api": {"messages": {"base_url": "https://api.anthropic.com/v1",
             "sdk": {"aisdk": "@ai-sdk/anthropic", "opencodeai": "@opencode/ai/providers/anthropic"}}}}
       }},
+      "google": {"id": "google", "name": "Google", "env": ["GEMINI_API_KEY"], "models": {
+        "gemini-test-3": {"id": "gemini-test-3", "type": "chat", "name": "Gemini Test 3", "family": "gemini",
+          "release_date": "2026-01-01",
+          "modalities": {"input": ["text"], "output": ["text"]},
+          "limit": {"context": 1000000, "output": 65536},
+          "capabilities": {"tools": {"supported": true},
+            "reasoning": {"supported": true, "effort": ["minimal", "low", "medium", "high"]}},
+          "cost": {"text": {"input": {"price": 1, "cache": {"read": 0.1}}, "output": {"price": 5}}},
+          "api": {"generate-content": {"base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "sdk": {"aisdk": "@ai-sdk/google", "opencodeai": "@opencode/ai/providers/google"}}}}
+      }},
       "openai": {"id": "openai", "name": "OpenAI", "env": ["OPENAI_API_KEY"], "models": {
         "gpt-test-7": {"id": "gpt-test-7", "type": "chat", "name": "GPT Test 7", "family": "gpt",
           "release_date": "2026-01-01",
@@ -431,11 +442,34 @@ async fn a_gateway_down_at_the_start_falls_back_to_the_saved_list_with_a_notice(
     assert_eq!(c.list_models("bifrost", &["chat"]), ["openai/gpt-test-7"]);
     assert!(c.resolve_model("bifrost/groq/elsewhere").is_err());
     // With no saved list for the key, it says so; models aren't checked.
+    // With no saved list for the key, every model is refused: nothing says
+    // what the key allows.
     let other = config(&g.url, KEY_B);
+    assert!(
+        other.resolve_model("bifrost/groq/elsewhere").is_ok(),
+        "before anything has asked the gateway, nothing is checked"
+    );
     let o = fetch(&other).await;
     assert!(matches!(o, bifrost::Outcome::Missing { .. }), "{o:?}");
     assert!(o.notice().unwrap().contains("none is saved"));
-    assert!(other.resolve_model("bifrost/groq/elsewhere").is_ok());
+    let e = other
+        .resolve_model("bifrost/groq/elsewhere")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains(&format!(
+            "the Bifrost gateway at {} couldn't be reached to list the models this key allows",
+            g.url
+        )) && e.contains("there's no saved list yet")
+            && e.contains("check the URL, the key and the gateway, then try again"),
+        "{e}"
+    );
+    assert!(!e.contains(KEY_B));
+    // The provider itself still resolves, for listing.
+    assert!(other.resolve_model("bifrost/_").is_ok());
+    // Once the gateway answers again, the key's list is used.
+    let g2 = gateway_with(&[]).await;
+    let _ = g2;
 }
 
 #[tokio::test]
@@ -934,5 +968,223 @@ fn the_root_url_is_normalized() {
     assert_eq!(
         bifrost::surface("http://gw", codesmith_ai::Protocol::OpenaiChat),
         "http://gw/v1"
+    );
+}
+
+// ------------------------------------------------- Responses and Gemini
+
+/// Bifrost with the Responses API for an OpenAI model and Gemini's own
+/// API for a Gemini one, by their `protocol` setting.
+fn native(url: &str) -> Config {
+    config_with(json!({"providers": {"bifrost": {
+    "settings": {"baseURL": url, "apiKey": KEY_A},
+    "models": {
+        "openai/gpt-test-7": {"protocol": "openai-responses"},
+        "gemini/gemini-test-3": {"protocol": "google-gemini"},
+        "vertex/gemini-test-3": {"protocol": "google-gemini"}
+    }}}}))
+}
+
+#[tokio::test]
+async fn the_responses_api_goes_to_v1_responses_with_the_key_and_effort() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["openai/gpt-test-7"]).await;
+    let c = native(&g.url);
+    fetch(&c).await;
+    let (url, h, body) = prepared(&c, "bifrost/openai/gpt-test-7#high");
+    assert_eq!(url, format!("{}/v1/responses", g.url));
+    assert_eq!(h.get("x-bf-vk").unwrap(), KEY_A);
+    assert!(h.get("authorization").is_none());
+    assert_eq!(body["model"], "openai/gpt-test-7");
+    assert_eq!(body["reasoning"]["effort"], "high", "{body}");
+    assert_eq!(body["stream"], true);
+    // The same levels as the model reached directly (OpenAI's Responses).
+    assert_eq!(
+        c.resolve_model("bifrost/openai/gpt-test-7")
+            .unwrap()
+            .variants,
+        c.resolve_model("openai/gpt-test-7").unwrap().variants
+    );
+    // Over HTTP: a gateway's Responses route is not OpenAI's WebSocket.
+    assert!(c
+        .resolve_model("bifrost/openai/gpt-test-7")
+        .unwrap()
+        .websocket
+        .is_none());
+}
+
+#[tokio::test]
+async fn gemini_goes_to_the_genai_route_with_the_key_and_thinking_config() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["gemini/gemini-test-3", "vertex/gemini-test-3"]).await;
+    let c = native(&g.url);
+    fetch(&c).await;
+    for id in ["gemini/gemini-test-3", "vertex/gemini-test-3"] {
+        let (url, h, body) = prepared(&c, &format!("bifrost/{id}#low"));
+        assert_eq!(
+            url,
+            format!(
+                "{}/genai/v1beta/models/{id}:streamGenerateContent?alt=sse",
+                g.url
+            )
+        );
+        assert_eq!(h.get("x-bf-vk").unwrap(), KEY_A);
+        assert!(h.get("x-goog-api-key").is_none());
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            json!({"includeThoughts": true, "thinkingLevel": "low"}),
+            "{body}"
+        );
+        // The catalog knows the model as Google's (`gemini/…`), with its
+        // levels; under Vertex it doesn't, and the family rules apply.
+        let via = c.resolve_model(&format!("bifrost/{id}")).unwrap().variants;
+        if id.starts_with("gemini/") {
+            assert_eq!(
+                via,
+                c.resolve_model("google/gemini-test-3").unwrap().variants
+            );
+        } else {
+            assert_eq!(via, ["low", "medium", "high"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_and_gemini_stream_with_usage_cost_request_id_and_routed_model() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["openai/gpt-test-7", "gemini/gemini-test-3"]).await;
+    g.with(|s| {
+        s.routed = Some(("vertex".into(), "gemini-test-3".into()));
+        s.cost = Some(json!({"input_cost": 0.001, "output_cost": 0.001, "total_cost": 0.002}));
+        s.tokens = (100, 20, 30, 0);
+    });
+    let c = native(&g.url);
+    fetch(&c).await;
+    let (events, text) = stream(&c, "bifrost/openai/gpt-test-7").await;
+    assert_eq!(text, "Hello there.");
+    let s = served(&events);
+    let seen = g.seen();
+    let r = seen.iter().find(|s| s.path == "/v1/responses").unwrap();
+    assert_eq!(r.header("x-bf-vk"), Some(KEY_A));
+    assert_eq!(r.header("x-bf-agent-correlation-id"), Some("ses_test1"));
+    let sent = r.header("x-request-id").unwrap().to_string();
+    assert_eq!(s.request_id, Some(format!("bf-{sent}")));
+    assert_eq!(s.provider.as_deref(), Some("vertex"));
+    let u = usage(&events);
+    assert_eq!((u.input, u.output, u.cache_read), (100, 20, 30));
+    assert_eq!(u.cost, Some(0.002));
+
+    let (events, text) = stream(&c, "bifrost/gemini/gemini-test-3").await;
+    assert_eq!(text, "Hello from Gemini.");
+    let s = served(&events);
+    let seen = g.seen();
+    let gm = seen
+        .iter()
+        .find(|s| s.path.starts_with("/genai/v1beta/models/"))
+        .unwrap();
+    assert_eq!(gm.header("x-bf-vk"), Some(KEY_A));
+    let id = gm.header("x-request-id").unwrap();
+    assert_ne!(id, sent);
+    assert_eq!(s.request_id, Some(format!("bf-{id}")));
+    assert_eq!(s.model.as_deref(), Some("gemini-test-3"));
+    let u = usage(&events);
+    assert_eq!((u.input, u.output, u.cache_read), (100, 20, 30));
+    // Gemini's native answer carries no billed cost.
+    assert_eq!(u.cost, None);
+    // Priced on the routed model, from the catalog's Google entry.
+    let routed = served_by("gemini", "gemini-test-3");
+    close(
+        c.estimate(
+            "bifrost/gemini/gemini-test-3",
+            Some(&routed),
+            &tokens(1_000_000, 1_000_000, 1_000_000, 0),
+        ),
+        1.0 + 5.0 + 0.1,
+    );
+}
+
+fn tool_calls(events: &[Event]) -> Vec<(String, Value)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ToolCall { name, input, .. } => Some((name.clone(), input.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn tool_calls_come_through_every_api() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[
+        "openai/gpt-test-7",
+        "anthropic/claude-test-9-1",
+        "gemini/gemini-test-3",
+        "groq/chat-model",
+    ])
+    .await;
+    let args = json!({"path": "src/lib.rs"});
+    g.with(|s| s.tool_call = Some(("read".into(), args.clone())));
+    let c = native(&g.url);
+    fetch(&c).await;
+    for spec in [
+        "bifrost/openai/gpt-test-7",
+        "bifrost/anthropic/claude-test-9-1",
+        "bifrost/gemini/gemini-test-3",
+        "bifrost/groq/chat-model",
+    ] {
+        let (events, _) = stream(&c, spec).await;
+        assert_eq!(
+            tool_calls(&events),
+            [("read".to_string(), args.clone())],
+            "{spec}"
+        );
+        assert!(matches!(events.first(), Some(Event::Served(_))), "{spec}");
+    }
+    let paths: Vec<String> = g
+        .seen()
+        .iter()
+        .filter(|s| s.method == "POST")
+        .map(|s| s.path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "/v1/responses",
+            "/anthropic/v1/messages",
+            "/genai/v1beta/models/gemini/gemini-test-3:streamGenerateContent",
+            "/v1/chat/completions"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn gemini_budget_and_none_levels_are_spelled_for_gemini() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[]).await;
+    g.set_models(
+        KEY_A,
+        vec![
+            json!({"id": "gemini/thinker-x", "reasoning": {"supported_efforts": ["none", "high"]}}),
+        ],
+    );
+    let c = config_with(json!({"providers": {"bifrost": {
+        "settings": {"baseURL": g.url, "apiKey": KEY_A},
+        "models": {"gemini/thinker-x": {"protocol": "google-gemini"}}}}}));
+    fetch(&c).await;
+    let (_, _, body) = prepared(&c, "bifrost/gemini/thinker-x#high");
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingLevel"], "high",
+        "{body}"
+    );
+    let (_, _, body) = prepared(&c, "bifrost/gemini/thinker-x#none");
+    assert_eq!(
+        body["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0,
+        "{body}"
     );
 }

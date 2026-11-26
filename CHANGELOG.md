@@ -5,6 +5,14 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **A Bifrost model is refused when the gateway can't list the key's
+  models and none is saved yet**, with an error naming the gateway's URL,
+  instead of running unchecked.
+- **Bifrost's Responses and Gemini APIs** are reached with a model's
+  `protocol` setting (`<base>/v1/responses`,
+  `<base>/genai/v1beta/models/…`), with the gateway's request id and
+  routed model on Gemini streams too, and Gemini's effort levels sent as
+  `thinkingConfig`.
 - **Bifrost is a built-in provider.** `bifrost` reaches models through a
   [Bifrost](https://github.com/maximhq/bifrost) gateway with a virtual
   key (`BIFROST_BASE_URL` and `BIFROST_API_KEY`, or `settings.baseURL`

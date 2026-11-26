@@ -266,6 +266,103 @@ async fn the_quota_setting_turns_the_reads_off() {
     assert!(!log_lines(&log).iter().any(|l| l["type"] == "run"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_run_on_the_responses_api_and_on_gemini() {
+    let g = start(vec![
+        priced("openai/test-gpt-1"),
+        priced("gemini/test-gemini-1"),
+    ])
+    .await;
+    g.with(|s| {
+        s.routed = Some(("gemini".into(), "test-gemini-1".into()));
+        s.quota = vec![budget(2.0, "r"), budget(2.5, "r")];
+    });
+    let e = Env::new();
+    std::fs::write(
+        e.config_dir.join("codesmith.json"),
+        json!({"model": "bifrost/openai/test-gpt-1", "permissions": [],
+               "providers": {"bifrost": {"models": {
+                   "openai/test-gpt-1": {"protocol": "openai-responses"},
+                   "gemini/test-gemini-1": {"protocol": "google-gemini"}}}}})
+        .to_string(),
+    )
+    .unwrap();
+    for (spec, text, path) in [
+        ("bifrost/openai/test-gpt-1", "Hello there.", "/v1/responses"),
+        (
+            "bifrost/gemini/test-gemini-1",
+            "Hello from Gemini.",
+            "/genai/v1beta/models/gemini/test-gemini-1:streamGenerateContent",
+        ),
+    ] {
+        let log = e.path(&format!("{}.jsonl", spec.replace('/', "_")));
+        let out = run(
+            &e,
+            &g,
+            &[
+                "run",
+                "-m",
+                spec,
+                "--format",
+                "json",
+                "--usage-log",
+                log.to_str().unwrap(),
+                "hi",
+            ],
+        )
+        .await;
+        out.ok();
+        assert_eq!(out.text(), text, "{spec}");
+        // The step's own request, and the session title's: each its own id.
+        let seen = g.seen();
+        let sent: Vec<String> = seen
+            .iter()
+            .filter(|s| s.path == path)
+            .map(|s| {
+                assert_eq!(s.header("x-bf-vk"), Some(KEY));
+                format!("bf-{}", s.header("x-request-id").unwrap())
+            })
+            .collect();
+        assert!(!sent.is_empty(), "{spec}: {seen:?}");
+        let lines = log_lines(&log);
+        let step = lines.iter().find(|l| l["type"] == "step").unwrap();
+        assert!(
+            sent.iter().any(|id| step["request_id"] == id.as_str()),
+            "{spec}: {step} {sent:?}"
+        );
+        assert_eq!(step["served_model"], "gemini/test-gemini-1", "{spec}");
+        // 100 × $2/M + 20 × $10/M on the routed model's gateway rates.
+        let est = step["usd_estimated"].as_f64().unwrap();
+        assert!((est - 0.0004).abs() < 1e-12, "{spec}: {step}");
+        assert!(
+            lines.iter().any(|l| l["type"] == "run"),
+            "{spec}: {lines:?}"
+        );
+        assert!(!out.both().contains(KEY));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gateway_down_with_no_saved_list_refuses_the_model() {
+    let g = start(vec![priced("openai/test-gpt-1")]).await;
+    let url = g.url.clone();
+    g.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let e = world("bifrost/openai/test-gpt-1");
+    let out = run(&e, &g, &["run", "hi"]).await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    for part in [
+        format!(
+            "the Bifrost gateway at {url} couldn't be reached to list the models this key allows"
+        ),
+        "there's no saved list yet".to_string(),
+        "check the URL, the key and the gateway, then try again".to_string(),
+    ] {
+        assert!(out.stderr.contains(&part), "{part}:\n{}", out.both());
+    }
+    assert!(!out.both().contains(KEY));
+}
+
 /// Against a real Bifrost built from source (`CODESMITH_BIFROST_BIN`),
 /// with the fake gateway as its OpenAI and Anthropic upstream: the key's
 /// filtered list, both APIs, the request id and routed model, and the
@@ -292,6 +389,8 @@ async fn real_bifrost_end_to_end() {
         vec![
             json!({"id": "test-gpt-1", "object": "model", "created": 1767225600, "owned_by": "test"}),
             json!({"id": "test-gpt-2", "object": "model", "created": 1767225600, "owned_by": "test"}),
+            json!({"id": "test-gpt-3", "object": "model", "created": 1767225600, "owned_by": "test"}),
+            json!({"id": "test-gemini-1", "object": "model", "created": 1767225600, "owned_by": "test"}),
             json!({"id": "claude-test-9-1", "type": "model", "display_name": "Claude Test",
                    "created_at": "2026-01-01T00:00:00Z"}),
         ],
@@ -309,10 +408,11 @@ async fn real_bifrost_end_to_end() {
         json!({"keys": [{"name": "upstream", "value": "upstream-test-key", "models": models, "weight": 1}],
                "network_config": {"base_url": up.url, "default_request_timeout_in_seconds": 30}})
     };
-    let vk = |id: &str, value: &str, openai: &[&str], anthropic: &[&str]| {
+    let vk = |id: &str, value: &str, openai: &[&str], anthropic: &[&str], gemini: &[&str]| {
         json!({"id": id, "name": id, "value": value, "is_active": true, "provider_configs": [
             {"provider": "openai", "allowed_models": openai, "key_ids": ["*"], "weight": 1.0},
-            {"provider": "anthropic", "allowed_models": anthropic, "key_ids": ["*"], "weight": 1.0}]})
+            {"provider": "anthropic", "allowed_models": anthropic, "key_ids": ["*"], "weight": 1.0},
+            {"provider": "gemini", "allowed_models": gemini, "key_ids": ["*"], "weight": 1.0}]})
     };
     let config = json!({
         "client": {"enable_logging": true, "allowed_origins": ["*"]},
@@ -321,11 +421,18 @@ async fn real_bifrost_end_to_end() {
         "providers": {
             "openai": provider(&["*"]),
             "anthropic": provider(&["*"]),
+            "gemini": provider(&["*"]),
         },
         "governance": {
             "virtual_keys": [
-                vk("vk-alpha", ALPHA, &["test-gpt-1"], &["claude-test-9-1"]),
-                vk("vk-bravo", BRAVO, &["test-gpt-2"], &[]),
+                vk(
+                    "vk-alpha",
+                    ALPHA,
+                    &["test-gpt-1", "test-gpt-3"],
+                    &["claude-test-9-1"],
+                    &["test-gemini-1"],
+                ),
+                vk("vk-bravo", BRAVO, &["test-gpt-2"], &[], &[]),
             ],
             "budgets": [{"id": "bud-alpha", "max_limit": 100.0, "reset_duration": "1M",
                          "virtual_key_id": "vk-alpha"}]
@@ -374,7 +481,16 @@ async fn real_bifrost_end_to_end() {
         std::fs::read_to_string(dir.path().join("err.log")).unwrap_or_default()
     );
 
-    let e = world("bifrost/openai/test-gpt-1");
+    let e = Env::new();
+    std::fs::write(
+        e.config_dir.join("codesmith.json"),
+        json!({"model": "bifrost/openai/test-gpt-1", "permissions": [],
+               "providers": {"bifrost": {"models": {
+                   "openai/test-gpt-3": {"protocol": "openai-responses"},
+                   "gemini/test-gemini-1": {"protocol": "google-gemini"}}}}})
+        .to_string(),
+    )
+    .unwrap();
     let run_with = |key: &'static str, args: Vec<String>| {
         let mut c = e.command(&args.iter().map(String::as_str).collect::<Vec<_>>());
         c.env("BIFROST_BASE_URL", &base).env("BIFROST_API_KEY", key);
@@ -459,6 +575,50 @@ async fn real_bifrost_end_to_end() {
     out.ok();
     assert_eq!(out.text(), "Hello from Claude.");
 
+    // The Responses API and Gemini's own route.
+    for (spec, text, path) in [
+        ("bifrost/openai/test-gpt-3", "Hello there.", "/v1/responses"),
+        (
+            "bifrost/gemini/test-gemini-1",
+            "Hello from Gemini.",
+            ":streamGenerateContent",
+        ),
+    ] {
+        let log = e.path("native.jsonl");
+        let _ = std::fs::remove_file(&log);
+        let out = run_with(
+            ALPHA,
+            vec![
+                "run".into(),
+                "-m".into(),
+                spec.into(),
+                "--format".into(),
+                "json".into(),
+                "--usage-log".into(),
+                log.display().to_string(),
+                "hello".into(),
+            ],
+        )
+        .await;
+        eprintln!("{spec} run: {}", out.both());
+        out.ok();
+        assert_eq!(out.text(), text, "{spec}");
+        let step = log_lines(&log)
+            .into_iter()
+            .find(|l| l["type"] == "step")
+            .unwrap();
+        eprintln!("{spec} step: {step}");
+        assert!(
+            step["request_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "{step}"
+        );
+        let model = spec.strip_prefix("bifrost/").unwrap();
+        assert_eq!(step["served_model"], model, "{step}");
+        assert!(
+            up.seen().iter().any(|s| s.path.ends_with(path)),
+            "{spec} reached the upstream"
+        );
+    }
     // A model this key may not use.
     let out = run_with(
         BRAVO,

@@ -53,6 +53,8 @@ pub struct State {
     /// A real gateway's pricing datasheet to serve at `/datasheet`, when
     /// this fake is its upstream.
     pub datasheet: Option<String>,
+    /// Answer with this tool call (name, JSON arguments) instead of text.
+    pub tool_call: Option<(String, Value)>,
     pub seen: Vec<Seen>,
     pub quota_calls: usize,
 }
@@ -61,7 +63,7 @@ pub struct State {
 pub struct Gateway {
     pub url: String,
     pub state: Arc<Mutex<State>>,
-    stop: Arc<tokio::sync::Notify>,
+    down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Gateway {
@@ -69,27 +71,30 @@ impl Gateway {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
         let state = Arc::new(Mutex::new(state));
-        let stop = Arc::new(tokio::sync::Notify::new());
-        let (st, sp) = (state.clone(), stop.clone());
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (st, dn) = (state.clone(), down.clone());
         tokio::spawn(async move {
             loop {
-                let accepted = tokio::select! {
-                    a = l.accept() => a,
-                    _ = sp.notified() => return,
-                };
-                let Ok((s, _)) = accepted else { return };
+                let Ok((s, _)) = l.accept().await else { return };
+                if dn.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Down: the connection is closed unanswered.
+                    drop(s);
+                    continue;
+                }
                 let st = st.clone();
                 tokio::spawn(async move {
                     let _ = serve(s, st).await;
                 });
             }
         });
-        Gateway { url, state, stop }
+        Gateway { url, state, down }
     }
 
-    /// Stop listening: the gateway is down from now on.
+    /// The gateway is down from now on: every new connection is closed
+    /// unanswered. The port stays held, so another test's gateway can't
+    /// take it and answer in its place (a freed port can be reused at once).
     pub fn stop(&self) {
-        self.stop.notify_waiters();
+        self.down.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn seen(&self) -> Vec<Seen> {
@@ -226,6 +231,27 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             };
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
+        // Gemini's own model list, for a real gateway's upstream.
+        ("GET", p) if p.ends_with("/models") && p != "/v1/models" => {
+            let models = st
+                .lock()
+                .unwrap()
+                .models
+                .get("")
+                .cloned()
+                .unwrap_or_default();
+            let list: Vec<Value> = models
+                .iter()
+                .filter_map(|m| m["id"].as_str())
+                .filter(|id| id.starts_with("test-gemini"))
+                .map(|id| {
+                    json!({"name": format!("models/{id}"), "displayName": id,
+                                 "supportedGenerationMethods": ["generateContent"]})
+                })
+                .collect();
+            let body = json!({"models": list}).to_string();
+            respond(&mut s, 200, "application/json", &[], &body).await;
+        }
         ("GET", "/datasheet") => {
             let body = st.lock().unwrap().datasheet.clone();
             match body {
@@ -243,12 +269,16 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             let (status, body) = answer.unwrap_or((404, json!({"error": "no"})));
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
-        // `/v1/messages` is Anthropic's own path, for a real gateway's
-        // upstream.
-        ("POST", "/v1/chat/completions")
-        | ("POST", "/anthropic/v1/messages")
-        | ("POST", "/v1/messages") => {
-            let (fail, headers, cost, tokens) = {
+        // `/v1/messages` is Anthropic's own path, and `/v1beta/models/…`
+        // Gemini's, for a real gateway's upstream.
+        ("POST", p)
+            if p == "/v1/chat/completions"
+                || p == "/anthropic/v1/messages"
+                || p == "/v1/messages"
+                || p == "/v1/responses"
+                || p.ends_with(":streamGenerateContent") =>
+        {
+            let (fail, headers, cost, tokens, tool) = {
                 let mut g = st.lock().unwrap();
                 let fail = g.fail_first > 0;
                 if fail {
@@ -266,7 +296,7 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
                     h.push(("x-bifrost-routing-info-provider".to_string(), p.clone()));
                     h.push(("x-bifrost-routing-info-model".to_string(), m.clone()));
                 }
-                (fail, h, g.cost.clone(), g.tokens)
+                (fail, h, g.cost.clone(), g.tokens, g.tool_call.clone())
             };
             if fail {
                 respond(
@@ -279,10 +309,12 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
                 .await;
                 return Some(());
             }
-            let body = if req.path == "/v1/chat/completions" {
-                chat_stream(&tokens, cost.as_ref())
-            } else {
-                anthropic_stream(&tokens)
+            let tool = tool.as_ref();
+            let body = match req.path.as_str() {
+                "/v1/chat/completions" => chat_stream(&tokens, cost.as_ref(), tool),
+                "/v1/responses" => responses_stream(&tokens, cost.as_ref(), tool),
+                p if p.ends_with(":streamGenerateContent") => gemini_stream(&tokens, tool),
+                _ => anthropic_stream(&tokens, tool),
             };
             respond(&mut s, 200, "text/event-stream", &headers, &body).await;
         }
@@ -291,7 +323,23 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
     Some(())
 }
 
-fn chat_stream(t: &(u64, u64, u64, u64), cost: Option<&Value>) -> String {
+fn sse(events: Vec<(&str, Value)>) -> String {
+    let mut out = String::new();
+    for (name, data) in events {
+        if name.is_empty() {
+            out.push_str(&format!("data: {data}\n\n"));
+        } else {
+            out.push_str(&format!("event: {name}\ndata: {data}\n\n"));
+        }
+    }
+    out
+}
+
+fn chat_stream(
+    t: &(u64, u64, u64, u64),
+    cost: Option<&Value>,
+    tool: Option<&(String, Value)>,
+) -> String {
     let mut usage = json!({
         "prompt_tokens": t.0 + t.2 + t.3,
         "completion_tokens": t.1,
@@ -303,37 +351,61 @@ fn chat_stream(t: &(u64, u64, u64, u64), cost: Option<&Value>) -> String {
     if let Some(c) = cost {
         usage["cost"] = c.clone();
     }
-    let chunks = [
-        json!({"id": "c1", "object": "chat.completion.chunk", "model": "m",
-               "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hello"}, "finish_reason": null}]}),
-        json!({"id": "c1", "object": "chat.completion.chunk", "model": "m",
-               "choices": [{"index": 0, "delta": {"content": " there."}, "finish_reason": null}]}),
-        json!({"id": "c1", "object": "chat.completion.chunk", "model": "m",
-               "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
-        json!({"id": "c1", "object": "chat.completion.chunk", "model": "m", "choices": [], "usage": usage}),
-    ];
-    let mut out = String::new();
-    for c in chunks {
-        out.push_str(&format!("data: {c}\n\n"));
-    }
+    let chunk = |choices: Value| json!({"id": "c1", "object": "chat.completion.chunk", "model": "m", "choices": choices});
+    let mut chunks = match tool {
+        None => vec![
+            chunk(
+                json!([{"index": 0, "delta": {"role": "assistant", "content": "Hello"}, "finish_reason": null}]),
+            ),
+            chunk(json!([{"index": 0, "delta": {"content": " there."}, "finish_reason": null}])),
+            chunk(json!([{"index": 0, "delta": {}, "finish_reason": "stop"}])),
+        ],
+        Some((name, args)) => vec![
+            chunk(
+                json!([{"index": 0, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1",
+                "type": "function", "function": {"name": name, "arguments": ""}}]}, "finish_reason": null}]),
+            ),
+            chunk(json!([{"index": 0, "delta": {"tool_calls": [{"index": 0,
+                "function": {"arguments": args.to_string()}}]}, "finish_reason": null}])),
+            chunk(json!([{"index": 0, "delta": {}, "finish_reason": "tool_calls"}])),
+        ],
+    };
+    let mut last = chunk(json!([]));
+    last["usage"] = usage;
+    chunks.push(last);
+    let mut out = sse(chunks.into_iter().map(|c| ("", c)).collect());
     out.push_str("data: [DONE]\n\n");
     out
 }
 
-fn anthropic_stream(t: &(u64, u64, u64, u64)) -> String {
-    let events = [
+fn anthropic_stream(t: &(u64, u64, u64, u64), tool: Option<&(String, Value)>) -> String {
+    let (block, delta, stop) = match tool {
+        None => (
+            json!({"type": "text", "text": ""}),
+            json!({"type": "text_delta", "text": "Hello from Claude."}),
+            "end_turn",
+        ),
+        Some((name, args)) => (
+            json!({"type": "tool_use", "id": "toolu_1", "name": name, "input": {}}),
+            json!({"type": "input_json_delta", "partial_json": args.to_string()}),
+            "tool_use",
+        ),
+    };
+    sse(vec![
         (
             "message_start",
-            json!({"type": "message_start", "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": [], "model": "m",
-            "usage": {"input_tokens": t.0, "output_tokens": 1, "cache_read_input_tokens": t.2, "cache_creation_input_tokens": t.3}}}),
+            json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+            "role": "assistant", "content": [], "model": "m",
+            "usage": {"input_tokens": t.0, "output_tokens": 1, "cache_read_input_tokens": t.2,
+                      "cache_creation_input_tokens": t.3}}}),
         ),
         (
             "content_block_start",
-            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_start", "index": 0, "content_block": block}),
         ),
         (
             "content_block_delta",
-            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello from Claude."}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": delta}),
         ),
         (
             "content_block_stop",
@@ -341,13 +413,110 @@ fn anthropic_stream(t: &(u64, u64, u64, u64)) -> String {
         ),
         (
             "message_delta",
-            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": t.1}}),
+            json!({"type": "message_delta", "delta": {"stop_reason": stop},
+            "usage": {"output_tokens": t.1}}),
         ),
         ("message_stop", json!({"type": "message_stop"})),
-    ];
-    let mut out = String::new();
-    for (name, data) in events {
-        out.push_str(&format!("event: {name}\ndata: {data}\n\n"));
+    ])
+}
+
+fn responses_stream(
+    t: &(u64, u64, u64, u64),
+    cost: Option<&Value>,
+    tool: Option<&(String, Value)>,
+) -> String {
+    let mut usage = json!({
+        "input_tokens": t.0 + t.2 + t.3,
+        "input_tokens_details": {"cached_tokens": t.2, "cache_write_tokens": t.3},
+        "output_tokens": t.1,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": t.0 + t.1 + t.2 + t.3
+    });
+    if let Some(c) = cost {
+        usage["cost"] = c.clone();
     }
-    out
+    let mut events = vec![(
+        "response.created",
+        json!({"type": "response.created", "sequence_number": 0,
+               "response": {"id": "resp_1", "object": "response", "status": "in_progress", "output": []}}),
+    )];
+    let done_item = match tool {
+        None => {
+            events.push((
+                "response.output_item.added",
+                json!({"type": "response.output_item.added",
+                "output_index": 0, "item": {"id": "msg_1", "type": "message", "role": "assistant",
+                "status": "in_progress", "content": []}}),
+            ));
+            events.push((
+                "response.content_part.added",
+                json!({"type": "response.content_part.added",
+                "item_id": "msg_1", "output_index": 0, "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []}}),
+            ));
+            for d in ["Hello", " there."] {
+                events.push((
+                    "response.output_text.delta",
+                    json!({"type": "response.output_text.delta",
+                    "item_id": "msg_1", "output_index": 0, "content_index": 0, "delta": d}),
+                ));
+            }
+            events.push((
+                "response.output_text.done",
+                json!({"type": "response.output_text.done",
+                "item_id": "msg_1", "output_index": 0, "content_index": 0, "text": "Hello there."}),
+            ));
+            json!({"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                   "content": [{"type": "output_text", "text": "Hello there.", "annotations": []}]})
+        }
+        Some((name, args)) => {
+            events.push(("response.output_item.added", json!({"type": "response.output_item.added",
+                "output_index": 0, "item": {"id": "fc_1", "type": "function_call", "call_id": "call_1",
+                "name": name, "arguments": "", "status": "in_progress"}})));
+            events.push((
+                "response.function_call_arguments.delta",
+                json!({"type":
+                "response.function_call_arguments.delta", "item_id": "fc_1", "output_index": 0,
+                "delta": args.to_string()}),
+            ));
+            events.push((
+                "response.function_call_arguments.done",
+                json!({"type":
+                "response.function_call_arguments.done", "item_id": "fc_1", "output_index": 0,
+                "arguments": args.to_string()}),
+            ));
+            json!({"id": "fc_1", "type": "function_call", "call_id": "call_1", "name": name,
+                   "arguments": args.to_string(), "status": "completed"})
+        }
+    };
+    events.push((
+        "response.output_item.done",
+        json!({"type": "response.output_item.done",
+        "output_index": 0, "item": done_item.clone()}),
+    ));
+    events.push((
+        "response.completed",
+        json!({"type": "response.completed",
+        "response": {"id": "resp_1", "object": "response", "status": "completed",
+                     "output": [done_item], "usage": usage}}),
+    ));
+    sse(events)
+}
+
+fn gemini_stream(t: &(u64, u64, u64, u64), tool: Option<&(String, Value)>) -> String {
+    let usage = json!({"promptTokenCount": t.0 + t.2, "candidatesTokenCount": t.1,
+                       "cachedContentTokenCount": t.2, "totalTokenCount": t.0 + t.1 + t.2});
+    let chunks = match tool {
+        None => vec![
+            json!({"candidates": [{"content": {"parts": [{"text": "Hello"}], "role": "model"}, "index": 0}]}),
+            json!({"candidates": [{"content": {"parts": [{"text": " from Gemini."}], "role": "model"},
+                   "finishReason": "STOP", "index": 0}], "usageMetadata": usage}),
+        ],
+        Some((name, args)) => vec![
+            json!({"candidates": [{"content": {"parts": [{"functionCall":
+            {"name": name, "args": args}}], "role": "model"}, "finishReason": "STOP", "index": 0}],
+            "usageMetadata": usage}),
+        ],
+    };
+    sse(chunks.into_iter().map(|c| ("", c)).collect())
 }

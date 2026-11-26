@@ -876,6 +876,7 @@ pub async fn stream(
 ) -> Result<EventStream, Error> {
     let body = body(req);
     let resp = crate::endpoint::send(p, post_body(p, client, &req.model, &body)).await?;
+    let served = crate::bifrost::served(p, &resp);
     // A response Gemini splits across requests continues with the same
     // body and the latest checkpoint's token.
     let (p, client, model) = (p.clone(), client.clone(), req.model.clone());
@@ -884,7 +885,10 @@ pub async fn stream(
         let p = p.clone();
         async move { crate::endpoint::send(&p, rb).await }.boxed()
     });
-    Ok(drive_resuming(resp, Decode::default(), Some(reopen)))
+    Ok(crate::bifrost::with_served(
+        served,
+        drive_resuming(resp, Decode::default(), Some(reopen)),
+    ))
 }
 
 /// The generateContent request for `req`.
