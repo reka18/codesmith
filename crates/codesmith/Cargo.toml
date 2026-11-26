@@ -48,6 +48,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 tokio-tungstenite.workspace = true
 regex.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 vt100 = "0.15"

@@ -28,7 +28,7 @@ mod diff_tree;
 mod diff_view;
 mod dirs;
 mod editor;
-mod effort;
+pub(crate) mod effort;
 
 /// The model spec `--effort LEVEL` runs `base` at, from its variants.
 pub(crate) fn effort_spec(base: &str, variants: &[String], level: &str) -> Result<String, String> {
@@ -69,7 +69,7 @@ mod parity_prompt;
 mod parity_tabs;
 #[cfg(test)]
 mod parity_ui;
-mod provider_pick;
+pub(crate) mod provider_pick;
 pub(crate) mod settings;
 mod stash;
 mod swap;
@@ -166,6 +166,9 @@ struct Runner {
     /// Run `claude setup-token` before the next frame, for this sign-in
     /// choice (see `create_token`).
     setup_token: Option<usize>,
+    /// Hand the terminal to `codesmith` with these arguments before the
+    /// next frame (the sign-in picker's ways to sign in elsewhere).
+    handoff: Option<Vec<String>>,
     /// The untested providers warned about in this run: each once.
     warned: std::collections::HashSet<String>,
     /// `tui.diffs`, which the diff viewer's remembered layout is kept against.
@@ -1724,6 +1727,7 @@ impl Runner {
         match out {
             Outcome::Login(req) => self.start_login(req),
             Outcome::SetupToken { choice } => self.setup_token = Some(choice),
+            Outcome::Handoff(args) => self.handoff = Some(args),
             Outcome::Logout(id) => {
                 let r = crate::cli::logout(&codesmith_core::paths::auth_file(), &id)
                     .map_err(|e| format!("{e:#}"));
@@ -1796,7 +1800,7 @@ impl Runner {
         };
         let (file, cwd) = (codesmith_core::paths::auth_file(), self.cwd.clone());
         let task = tokio::spawn(async move {
-            let r = crate::cli::run_login(&file, &cwd, req, io)
+            let r = crate::cli::run_login(&file, &cwd, None, req, io)
                 .await
                 .map_err(|e| format!("{e:#}"));
             send(LoginEv::Done(r));
@@ -1850,6 +1854,55 @@ impl Runner {
                 );
                 self.ask_token(choice);
             }
+        }
+    }
+
+    /// Hand the terminal to `codesmith ARGS` (a way to sign in elsewhere
+    /// from the sign-in picker), wait for Enter once it ends so what it
+    /// said can be read, then take the terminal back.
+    async fn hand_off(
+        &mut self,
+        terminal: &mut ratatui::DefaultTerminal,
+        cursor: settings::Cursor,
+        args: Vec<String>,
+    ) {
+        pause_input(true);
+        let cwd = self.cwd.clone();
+        let shown = args.join(" ");
+        let ran = tokio::task::spawn_blocking(move || {
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+            ratatui::restore();
+            let exe = std::env::current_exe()?;
+            eprintln!("\n$ codesmith {}\n", args.join(" "));
+            let mut cmd = std::process::Command::new(exe);
+            cmd.args(&args).current_dir(&cwd);
+            let status = crate::claude_token::run_interruptible(&mut cmd);
+            eprint!("\nPress Enter to go back to CodeSmith. ");
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            status
+        })
+        .await
+        .map_err(std::io::Error::other)
+        .and_then(|r| r);
+        let _ = ratatui::crossterm::terminal::enable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            EnableBracketedPaste
+        );
+        if let Some(c) = cursor_style(cursor) {
+            let _ = execute!(std::io::stdout(), c);
+        }
+        let _ = terminal.clear();
+        pause_input(false);
+        self.refresh_login();
+        match ran {
+            Ok(s) if s.success() => self.app.notice(format!("codesmith {shown}: done")),
+            Ok(s) => self.app.error(format!("codesmith {shown} ended: {s}")),
+            Err(e) => self
+                .app
+                .error(format!("couldn't run codesmith {shown}: {e}")),
         }
     }
 
@@ -2601,6 +2654,7 @@ async fn run_in(
         suspend: false,
         edit: false,
         setup_token: None,
+        handoff: None,
         warned: Default::default(),
         diffs: settings::Diffs::default(),
         tabs,
@@ -2788,6 +2842,9 @@ async fn run_in(
             }
             if let Some(choice) = r.setup_token.take() {
                 r.create_token(&mut terminal, tui.cursor, choice).await;
+            }
+            if let Some(args) = r.handoff.take() {
+                r.hand_off(&mut terminal, tui.cursor, args).await;
             }
         }
         Ok(())

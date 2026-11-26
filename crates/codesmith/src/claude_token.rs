@@ -63,7 +63,9 @@ fn read_record(path: &Path) -> Result<Option<String>> {
 
 /// Run `cmd` on this terminal. Ctrl-C ends it, not CodeSmith: CodeSmith
 /// ignores the interrupt meanwhile, and the child takes the default back.
-fn run_interruptible(cmd: &mut std::process::Command) -> std::io::Result<std::process::ExitStatus> {
+pub(crate) fn run_interruptible(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::ExitStatus> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
