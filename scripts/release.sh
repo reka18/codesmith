@@ -297,11 +297,34 @@ fi
 case " $targets " in
     *" aarch64-apple-darwin "*)
         say "install.sh from dist/${version}"
-        bin_dir=$(mktemp -d)
-        CODESMITH_VERSION="$version" CODESMITH_BASE_URL="file://${dist}" \
-            CODESMITH_INSTALL_DIR="$bin_dir" sh install.sh
-        check_output aarch64-apple-darwin install.sh "$("${bin_dir}/codesmith" --version)"
-        rm -rf "$bin_dir"
+        # >>> install check
+        # Nothing is signed yet (that happens on the signing Macs), and
+        # install.sh refuses an unsigned release. So it runs against a copy
+        # of the files signed with a throwaway key, and a copy of install.sh
+        # that trusts only that key: the signature check still runs, and the
+        # real install.sh and release key are untouched.
+        check_dir=$(mktemp -d)
+        bin_dir="${check_dir}/bin"
+        mkdir "${check_dir}/release" "$bin_dir"
+        cp "${dist}/SHA256SUMS" "${dist}/codesmith-${version}-aarch64-apple-darwin.tar.gz" "${check_dir}/release/"
+        if command -v minisign >/dev/null 2>&1; then
+            minisign -G -W -p "${check_dir}/check.pub" -s "${check_dir}/check.key" >/dev/null
+            minisign -S -s "${check_dir}/check.key" -m "${check_dir}/release/SHA256SUMS" \
+                -t "codesmith ${version} SHA256SUMS" >/dev/null
+            check_key=$(sed -n 2p "${check_dir}/check.pub")
+            sed "s|^RELEASE_KEYS=.*|RELEASE_KEYS=\"${check_key}\"|" install.sh > "${check_dir}/install.sh"
+            grep -q "^RELEASE_KEYS=\"${check_key}\"$" "${check_dir}/install.sh" \
+                || die "could not point the install.sh copy at the throwaway key"
+        else
+            printf '  note: minisign is not installed; install.sh checks SHA256SUMS only\n' >&2
+            cp install.sh "${check_dir}/install.sh"
+        fi
+        CODESMITH_VERSION="$version" CODESMITH_BASE_URL="file://${check_dir}/release" \
+            CODESMITH_INSTALL_DIR="$bin_dir" CODESMITH_NO_PROMPT=1 sh "${check_dir}/install.sh"
+        installed=$("${bin_dir}/codesmith" --version)
+        rm -rf "$check_dir"
+        # <<< install check
+        check_output aarch64-apple-darwin install.sh "$installed"
         ;;
 esac
 

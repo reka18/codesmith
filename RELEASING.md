@@ -126,7 +126,11 @@ smoke-tests them: `--version` for the macOS binaries, `file` must call the
 Linux ones static, and with Docker they run in containers (with no network).
 It then packages into `dist/<version>/`, writes `SHA256SUMS`, renders the
 Homebrew formula from it, and installs the Apple Silicon tarball with
-`install.sh` from `dist/` to check that path too. A dry run stops there and
+`install.sh` to check that path too. Nothing is signed yet at this point, so
+the check signs a copy of `SHA256SUMS` with a throwaway minisign key and runs
+a copy of `install.sh` that trusts only that key: the signature check still
+runs, and neither the real key nor `install.sh` is involved (without
+`minisign` installed, it checks `SHA256SUMS` only). A dry run stops there and
 prints the `gh` command it would run, without any call to GitHub (`--dry-run`
 is the default and also wins over `--draft-upload`); `--targets
 "aarch64-apple-darwin"` narrows a dry run to some targets. Without Rosetta
