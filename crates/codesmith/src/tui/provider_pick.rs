@@ -27,7 +27,7 @@ pub struct Info {
 /// server), else the catalog's; Claude Code's as it resolves them; and the
 /// configured ones over all of them.
 pub fn model_info(cfg: &Config, pid: &str) -> HashMap<String, Info> {
-    use codesmith_core::providers::{claude_agent, live};
+    use codesmith_core::providers::claude_agent;
     let catalog = cfg.models_dev.as_ref().map(|c| c.catalog());
     let templates = catalog
         .as_ref()
@@ -45,7 +45,7 @@ pub fn model_info(cfg: &Config, pid: &str) -> HashMap<String, Info> {
             },
         );
     };
-    let kept = live::models(pid, cfg.live_account(pid).as_deref(), &templates);
+    let kept = cfg.live_models(pid);
     for m in if kept.is_empty() { &templates } else { &kept } {
         add(m);
     }

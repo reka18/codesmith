@@ -24,7 +24,17 @@ pub struct UsageLog {
     file: Option<std::fs::File>,
     model: String,
     session: String,
+    /// The estimated USD of a step (see [`Estimate`]).
+    estimate: Option<Estimate>,
+    /// What the gateway said about the step that ends next.
+    served: Option<codesmith_ai::Served>,
+    /// What the provider billed for the step that ends next.
+    billed: Option<f64>,
 }
+
+/// Works out a step's estimated USD from its model, who served it and its
+/// usage (see `Config::estimate`).
+pub type Estimate = Box<dyn Fn(&str, Option<&codesmith_ai::Served>, &Usage) -> Option<f64> + Send>;
 
 impl UsageLog {
     /// Open `path` for appending (created 0600), for a run of `session`
@@ -44,7 +54,16 @@ impl UsageLog {
             file: Some(file),
             model: model.to_string(),
             session: session.to_string(),
+            estimate: None,
+            served: None,
+            billed: None,
         })
+    }
+
+    /// Estimate each step's USD with `f`.
+    pub fn with_estimate(mut self, f: Estimate) -> Self {
+        self.estimate = Some(f);
+        self
     }
 
     fn write(&mut self, v: Value) {
@@ -61,9 +80,42 @@ impl UsageLog {
         }
     }
 
-    /// A model step's line.
+    /// A model step's line, with what was said about it since the last.
     pub fn step(&mut self, reason: &FinishReason, usage: &Usage) {
-        let v = usage_line(&self.model, &self.session, reason, usage);
+        let served = self.served.take();
+        let billed = self.billed.take();
+        let estimated = self
+            .estimate
+            .as_ref()
+            .and_then(|f| f(&self.model, served.as_ref(), usage));
+        let v = usage_line(
+            &self.model,
+            &self.session,
+            reason,
+            usage,
+            &StepExtra {
+                billed,
+                estimated,
+                served,
+            },
+        );
+        self.write(v);
+    }
+
+    /// Who served the step that ends next.
+    pub fn served(&mut self, s: &codesmith_ai::Served) {
+        self.served = Some(s.clone());
+    }
+
+    /// What the provider billed for the step that ends next.
+    pub fn billed(&mut self, b: Option<f64>) {
+        self.billed = b;
+    }
+
+    /// The run's own line: what the gateway's budget for the key moved by
+    /// over the run (see `run_total_line`).
+    pub fn run_total(&mut self, source: &str, budget: &str, usd: f64) {
+        let v = run_total_line(&self.session, &self.model, source, budget, usd);
         self.write(v);
     }
 
@@ -74,8 +126,27 @@ impl UsageLog {
     }
 }
 
-/// The usage log's line for one step.
-pub fn usage_line(model: &str, session: &str, reason: &FinishReason, u: &Usage) -> Value {
+/// What a step's line says beyond its usage.
+#[derive(Debug, Clone, Default)]
+pub struct StepExtra {
+    /// The USD the provider reported it billed, as it reported it.
+    pub billed: Option<f64>,
+    /// The USD worked out from the token counts and the model's rates.
+    pub estimated: Option<f64>,
+    /// What the gateway said about the request.
+    pub served: Option<codesmith_ai::Served>,
+}
+
+/// The usage log's line for one step. `usd` is only ever what the
+/// provider billed (more than 0); `usd_estimated` is CodeSmith's estimate
+/// from token counts and rates, and the two are never mixed.
+pub fn usage_line(
+    model: &str,
+    session: &str,
+    reason: &FinishReason,
+    u: &Usage,
+    extra: &StepExtra,
+) -> Value {
     let mut v = json!({
         "type": "step",
         "session": session,
@@ -88,10 +159,37 @@ pub fn usage_line(model: &str, session: &str, reason: &FinishReason, u: &Usage) 
         "reasoning": u.reasoning,
         "time": chrono::Utc::now().to_rfc3339(),
     });
-    if let Some(c) = u.cost.filter(|c| c.is_finite()) {
+    if let Some(c) = extra.billed.filter(|c| c.is_finite() && *c > 0.0) {
         v["usd"] = json!(c);
     }
+    if let Some(c) = extra.estimated.filter(|c| c.is_finite() && *c >= 0.0) {
+        v["usd_estimated"] = json!(c);
+    }
+    if let Some(s) = &extra.served {
+        if let Some(id) = &s.request_id {
+            v["request_id"] = json!(id);
+        }
+        if let (Some(p), Some(m)) = (&s.provider, &s.model) {
+            v["served_model"] = json!(format!("{p}/{m}"));
+        }
+    }
     v
+}
+
+/// The run's line from a gateway's budget: `usd_quota` is what the key's
+/// budget moved by between the run's start and end, as the gateway
+/// counts it. It is the whole key's spend over that time (concurrent
+/// calls on the key included) and may lag, so it is never a step's cost.
+pub fn run_total_line(session: &str, model: &str, source: &str, budget: &str, usd: f64) -> Value {
+    json!({
+        "type": "run",
+        "session": session,
+        "model": model,
+        "source": source,
+        "budget": budget,
+        "usd_quota": usd,
+        "time": chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 /// The usage log's line for one tool call. Only the path of a file tool's
@@ -123,6 +221,11 @@ impl Printer {
     pub fn with_usage_log(mut self, log: UsageLog) -> Self {
         self.usage_log = Some(log);
         self
+    }
+
+    /// The usage log, if the run keeps one.
+    pub fn usage_log(&mut self) -> Option<&mut UsageLog> {
+        self.usage_log.as_mut()
     }
 
     fn emit(&self, v: Value) {
@@ -306,6 +409,18 @@ impl Sink for Printer {
             eprintln!("  \x1b[31m✗ {first}\x1b[0m");
         } else {
             eprintln!("  \x1b[2m→ {first}\x1b[0m");
+        }
+    }
+
+    fn served(&mut self, s: &codesmith_ai::Served) {
+        if let Some(log) = &mut self.usage_log {
+            log.served(s);
+        }
+    }
+
+    fn step_billed(&mut self, billed: Option<f64>) {
+        if let Some(log) = &mut self.usage_log {
+            log.billed(billed);
         }
     }
 

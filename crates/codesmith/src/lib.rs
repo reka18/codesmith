@@ -36,7 +36,7 @@ pub use codesmith_core as core;
 pub use codesmith_core::plugin;
 use std::sync::Arc;
 
-pub(crate) use cli::{all_commands_with, connect_mcp};
+pub(crate) use cli::{all_commands_with, connect_mcp, serve_bifrost_fetch};
 
 /// Run the CodeSmith command line with these plugins installed (after the
 /// built-in ones, such as `/goal`), then exit.

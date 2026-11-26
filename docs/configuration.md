@@ -490,6 +490,7 @@ Model fields:
 | `capabilities` | OpenCode's capabilities, merged field by field over the catalog's: `input` and `output` modalities, `tools`, `temperature`, the `freeform` tool formats the model accepts (`["text", "lark"]`; see [freeform tools](tools.md#freeform-tools)), and `reasoning` (`{"supported": true, "effort": ["low", "high"]}`, `"toggle": true`, `"budget": {"min": 1024}`), which regenerates the reasoning variants. |
 | `type` | `chat` (the default), or `image`, `video` or `decision`; only chat models are offered for sessions. Unset keeps the catalog's. |
 | `interleaved` | OpenCode's older spelling of `compatibility.reasoningField`: the field name, or `{"field": name}`. |
+| `protocol` | The protocol this model speaks, in place of its provider's: `openai-chat`, `openai-responses`, `anthropic-messages` or `google-gemini`. For a provider whose models don't all speak the same one. On [Bifrost](#bifrost) it also picks the gateway's API. |
 
 Unset `limit`, `cost`, `modalities` and variants come from the
 [model catalog](#the-model-catalog-modelsdev) when it lists the model.
@@ -986,6 +987,114 @@ with `--client-id`, `settings.clientId` on the `digitalocean` provider, or
 says so if another program holds it on either. A token post whose state
 is not this login's is refused and the login keeps waiting.
 
+### Bifrost
+
+`bifrost` reaches models through a [Bifrost](https://github.com/maximhq/bifrost)
+gateway with one of its virtual keys. There is no default host: give the
+gateway's URL and the key in the environment, or in the config.
+
+```sh
+export BIFROST_BASE_URL=http://bifrost.internal:8080    # a trailing /v1 is fine too
+export BIFROST_API_KEY=sk-bf-...                         # or `codesmith auth login bifrost`
+codesmith models bifrost
+codesmith run -m bifrost/openai/gpt-4o "hello"
+```
+
+```jsonc
+{
+  "providers": {
+    "bifrost": {
+      "settings": {
+        "baseURL": "http://bifrost.internal:8080",
+        "apiKey": "{file:~/.config/codesmith/bifrost.key}"
+      }
+    }
+  }
+}
+```
+
+For a headless run (a tailbus bridge, CI), put this in the global config
+(`~/.config/codesmith/codesmith.json`, or the bridge home's) or set the two
+variables; `codesmith bridge init` offers Bifrost and asks for the URL.
+
+- **The key** goes in `x-bf-vk` on every request: inference, the model
+  list and the quota read. `settings.apiKeyHeader` sends it in another
+  header instead. It is never written to the kept model list, a log or an
+  error.
+- **Model ids** are Bifrost's, `<upstream>/<model>`, passed through
+  unchanged: `bifrost/openai/gpt-4o` sends `openai/gpt-4o`, and an id with
+  more segments (`bifrost/vertex/anthropic/<model>`) is kept whole. Each
+  sits beside the same model reached directly (`anthropic/<model>`), as
+  its own entry under Bifrost.
+- **Which API.** A model whose id starts with `anthropic/` goes to
+  Bifrost's Anthropic Messages route, `<base>/anthropic/v1/messages`,
+  with Claude's own `thinking` and `effort`. Every other upstream goes to
+  Bifrost's unified API, `<base>/v1/chat/completions`, a Claude model
+  served by another upstream (`fireworks/anthropic/<model>`) included.
+  A model's `protocol` setting picks another:
+
+  ```jsonc
+  "bifrost": { "models": { "openai/gpt-4o": { "protocol": "openai-responses" } } }
+  ```
+
+- **The model list** is the gateway's `GET <base>/v1/models` for your key,
+  which Bifrost filters to the providers and models the key may use, read
+  page by page (`page_size`, `page_token`). It is fetched afresh each time
+  a session starts (the terminal UI, `codesmith run`, `serve`, ACP),
+  beside the rest of the start; the picker, `-m` and `codesmith models
+  bifrost` use it. A model outside it is refused with an error naming
+  `codesmith models bifrost`, unless you configured it under
+  `providers.bifrost.models`. The list is kept in `live-models.json` under
+  a hash of the gateway URL and key, never the key itself, so another key
+  never shows it; the kept list is used only when the fetch at the start
+  fails, and the session says so. With no list saved for the key either,
+  models aren't checked until one can be fetched.
+- **Effort.** A model offers the levels the same model offers reached
+  directly: what Bifrost's list says about its reasoning (OpenRouter
+  style `reasoning.supported_efforts`, or `supported_parameters`), else
+  the catalog's entry for the model at the end of the id
+  (`fireworks/anthropic/<claude>` gets Claude's levels), else the
+  protocol's family rules. On the unified API a level is sent as
+  Bifrost's `reasoning` object, `{"effort": "high"}` (or `{"max_tokens":
+  N}` for a token budget); on the Anthropic route, as `thinking` and
+  `output_config.effort`, which Bifrost passes through.
+- **Request ids.** Every request carries a fresh UUID in `x-request-id`,
+  a retry included: Bifrost drops a request whose id it has already
+  logged. The session id goes in `x-bf-agent-correlation-id`. With
+  `--usage-log`, each step's line has the gateway's `x-bifrost-request-id`
+  as `request_id` (the id sent, from an older gateway without it), and
+  `served_model` from `x-bifrost-routing-info-provider` and `-model`: the
+  model that actually ran after routing or a fallback.
+- **Cost.** `usd` on a step is only what the response's `usage.cost`
+  says was billed (Bifrost passes an upstream's cost on, as
+  `{"total_cost": …}` on its unified API), and only when it is more than
+  0. `usd_estimated` is CodeSmith's estimate: the step's input, output,
+  cache-read and cache-write tokens at the model's base rates, taken from
+  the model's `cost` in config, then the `pricing` in Bifrost's model list
+  (per token: `prompt`, `completion`, `input_cache_read`,
+  `input_cache_write`, and `request` once per step), then the catalog. It
+  prices the model that ran (`served_model`), falling back to the one
+  asked for. A price of 0 counts as unpriced, and a step needing a rate
+  nothing gives has no `usd_estimated`. It is an estimate: no operator
+  overrides, long-context tiers or batch rates.
+- **Run total.** A `codesmith run --usage-log` on Bifrost reads the key's
+  budget (`GET <base>/api/governance/virtual-keys/quota`, with the key
+  alone) as the run starts, beside the turn, and again at its end, each
+  read given at most 1.5 seconds, and logs what the budget moved by as one
+  `{"type": "run", "usd_quota": …}` line, never as a step's cost. It logs
+  nothing when the key has no budget, a read fails, or the budget's cycle
+  reset in between. Bifrost updates usage asynchronously, so the figure can
+  lag by about 10 seconds, and it counts every call made with the key in
+  that time, other programs' included. `"settings": {"quota": false}`
+  turns the reads off.
+- **Timeouts.** Bifrost's own provider timeouts apply to these requests,
+  streams included: in the pinned source (transports v2.6.0),
+  `default_request_timeout_in_seconds` (300 s by default) bounds the wait
+  for the upstream's first response bytes, then
+  `stream_idle_timeout_in_seconds` (120 s by default) the wait between
+  stream chunks. A long silent thinking turn may need them raised in the
+  gateway's provider network config.
+
 ### GitLab sign-in
 
 `codesmith auth login gitlab --oauth [--field instanceUrl=https://gitlab.example.com]`
@@ -1408,7 +1517,8 @@ or a model (the model's wins) overrides it, with OpenCode's names:
 
 When a provider reports what it charged for a response, CodeSmith uses that
 instead of pricing the tokens with `cost`, as OpenCode does: `usage.cost`
-(OpenRouter, LiteLLM, OpenCode Zen and other gateways) and GitHub Copilot's
+(OpenRouter, LiteLLM, OpenCode Zen and other gateways; Bifrost's
+`{"total_cost": …}` object when more than 0) and GitHub Copilot's
 `copilot_usage.total_nano_aiu` credits (converted at $0.01 a credit). Steps
 without a reported cost are priced from the model's `cost` as before, so the
 session cost in the status line and `codesmith stats --cost` can mix both.
