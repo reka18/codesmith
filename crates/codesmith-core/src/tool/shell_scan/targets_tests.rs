@@ -635,3 +635,173 @@ fn property_git_dash_c_chains_resolve_like_git() {
         );
     }
 }
+
+/// `(path, cwd)` of each write, and the first path only known at run time.
+type Tagged = Vec<(Option<String>, Option<String>)>;
+
+fn tagged(src: &str) -> (Tagged, Option<String>) {
+    let a = full(src);
+    (
+        a.writes.into_iter().map(|w| (w.path, w.cwd)).collect(),
+        a.unknown_target,
+    )
+}
+
+#[test]
+fn loop_variables_over_plain_globs_are_paths_inside() {
+    for (src, want) in [
+        ("for f in *.txt; do rm \"$f\"; done", &["."][..]),
+        ("for f in src/**/*.rs; do rm \"${f}\"; done", &["src"]),
+        (
+            "for f in a.txt b.txt; do rm -f \"$f\"; done",
+            &["a.txt", "b.txt"],
+        ),
+        ("for f in *.txt; do echo x > \"$f\"; done", &["."]),
+        (
+            "for f in *.log; do mv \"$f\" old 2>/dev/null; done",
+            &[".", "/dev/null", "old"],
+        ),
+        ("for f in build/*.o\ndo\n  rm \"$f\"\ndone", &["build"]),
+        (
+            "for f in \"my file.txt\"; do rm \"$f\"; done",
+            &["my file.txt"],
+        ),
+        // Nested loops, each over plain globs.
+        (
+            "for d in a b; do for f in *.txt; do rm \"$f\" \"$d\"; done; done",
+            &[".", "a", "b"],
+        ),
+        // Two loops binding the same name.
+        (
+            "for f in *.a; do rm \"$f\"; done; for f in x/*.b; do rm \"$f\"; done",
+            &[".", "x", ".", "x"],
+        ),
+    ] {
+        let (w, unknown) = tagged(src);
+        let mut paths: Vec<Option<String>> = w.into_iter().map(|(p, _)| p).collect();
+        let mut want = some(want);
+        paths.sort();
+        want.sort();
+        assert_eq!(paths, want, "{src}");
+        assert_eq!(unknown, None, "{src}");
+    }
+}
+
+#[test]
+fn other_loop_variables_stay_unknown() {
+    for src in [
+        // Globs that leave the working directory, or are not plain.
+        "for f in ../*.txt; do rm \"$f\"; done",
+        "for f in /x/*.txt; do rm \"$f\"; done",
+        "for f in ~/x/*; do rm \"$f\"; done",
+        "for f in a/../../x; do rm \"$f\"; done",
+        "for f in $(ls); do rm \"$f\"; done",
+        "for f in `ls`; do rm \"$f\"; done",
+        "for f in \"$D\"/*; do rm \"$f\"; done",
+        "for f in {a,../b}; do rm \"$f\"; done",
+        "for f; do rm \"$f\"; done",
+        "for k v in a b; do rm \"$k\"; done",
+        // Unquoted: a file named `a ..` would split into `..`.
+        "for f in *.txt; do rm $f; done",
+        // Reassigned, read, or bound some other way.
+        "for f in *.txt; do f=../x; rm \"$f\"; done",
+        "for f in *.txt; do rm \"$f\"; done; f=../x; rm \"$f\"",
+        "for f in *.txt; do read f; rm \"$f\"; done",
+        "for f in *.txt; do printf -v f ../x; rm \"$f\"; done",
+        "for f in *.txt; do eval 'f=../x'; rm \"$f\"; done",
+        "for f in *.txt; do source ./env.sh; rm \"$f\"; done",
+        "for f in *.txt; do eval \"$CMD\"; rm \"$f\"; done",
+        // Used before the loop binds it: the environment's.
+        "rm \"$f\"; for f in *.txt; do :; done",
+        // Not a loop variable at all.
+        "rm \"$f\"",
+        "ls | xargs rm",
+        "ls | while read f; do rm \"$f\"; done",
+        // A loop variable inside a longer word.
+        "for f in *.txt; do rm \"$f.bak\"; done",
+        "for f in *.txt; do rm \"../$f\"; done",
+    ] {
+        let a = full(src);
+        assert!(
+            a.unknown_target.is_some() || a.dynamic.is_some(),
+            "{src}: {a:?}"
+        );
+    }
+}
+
+#[test]
+fn a_zsh_glob_qualifier_in_a_loop_is_refused() {
+    assert!(analyze("for f in *(e:'true':); do rm \"$f\"; done", Path::new("/w")).is_err());
+}
+
+/// Any loop over words made of plain names and globs makes `"$v"` a
+/// write there; adding one unsafe word makes it unknown.
+#[test]
+fn property_loop_globs_are_trusted_only_when_every_word_is_plain() {
+    let plain = [
+        "*.txt", "src/*.rs", "a", "b/c", "**/*.md", "x?.log", "[ab].c",
+    ];
+    let unsafe_words = ["../x", "/abs/*", "~/y", "$(ls)", "\"$D\"/*", "a/../../b"];
+    let mut r = Lcg(11);
+    for _ in 0..300 {
+        let n = 1 + r.next() % 3;
+        let mut words: Vec<&str> = (0..n).map(|_| r.pick(&plain)).collect();
+        let bad = r.next().is_multiple_of(3);
+        if bad {
+            let at = r.next() % (words.len() + 1);
+            words.insert(at, r.pick(&unsafe_words));
+        }
+        let src = format!("for v in {}; do rm -f \"$v\"; done", words.join(" "));
+        let a = full(&src);
+        if bad {
+            assert!(a.unknown_target.is_some(), "{src}: {a:?}");
+        } else {
+            assert!(a.unknown_target.is_none(), "{src}: {a:?}");
+            assert_eq!(a.writes.len(), words.len(), "{src}");
+            for w in &a.writes {
+                let p = w.path.as_deref().unwrap();
+                assert!(!p.starts_with('/') && !p.contains(".."), "{src}: {p}");
+            }
+        }
+    }
+}
+
+#[test]
+fn writes_after_an_and_chain_of_cds_are_tagged_with_its_end() {
+    for (src, want) in [
+        ("cd a && cd b && echo x > ../y", Some("a/b")),
+        (
+            "cd .worktrees/w/src && cat x > ../y",
+            Some(".worktrees/w/src"),
+        ),
+        ("cd a && rm ../f", Some("a")),
+        ("cd /abs && rm f", Some("/abs")),
+        ("cd a && cd /abs && cd c && rm f", Some("/abs/c")),
+        ("cd a && cd .. && rm f", Some("a/..")),
+        ("pushd a && rm f", Some("a")),
+        // A write before the cd is in the working directory.
+        ("echo x > ../y && cd sub", Some("")),
+        ("rm f", Some("")),
+        ("cat a 2>&1 > out && cd x", Some("")),
+        // Not one `&&` list: every folder is a candidate, as before.
+        ("cd sub; echo x > ../y", None),
+        ("cd sub || echo x > ../y", None),
+        ("(cd sub && rm ../y)", None),
+        ("cd sub && rm ../y &", None),
+        ("cd sub && echo $(pwd) > ../y", None),
+        ("cd sub\necho x > ../y", None),
+        ("cd sub && echo x | tee ../y", None),
+        // A command that names another folder ends what the chain knows.
+        ("cd sub && env -C .. rm y", None),
+        ("cd sub && git -C .. status && rm ../y", None),
+        ("cd sub && eval 'cd ..' && rm y", None),
+    ] {
+        let (w, _) = tagged(src);
+        let last = w.last().unwrap_or_else(|| panic!("{src}: no write"));
+        assert_eq!(last.1.as_deref(), want, "{src}: {w:?}");
+    }
+    // A computed cd: later relative writes are unknown, as before.
+    let a = full("cd \"$D\" && echo x > y");
+    assert!(a.unknown_cwd, "{a:?}");
+    assert_eq!(a.writes[0].cwd, None);
+}

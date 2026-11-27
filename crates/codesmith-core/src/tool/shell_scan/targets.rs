@@ -160,15 +160,7 @@ impl Chain {
             return None;
         }
         let value = expand_known_directory(&value, cwd, v.tilde)?;
-        // A glob names files in its fixed folder (`../x/*.o` is in `../x`).
-        let value = match value.find(['*', '?', '[']) {
-            Some(i) => match value[..i].rfind('/') {
-                Some(0) => "/".to_string(),
-                Some(j) => value[..j].to_string(),
-                None => ".".to_string(),
-            },
-            None => value,
-        };
+        let value = glob_folder(&value);
         if Path::new(&value).is_absolute() {
             return Some(value);
         }
@@ -192,6 +184,7 @@ impl Chain {
                     out.writes.push(Write {
                         raw: v.raw.clone(),
                         path: Some(path),
+                        cwd: None,
                     });
                     if v.value.starts_with('~') && v.tilde {
                         // Also as written, as `push_write` does.
@@ -272,6 +265,19 @@ fn tame_braces(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// A glob names files in its fixed folder (`../x/*.o` is in `../x`,
+/// `*.o` in `.`); anything else names itself.
+pub(super) fn glob_folder(value: &str) -> String {
+    match value.find(['*', '?', '[']) {
+        Some(i) => match value[..i].rfind('/') {
+            Some(0) => "/".to_string(),
+            Some(j) => value[..j].to_string(),
+            None => ".".to_string(),
+        },
+        None => value.to_string(),
+    }
+}
+
 fn parent(p: &str) -> String {
     Path::new(p)
         .parent()
@@ -281,7 +287,7 @@ fn parent(p: &str) -> String {
 
 /// A write whose path the scan cannot know (`patch < x.diff`, `xargs rm`).
 fn unknown_write(out: &mut Analysis, raw: &str) {
-    out.unknown_target.get_or_insert_with(|| raw.to_string());
+    out.unknown_targets.push(raw.to_string());
 }
 
 /// Which operands a program writes.
@@ -1491,6 +1497,7 @@ pub(super) fn code_paths(code: &str, out: &mut Analysis) {
             out.reached.push(Write {
                 raw: p.to_string(),
                 path: Some(path),
+                cwd: None,
             });
         }
     }
@@ -1740,6 +1747,7 @@ pub(super) fn find_targets(raw: &[String], cooked: &[String], cwd: &Path, out: &
         out.writes.push(Write {
             raw: ".".into(),
             path: Some(".".into()),
+            cwd: None,
         });
     }
     let mut chain = Chain::new();

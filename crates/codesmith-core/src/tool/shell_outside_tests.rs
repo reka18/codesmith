@@ -388,3 +388,105 @@ async fn outside_writes_only_known_at_run_time_are_refused_headless() {
         assert_eq!(snapshot(&w.sibling), before, "{command}");
     }
 }
+
+/// `template` with `{N}` as the sibling's name, run in a fresh world
+/// where every question is refused: it must fail and leave the sibling
+/// as it was.
+async fn refused_headless(template: &str) {
+    let w = world(base_rules());
+    w.rec.deny_action("external_directory");
+    std::fs::create_dir_all(w.env.root().join("sub")).unwrap();
+    std::fs::write(w.env.root().join("k.txt"), "x").unwrap();
+    let name = w.sibling.file_name().unwrap().to_str().unwrap();
+    let command = template.replace("{N}", name);
+    let before = snapshot(&w.sibling);
+    let r = sh(&w.env.ctx(), &command).await;
+    assert!(r.is_err(), "{command}: {r:?}");
+    assert_eq!(snapshot(&w.sibling), before, "{command}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_after_an_and_chain_of_cds_is_resolved_from_its_end() {
+    // Inside: `../y` from `sub/deep` is `sub/y`. No question, and it runs.
+    let w = world(base_rules());
+    w.rec.deny_action("external_directory");
+    let root = w.env.root();
+    std::fs::create_dir_all(root.join("sub/deep")).unwrap();
+    std::fs::create_dir_all(root.join(".worktrees/w/src")).unwrap();
+    for command in [
+        "cd sub/deep && echo x > ../y",
+        "cd sub && cd deep && cp ../../a ../z",
+        "cd .worktrees/w/src && cat ../../../a > ../y",
+    ] {
+        sh(&w.env.ctx(), command).await.unwrap();
+    }
+    assert!(root.join("sub/y").exists() && root.join("sub/z").exists());
+    assert!(root.join(".worktrees/w/y").exists());
+    assert!(asked_external(&w.rec).is_empty(), "{:?}", w.rec.requests());
+
+    // Outside: still caught, through the cd or the write.
+    for template in [
+        // The cd itself leaves.
+        "cd ../{N} && echo x > y",
+        // The chain ends above the project.
+        "cd sub && cd ../.. && echo x > {N}/y",
+        "cd sub && cd .. && echo x > ../{N}/y",
+        // The write comes before the cd.
+        "echo x > ../{N}/y && cd sub",
+        // Not one `&&` list: every folder stays a candidate.
+        "cd sub; echo x > ../../{N}/y",
+        "cd sub || echo x > ../{N}/y",
+        // A computed cd makes later relative writes unknown.
+        "cd \"$D\" && echo x > y",
+    ] {
+        refused_headless(template).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loop_over_plain_globs_writes_without_the_outside_question() {
+    // Headless with the default rules: it runs.
+    let w = world(base_rules());
+    w.rec.deny_action("external_directory");
+    let root = w.env.root();
+    for f in ["a.txt", "b.txt", "src/c.rs", "src/d/e.rs"] {
+        let p = root.join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+    }
+    sh(&w.env.ctx(), "for f in *.txt; do rm \"$f\"; done")
+        .await
+        .unwrap();
+    sh(
+        &w.env.ctx(),
+        "for f in src/*.rs src/d/*.rs; do rm -f \"${f}\"; done",
+    )
+    .await
+    .unwrap();
+    assert!(!root.join("a.txt").exists() && !root.join("b.txt").exists());
+    assert!(!root.join("src/c.rs").exists() && !root.join("src/d/e.rs").exists());
+    assert!(asked_external(&w.rec).is_empty(), "{:?}", w.rec.requests());
+
+    // It is still a write: the `edit` rules apply.
+    let mut rules = base_rules();
+    rules.push(Rule::new("edit", "*", Effect::Deny));
+    let w = world(rules);
+    std::fs::write(w.env.root().join("k.txt"), "x").unwrap();
+    assert!(sh(&w.env.ctx(), "for f in *.txt; do rm \"$f\"; done")
+        .await
+        .is_err());
+    assert!(w.env.root().join("k.txt").exists());
+
+    // Anything else stays refused headless.
+    for template in [
+        "for f in ../{N}/*; do rm \"$f\"; done",
+        "for f in *.txt; do f=../{N}/f; rm \"$f\"; done",
+        "for f in *.txt; do rm $f; done",
+        "ls ../{N} | xargs rm",
+        "ls ../{N} | while read f; do rm \"../{N}/$f\"; done",
+        // From a folder outside, the glob is outside too.
+        "cd ../{N} && for f in *; do rm \"$f\"; done",
+    ] {
+        refused_headless(template).await;
+    }
+}

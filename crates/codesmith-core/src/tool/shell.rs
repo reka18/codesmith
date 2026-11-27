@@ -1358,9 +1358,10 @@ fn background_text(job: &Job, timed_out: Option<u64>) -> String {
     lines.join("\n")
 }
 
-/// Files the command's redirects write to, resolved against the working
-/// directory and every `cd` target (a relative path may be written after a
-/// `cd`), and the first target that is only known at run time.
+/// Files the command's redirects write to: a relative one from the folder
+/// a `&&` chain of `cd`s before it led to when the scan knows it (see
+/// [`shell_scan::Write::cwd`]), otherwise from the working directory and
+/// every `cd` target. And the first target that is only known at run time.
 fn write_targets(
     ctx: &Ctx<'_>,
     dirs: &[PathBuf],
@@ -1392,10 +1393,13 @@ fn write_targets(
             unknown.get_or_insert_with(|| w.raw.clone());
             continue;
         }
-        let bases: Vec<&PathBuf> = if p.is_absolute() {
-            dirs.iter().take(1).collect()
-        } else {
-            dirs.iter().collect()
+        // From the folder the `cd`s before it led to, when the scan knows
+        // it; otherwise from every folder the command may be in.
+        let chained = w.cwd.as_ref().map(|c| resolve_dir(&dirs[0], c));
+        let bases: Vec<&PathBuf> = match &chained {
+            _ if p.is_absolute() => dirs.iter().take(1).collect(),
+            Some(c) => vec![c],
+            None => dirs.iter().collect(),
         };
         for base in bases {
             let t = ctx.resolve(&physical(&base.join(p)).display().to_string());

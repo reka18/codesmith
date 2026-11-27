@@ -69,6 +69,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   already were.
 - A relative `cd` after another one is checked from where the first one
   went: `cd .. && cd ../x` from a subfolder goes outside the project.
+- In one `&&` list, a relative write is checked from where the `cd`s
+  before it led, not also from the working directory: `cd sub/deep &&
+  echo x > ../y` no longer asks about a folder outside the project.
+- `for f in *.txt; do rm "$f"; done`, a quoted loop variable over plain
+  globs inside the project, is checked as a write to those globs, so it
+  runs under the `edit` rules without the `external_directory` question.
 - An `external_directory` request now says whether the command only reads
   there or may write (`access`), for rules that will use it. A declined
   one names the folder, so a model in a headless run sees why.

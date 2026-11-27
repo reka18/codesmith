@@ -90,6 +90,9 @@ const MAX_STEPS: usize = 2_000_000;
 /// The reason for input that would take the scanner too long to read.
 const TOO_COMPLEX: Opaque = "too-complex";
 
+/// The words a `for` loop binds a name to, `(raw, value)`.
+type LoopWords = Vec<(String, String)>;
+
 /// A text read as Dash would, and the depth it is read at.
 type DashKey = (Vec<char>, usize);
 
@@ -109,6 +112,16 @@ struct Shared {
     /// Assignments to variables that hold a command line other programs
     /// run (`GIT_SSH_COMMAND=...`), as `(raw, value)`; see [`COMMAND_VARS`].
     command_vars: RefCell<Vec<(String, String)>>,
+    /// Variables only `for` loops bind, to the words they loop over: each
+    /// a plain glob or name inside the working directory (`*.txt`,
+    /// `src/**/*.rs`), or `None` once a loop binds it to anything else.
+    /// See [`trusted_loop_words`].
+    loop_globs: RefCell<HashMap<String, Option<LoopWords>>>,
+    /// Variables the script binds any other way (assigned, read, declared).
+    bound: RefCell<std::collections::HashSet<String>>,
+    /// The script runs a file of shell code (`source`, `.`), which may set
+    /// any variable.
+    sources: Cell<bool>,
 }
 
 /// Roughly the work of copying `cmd`, in characters.
@@ -2010,12 +2023,13 @@ impl<'a> Scanner<'a> {
                 names.push(w.raw);
             }
             let mut numeric = true;
+            let mut words: Option<Vec<(String, String)>> = Some(Vec::new());
             if let Tok::Op(Op::LParen, _) = self.peek()? {
                 // Zsh's `for x (a b) ...`: the words, then the body.
                 self.next()?;
                 loop {
                     match self.next()? {
-                        Tok::Word(w) => self.loop_word(w, &mut numeric),
+                        Tok::Word(w) => self.loop_word(w, &mut numeric, &mut words),
                         Tok::Newline => {}
                         Tok::Op(Op::RParen, _) => break,
                         _ => return Err("compound-command"),
@@ -2027,7 +2041,7 @@ impl<'a> Scanner<'a> {
                     self.next()?;
                     loop {
                         match self.next()? {
-                            Tok::Word(w) => self.loop_word(w, &mut numeric),
+                            Tok::Word(w) => self.loop_word(w, &mut numeric, &mut words),
                             Tok::Op(Op::Semi, _) | Tok::Newline => break,
                             _ => return Err("compound-command"),
                         }
@@ -2035,11 +2049,23 @@ impl<'a> Scanner<'a> {
                 } else {
                     // The positional parameters.
                     numeric = false;
+                    words = None;
+                }
+            }
+            if names.len() != 1 {
+                words = None;
+            }
+            for n in &names {
+                let mut globs = self.shared.loop_globs.borrow_mut();
+                let entry = globs.entry(n.clone()).or_insert_with(|| Some(Vec::new()));
+                match (entry.as_mut(), &words) {
+                    (Some(list), Some(w)) => list.extend(w.iter().cloned()),
+                    _ => *entry = None,
                 }
             }
             if !numeric {
                 for n in names {
-                    self.bind_text(&n);
+                    self.bind_loop_text(&n);
                 }
             }
         }
@@ -2069,10 +2095,27 @@ impl<'a> Scanner<'a> {
     }
 
     /// A word a `for` loop binds its name to.
-    fn loop_word(&mut self, w: Word, numeric: &mut bool) {
+    fn loop_word(
+        &mut self,
+        w: Word,
+        numeric: &mut bool,
+        words: &mut Option<Vec<(String, String)>>,
+    ) {
         if !w.quoted && w.raw.contains(['*', '?', '[']) {
             // File names, which a repository chooses.
             self.flags.payload = true;
+        }
+        // A plain glob or name under the working directory: no expansion,
+        // no `..`, no absolute or home path, no Zsh qualifier.
+        let plain = w.nested.is_empty()
+            && is_static_word(&w.raw)
+            && !w.raw.contains(['$', '`', '(', '{', '~', '\\'])
+            && !w.value.is_empty()
+            && !w.value.starts_with('/')
+            && !w.value.split('/').any(|c| c == "..");
+        match words {
+            Some(list) if plain => list.push((w.raw.clone(), w.value.clone())),
+            _ => *words = None,
         }
         *numeric &= integer_literal(&w.raw);
         self.out.extend(w.nested)
@@ -2082,6 +2125,15 @@ impl<'a> Scanner<'a> {
     /// number): see [`Shared::text_vars`].
     fn bind_text(&self, name: &str) {
         let name = name.split(['[', '+', '=']).next().unwrap_or(name);
+        if !name.is_empty() {
+            self.shared.bound.borrow_mut().insert(name.to_string());
+        }
+        self.bind_loop_text(name);
+    }
+
+    /// [`Self::bind_text`] for a `for` loop's name, which
+    /// [`Shared::loop_globs`] tracks instead.
+    fn bind_loop_text(&self, name: &str) {
         if !name.is_empty() && !self.shared.text_vars.borrow().contains(name) {
             self.shared.text_vars.borrow_mut().insert(name.to_string());
         }
@@ -2776,6 +2828,8 @@ pub struct Analysis {
     /// (`rm "$f"`, `xargs rm`, `patch < x.diff`), as written: it may be
     /// outside the project.
     pub unknown_target: Option<String>,
+    /// Every such path, as written (the first is [`Self::unknown_target`]).
+    pub unknown_targets: Vec<String>,
 }
 
 /// A file a redirect writes to.
@@ -2784,6 +2838,12 @@ pub struct Write {
     pub raw: String,
     /// The path with quotes removed and `~` expanded, when `raw` is static.
     pub path: Option<String>,
+    /// The shell's folder when the write happens, relative to the working
+    /// directory, when the scan knows it: the write follows a chain of
+    /// `cd`s joined to it by `&&` (`cd a && cd b && rm ../x`). `None` when
+    /// the scan cannot tell, and a relative path is then checked from the
+    /// working directory and every folder the command names.
+    pub cwd: Option<String>,
 }
 
 /// Commands whose first words are a subcommand: `git status`, `npm run build`.
@@ -2986,8 +3046,10 @@ fn analyze_shared(command: &str, cwd: &Path, shared: &Shared) -> Result<Analysis
             }
             out.unknown_cwd |= alt.unknown_cwd;
             out.mutating |= alt.mutating;
-            if let Some(t) = alt.unknown_target {
-                out.unknown_target.get_or_insert(t);
+            for t in alt.unknown_targets {
+                if !out.unknown_targets.contains(&t) {
+                    out.unknown_targets.push(t);
+                }
             }
             for w in alt.reached {
                 if !out.reached.contains(&w) {
@@ -2996,6 +3058,8 @@ fn analyze_shared(command: &str, cwd: &Path, shared: &Shared) -> Result<Analysis
             }
         }
     }
+    trust_loop_variables(&mut out, shared, command);
+    out.unknown_target = out.unknown_targets.first().cloned();
     if shared.exhausted() {
         // A nested scan (a shell string, the joined reading) ran out of
         // steps and was treated as unreadable: refuse the whole command.
@@ -3060,114 +3124,327 @@ fn analyze_into(
     for (raw, value) in &vars {
         command_var(raw, value, cwd, shared, depth, out)?;
     }
+    // Where the shell is as it runs each command, when that is known.
+    let mut chain = CdChain::new(depth == 0 && and_list_only(command));
     for item in scanned.commands {
-        for (raw, value) in &item.writes {
-            push_write(out, raw, value, cwd);
-        }
-        if item.declaration {
-            continue;
-        }
-        if !targets::read_only(&item.words) {
-            out.mutating = true;
-        }
-        if item.alternate {
-            if item.words.is_empty() {
-                continue;
+        let (writes_before, dirs_before) = (out.writes.len(), out.directories.len());
+        let shell_cd = depth == 0
+            && item
+                .words
+                .first()
+                .is_some_and(|w| w == "cd" || w == "pushd");
+        let item_words = item.words.clone();
+        let item_raw = item.raw_words.clone();
+        'item: {
+            for (raw, value) in &item.writes {
+                push_write(out, raw, value, cwd);
             }
-            // Dash runs `(( $x ))` as the command `$x`. A variable the
-            // script leaves unset expands to nothing, and the next word
-            // is the command: `(( $x rm F ))` runs `rm F`.
-            let mut first = 0;
-            while first < item.words.len() && !static_command_name(&item.raw_words[first]) {
-                if dash_name_matters(&item.raw_words[first], shared) {
-                    mark_dynamic(out, "dynamic-command-name");
-                }
-                first += 1;
+            if item.declaration {
+                break 'item;
             }
-            if first == item.words.len() {
-                continue;
-            }
-            let (raw_words, words) = (&item.raw_words[first..], &item.words[first..]);
-            // Collected apart, then moved to `deny_only`.
-            let mut alt = Analysis::default();
-            if first == 0 {
-                let entry = (item.resource.clone(), save_pattern(words, &item.resource));
-                alt.delegated.push(entry);
-            }
-            let cooked = words.join(" ");
-            alt.delegated
-                .push((cooked.clone(), save_pattern(words, &cooked)));
-            delegate(raw_words, words, cwd, shared, depth + 1, &mut alt)?;
-            out.deny_only.extend(alt.commands);
-            out.deny_only.extend(alt.delegated);
-            out.deny_only.extend(alt.deny_only);
-            // Folders and files that reading reaches above the working
-            // directory (Dash's `((rm ../x))`) are checked all the same;
-            // `(( a > b ))` writing `b` there adds nothing.
-            let away = |p: &str| p.starts_with('/') || p.split('/').any(|c| c == "..");
-            for d in alt.directories.into_iter().filter(|d| away(d)) {
-                if !out.directories.contains(&d) {
-                    out.directories.push(d);
-                }
-            }
-            for w in alt
-                .writes
-                .into_iter()
-                .filter(|w| w.path.as_deref().is_some_and(away))
+            if item
+                .words
+                .first()
+                .is_some_and(|w| w == "source" || w == ".")
             {
-                if !out.writes.contains(&w) {
-                    out.writes.push(w);
+                shared.sources.set(true);
+            }
+            if !targets::read_only(&item.words) {
+                out.mutating = true;
+            }
+            if item.alternate {
+                if item.words.is_empty() {
+                    break 'item;
+                }
+                // Dash runs `(( $x ))` as the command `$x`. A variable the
+                // script leaves unset expands to nothing, and the next word
+                // is the command: `(( $x rm F ))` runs `rm F`.
+                let mut first = 0;
+                while first < item.words.len() && !static_command_name(&item.raw_words[first]) {
+                    if dash_name_matters(&item.raw_words[first], shared) {
+                        mark_dynamic(out, "dynamic-command-name");
+                    }
+                    first += 1;
+                }
+                if first == item.words.len() {
+                    break 'item;
+                }
+                let (raw_words, words) = (&item.raw_words[first..], &item.words[first..]);
+                // Collected apart, then moved to `deny_only`.
+                let mut alt = Analysis::default();
+                if first == 0 {
+                    let entry = (item.resource.clone(), save_pattern(words, &item.resource));
+                    alt.delegated.push(entry);
+                }
+                let cooked = words.join(" ");
+                alt.delegated
+                    .push((cooked.clone(), save_pattern(words, &cooked)));
+                delegate(raw_words, words, cwd, shared, depth + 1, &mut alt)?;
+                out.deny_only.extend(alt.commands);
+                out.deny_only.extend(alt.delegated);
+                out.deny_only.extend(alt.deny_only);
+                // Folders and files that reading reaches above the working
+                // directory (Dash's `((rm ../x))`) are checked all the same;
+                // `(( a > b ))` writing `b` there adds nothing.
+                let away = |p: &str| p.starts_with('/') || p.split('/').any(|c| c == "..");
+                for d in alt.directories.into_iter().filter(|d| away(d)) {
+                    if !out.directories.contains(&d) {
+                        out.directories.push(d);
+                    }
+                }
+                for w in alt
+                    .writes
+                    .into_iter()
+                    .filter(|w| w.path.as_deref().is_some_and(away))
+                {
+                    if !out.writes.contains(&w) {
+                        out.writes.push(w);
+                    }
+                }
+                break 'item;
+            }
+            if let Some(end) = item.redirect_prefix_end {
+                let chars: Vec<char> = item.resource.chars().collect();
+                let head: String = chars[..end.min(chars.len())].iter().collect();
+                let sep = match chars.get(end) {
+                    Some('\t') => '\t',
+                    Some('\n') => '\n',
+                    _ => ' ',
+                };
+                let entry = (item.resource.clone(), format!("{head}{sep}*"));
+                if depth == 0 {
+                    out.commands.push(entry);
+                } else {
+                    out.delegated.push(entry);
+                }
+                break 'item;
+            }
+            let words: Vec<String> = match item.redirect_word_count {
+                Some(n) => item.raw_words[..n].to_vec(),
+                None => item.raw_words.clone(),
+            };
+            if let Some(index) = directory_command(&item.words) {
+                let (dirs, complete) =
+                    directory_args(&item.raw_words[index..], &item.words[index..], cwd);
+                out.unknown_cwd |= !complete;
+                out.directories.extend(dirs);
+                // A quoted spelling (`'cd' /tmp`) still changes directory, but
+                // stays a command checked by the shell rules, as in OpenCode.
+                if index == 0 && complete && item.raw_words[0] == item.words[0] {
+                    break 'item;
                 }
             }
-            continue;
-        }
-        if let Some(end) = item.redirect_prefix_end {
-            let chars: Vec<char> = item.resource.chars().collect();
-            let head: String = chars[..end.min(chars.len())].iter().collect();
-            let sep = match chars.get(end) {
-                Some('\t') => '\t',
-                Some('\n') => '\n',
-                _ => ' ',
-            };
-            let entry = (item.resource.clone(), format!("{head}{sep}*"));
+            let entry = (item.resource.clone(), save_pattern(&words, &item.resource));
             if depth == 0 {
                 out.commands.push(entry);
             } else {
                 out.delegated.push(entry);
             }
-            continue;
-        }
-        let words: Vec<String> = match item.redirect_word_count {
-            Some(n) => item.raw_words[..n].to_vec(),
-            None => item.raw_words.clone(),
-        };
-        if let Some(index) = directory_command(&item.words) {
-            let (dirs, complete) =
-                directory_args(&item.raw_words[index..], &item.words[index..], cwd);
-            out.unknown_cwd |= !complete;
-            out.directories.extend(dirs);
-            // A quoted spelling (`'cd' /tmp`) still changes directory, but
-            // stays a command checked by the shell rules, as in OpenCode.
-            if index == 0 && complete && item.raw_words[0] == item.words[0] {
-                continue;
+            let cooked = item.words.join(" ");
+            if cooked != item.resource {
+                out.delegated
+                    .push((cooked.clone(), save_pattern(&item.words, &cooked)));
+            }
+            if !item.arithmetic {
+                delegate(&item.raw_words, &item.words, cwd, shared, depth, out)?;
             }
         }
-        let entry = (item.resource.clone(), save_pattern(&words, &item.resource));
-        if depth == 0 {
-            out.commands.push(entry);
-        } else {
-            out.delegated.push(entry);
-        }
-        let cooked = item.words.join(" ");
-        if cooked != item.resource {
-            out.delegated
-                .push((cooked.clone(), save_pattern(&item.words, &cooked)));
-        }
-        if !item.arithmetic {
-            delegate(&item.raw_words, &item.words, cwd, shared, depth, out)?;
-        }
+        chain.after_item(
+            out,
+            writes_before,
+            dirs_before,
+            shell_cd,
+            &item_raw,
+            &item_words,
+            cwd,
+        );
     }
     Ok(())
+}
+
+/// The words a `"$f"` (or `"${f}"`) names when only `for` loops bind `f`,
+/// each over plain globs or names under the working directory (see
+/// [`Shared::loop_globs`]): never when the script binds `f` any other way,
+/// runs a file of shell code, or runs code the scan cannot see. An
+/// unquoted `$f` is not trusted: a file named `a ..` would split into
+/// `a` and `..`.
+fn trusted_loop_words(raw: &str, shared: &Shared, text: &str) -> Option<Vec<(String, String)>> {
+    let inner = raw.strip_prefix('"')?.strip_suffix('"')?;
+    let name = inner.strip_prefix('$')?;
+    let name = name
+        .strip_prefix('{')
+        .and_then(|n| n.strip_suffix('}'))
+        .unwrap_or(name);
+    if name.is_empty() || !name.chars().all(is_name_char) || shared.bound.borrow().contains(name) {
+        return None;
+    }
+    if !loop_comes_first(text, name) {
+        // `rm "$f"; for f in *; ...`: the first one is the environment's.
+        return None;
+    }
+    shared.loop_globs.borrow().get(name).cloned().flatten()
+}
+
+/// Whether `text` names `$name` (or `${name}`) only after a `for name`.
+fn loop_comes_first(text: &str, name: &str) -> bool {
+    let is_name = |c: Option<char>| c.is_some_and(is_name_char);
+    let first_use = text.match_indices('$').find_map(|(i, _)| {
+        let rest = &text[i + 1..];
+        let rest = rest.strip_prefix('{').unwrap_or(rest);
+        (rest.starts_with(name) && !is_name(rest[name.len()..].chars().next())).then_some(i)
+    });
+    let first_loop = text.match_indices("for").find_map(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let rest = text[i + 3..].trim_start_matches([' ', '\t']);
+        let spaced = text[i + 3..].starts_with([' ', '\t']);
+        (!is_name(before)
+            && spaced
+            && rest.starts_with(name)
+            && !is_name(rest[name.len()..].chars().next()))
+        .then_some(i)
+    });
+    match (first_loop, first_use) {
+        (Some(l), Some(u)) => l < u,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+/// Writes to `"$f"` for a loop variable over plain globs (`for f in
+/// *.txt; do rm "$f"; done`): checked as writes to those globs, under the
+/// normal rules, instead of as paths only known at run time.
+fn trust_loop_variables(out: &mut Analysis, shared: &Shared, text: &str) {
+    if out.dynamic.is_some() || shared.sources.get() {
+        return;
+    }
+    let as_writes = |words: Vec<(String, String)>, cwd: Option<String>| {
+        words.into_iter().map(move |(raw, value)| Write {
+            raw,
+            path: Some(targets::glob_folder(&value)),
+            cwd: cwd.clone(),
+        })
+    };
+    let mut writes = Vec::new();
+    for w in std::mem::take(&mut out.writes) {
+        match (&w.path, trusted_loop_words(&w.raw, shared, text)) {
+            (None, Some(words)) => writes.extend(as_writes(words, w.cwd.clone())),
+            _ => writes.push(w),
+        }
+    }
+    let mut unknown = Vec::new();
+    for raw in std::mem::take(&mut out.unknown_targets) {
+        match trusted_loop_words(&raw, shared, text) {
+            Some(words) => writes.extend(as_writes(words, None)),
+            None => unknown.push(raw),
+        }
+    }
+    out.writes = writes;
+    out.unknown_targets = unknown;
+}
+
+/// Whether `text` is one `&&` list of simple commands: no `;`, `||`,
+/// pipes, background jobs, newlines, subshells, groups, substitutions or
+/// heredocs. Each command then runs only when the ones before it succeeded,
+/// in the folder their `cd`s led to.
+fn and_list_only(text: &str) -> bool {
+    let c: Vec<char> = text.trim_end().chars().collect();
+    let (mut single, mut double) = (false, false);
+    let mut i = 0;
+    while i < c.len() {
+        let ch = c[i];
+        let next = c.get(i + 1).copied();
+        if single {
+            single = ch != '\'';
+            i += 1;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                if next == Some('\n') {
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+            '"' => double = !double,
+            '`' => return false,
+            '$' if next == Some('(') => return false,
+            _ if double => {}
+            '\'' => single = true,
+            ';' | '\n' | '(' | ')' | '{' | '}' => return false,
+            '<' if next == Some('<') || next == Some('(') => return false,
+            '>' if next == Some('(') => return false,
+            '|' => return false,
+            '&' => {
+                if next == Some('&') {
+                    i += 2;
+                    continue;
+                }
+                // `&>` and `>&` are redirects; a lone `&` runs in the background.
+                let redirect = next == Some('>') || (i > 0 && c[i - 1] == '>');
+                if !redirect {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    !single && !double
+}
+
+/// The shell's folder through a top-level `&&` list (see
+/// [`and_list_only`]): each write a command makes is tagged with it.
+struct CdChain {
+    /// The folder, relative to the working directory; `None` once unknown.
+    at: Option<String>,
+}
+
+impl CdChain {
+    fn new(exact: bool) -> Self {
+        CdChain {
+            at: exact.then(String::new),
+        }
+    }
+
+    /// After a command: tag its writes with the folder it ran in, then
+    /// follow it if it was a `cd`. A command that named any other folder
+    /// (`git -C`, `env -C`, `eval 'cd x'`) leaves its writes untagged and
+    /// the folder unknown from then on.
+    #[allow(clippy::too_many_arguments)]
+    fn after_item(
+        &mut self,
+        out: &mut Analysis,
+        writes_before: usize,
+        dirs_before: usize,
+        shell_cd: bool,
+        raw: &[String],
+        words: &[String],
+        cwd: &Path,
+    ) {
+        let Some(at) = self.at.clone() else {
+            return;
+        };
+        let named_folders = out.directories.len() > dirs_before;
+        if !shell_cd && named_folders {
+            self.at = None;
+            return;
+        }
+        for w in &mut out.writes[writes_before..] {
+            w.cwd = Some(at.clone());
+        }
+        if shell_cd {
+            let (dirs, complete) = directory_args(raw, words, cwd);
+            self.at = match (complete, dirs.as_slice()) {
+                (true, [d]) => Some(if at.is_empty() {
+                    d.clone()
+                } else {
+                    Path::new(&at).join(d).display().to_string()
+                }),
+                _ => None,
+            };
+        }
+    }
 }
 
 /// The rule "always allow" saves: the command's leading words (see
@@ -3198,12 +3475,14 @@ fn push_write(out: &mut Analysis, raw: &str, value: &str, cwd: &Path) {
         raw: raw.to_string(),
         // A glob in a redirect target is expanded when it matches one file.
         path,
+        cwd: None,
     });
     if value.starts_with('~') && !plain_tilde(raw) && differs {
         // `""~/x`: `$HOME/x` in Zsh, `./~/x` in Bash.
         out.writes.push(Write {
             raw: raw.to_string(),
             path: static_command_name(raw).then(|| value.to_string()),
+            cwd: None,
         });
     }
 }
@@ -3215,6 +3494,7 @@ fn push_literal_write(out: &mut Analysis, name: Option<&str>, program: &str) {
     out.writes.push(Write {
         raw: name.unwrap_or(program).to_string(),
         path: name.map(str::to_string),
+        cwd: None,
     });
 }
 
@@ -3367,7 +3647,7 @@ fn delegate(
                 let b = program.rsplit('/').next().unwrap_or(program);
                 if targets::writes_operands(canonical_name(b)) {
                     // `ls ../x | xargs rm`: the names come from the input.
-                    out.unknown_target.get_or_insert_with(|| cooked.join(" "));
+                    out.unknown_targets.push(cooked.join(" "));
                 }
             }
         }
@@ -3468,9 +3748,7 @@ fn run_string(
     out.reached.extend(inner.reached);
     out.unknown_cwd |= inner.unknown_cwd;
     out.mutating |= inner.mutating;
-    if let Some(t) = inner.unknown_target {
-        out.unknown_target.get_or_insert(t);
-    }
+    out.unknown_targets.extend(inner.unknown_targets);
     if let Some(d) = inner.dynamic {
         mark_dynamic(out, &d);
     }
@@ -5564,6 +5842,7 @@ fn program_effects(
                 out.writes.push(Write {
                     raw: format!("{}{suffix}", raw[k]),
                     path: static_name.then(|| format!("{}{suffix}", cooked[k])),
+                    cwd: None,
                 });
             }
         }

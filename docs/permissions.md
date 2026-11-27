@@ -297,9 +297,29 @@ Beyond the commands as written, CodeSmith also checks:
   folder only known at run time (`git -C "$d" status`) asks the way a
   computed `cd` does. These are followed through wrappers (`sudo`, `env`,
   `nice`, `timeout`, `xargs`...), `sh -c` strings, subshells and `$(...)`;
-  a relative path after a `cd` is checked from the working directory and
-  from the folder the `cd` went to; and symlinks are resolved, so a link
-  in the project that points outside counts as outside.
+  and symlinks are resolved, so a link in the project that points
+  outside counts as outside. Each `cd` is checked from the working
+  directory and from where the one before it went (`cd .. && cd ../x`
+  from a subfolder leaves the project).
+- **Where a relative write lands.** In one `&&` list of simple commands
+  (no `;`, `||`, pipes, `&`, subshells or substitutions), a relative
+  write is checked from the folder the `cd`s before it led to: `cd
+  sub/deep && echo x > ../y` writes `sub/y`, inside, and asks nothing. A
+  write before the `cd` is checked from the working directory. Anywhere
+  else (`cd sub; echo x > ../y`, after `git -C` or `env -C` in the chain),
+  it is checked from the working directory and from every folder the
+  command names, since a `cd` may fail or run in a subshell. After a `cd`
+  to a computed folder, a relative write is only known at run time.
+- **Loop variables over plain globs.** In `for f in *.txt; do rm "$f";
+  done`, `"$f"` (or `"${f}"`) is checked as a write to the loop's words
+  (`*.txt`, so the working directory), under the `edit` rules, instead of
+  as a path only known at run time. Every word after `in` must be a plain
+  glob or name: no `..`, no absolute or `~` path, no variable or
+  substitution. The variable must be bound by such loops only (not
+  assigned, `read`, `printf -v`'d or `eval`'d anywhere in the command),
+  not used before the loop, and the command must run no `source`d file
+  or code the scan can't see. An unquoted `$f` is not trusted, since a
+  file named `a ..` would split into `a` and `..`.
 - **Read or write.** Each `external_directory` request says whether the
   command only reads in the folders it reaches (`access`: `read` or
   `write`). It reads when every command in it is one known to only read:
