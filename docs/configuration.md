@@ -491,6 +491,7 @@ Model fields:
 | `type` | `chat` (the default), or `image`, `video` or `decision`; only chat models are offered for sessions. Unset keeps the catalog's. |
 | `interleaved` | OpenCode's older spelling of `compatibility.reasoningField`: the field name, or `{"field": name}`. |
 | `protocol` | The protocol this model speaks, in place of its provider's: `openai-chat`, `openai-responses`, `anthropic-messages` or `google-gemini`. For a provider whose models don't all speak the same one. On [Bifrost](#bifrost) it also picks the gateway's API. |
+| `api` | [Bifrost](#bifrost) only: which OpenAI-shaped route this model uses, `"unified"` or `"openai"`, in place of the provider's `settings.api`. |
 
 Unset `limit`, `cost`, `modalities` and variants come from the
 [model catalog](#the-model-catalog-modelsdev) when it lists the model.
@@ -1043,7 +1044,89 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   } }
   ```
 
-- **The model list** is the gateway's `GET <base>/v1/models` for your key,
+- **Which route.** A Bifrost gateway can serve two families of routes,
+  and its operator picks which a hostname serves: the unified API
+  (`<base>/v1/…`) and the SDK-compatible integration routes
+  (`<base>/openai/…`, `<base>/anthropic/…`, `<base>/genai/…`).
+  `settings.api` picks the one non-Anthropic models use, for Chat and
+  the Responses API alike:
+
+  | `api` | Chat | Responses |
+  | --- | --- | --- |
+  | `"unified"` (the default) | `<base>/v1/chat/completions` | `<base>/v1/responses` |
+  | `"openai"` | `<base>/openai/v1/chat/completions` | `<base>/openai/v1/responses` |
+
+  Both take the same request: Bifrost's OpenAI integration reads the same
+  fields as its unified API, `reasoning` included, and passes ids
+  (`openai/<model>`) through the same way. The only difference CodeSmith
+  sees is that the integration writes `usage.cost` as the bare total, as
+  OpenAI's SDKs expect, and the unified API as an object; `usd` reads
+  both. Anthropic models always use `<base>/anthropic/v1/messages`, and
+  `google-gemini` models `<base>/genai/v1beta/…`. A model's own `api`
+  (beside `protocol`) wins over the provider's.
+
+  A gateway that mounts a route elsewhere can say so per surface. Each is
+  a setting under `providers.bifrost.settings`, or its variable, and
+  defaults from `baseURL`:
+
+  | Setting | Variable | Default |
+  | --- | --- | --- |
+  | `api` | `BIFROST_API` | `"unified"` |
+  | `openaiBaseURL` | `BIFROST_OPENAI_BASE_URL` | what `api` picks: `<base>/v1` or `<base>/openai/v1` |
+  | `anthropicBaseURL` | `BIFROST_ANTHROPIC_BASE_URL` | `<base>/anthropic/v1` |
+  | `geminiBaseURL` | `BIFROST_GEMINI_BASE_URL` | `<base>/genai/v1beta` |
+  | `modelsURL` | `BIFROST_MODELS_URL` | `<base>/v1/models` |
+  | `quotaURL` | `BIFROST_QUOTA_URL` | `<base>/api/governance/virtual-keys/quota` |
+
+  A setting wins over its variable. `openaiBaseURL` replaces what `api`
+  picks for the provider, and a model's own `api` wins over both. The
+  `…BaseURL` settings are roots (`/chat/completions`, `/responses`,
+  `/messages` and `/models/<id>:streamGenerateContent` go after them);
+  `modelsURL` and `quotaURL` are full URLs. The model list stays on the
+  unified `/v1/models` whatever `api` says: Bifrost's `/openai/v1/models`
+  answers in OpenAI's shape, without the prices, reasoning levels and
+  output limits CodeSmith reads, and in one page. There is no detection
+  and no fallback: each surface goes to exactly one URL.
+
+  For a gateway whose inference hostname serves only the integration
+  routes (its `/v1/chat/completions` answers 403, while `/v1/models`,
+  the quota and `/anthropic/v1/messages` answer):
+
+  ```jsonc
+  {
+    "providers": {
+      "bifrost": {
+        "settings": {
+          "baseURL": "https://bifrost.example",
+          "apiKey": "{file:~/.config/codesmith/bifrost.key}",
+          "api": "openai"
+        }
+      }
+    }
+  }
+  ```
+
+  or `export BIFROST_API=openai` beside the URL and key.
+  `codesmith debug model bifrost/<id>` prints the URL each surface
+  resolves to and the setting it came from.
+- **A route the gateway doesn't serve** fails at once with an error that
+  names the URL tried, the gateway's own message (without the key), and
+  the setting that picks the route, for example: `Bifrost:
+  https://bifrost.example/v1/chat/completions answered HTTP 403 (This
+  hostname serves inference only. …): the gateway doesn't serve this
+  route. Nothing else was tried; … this gateway may serve only Bifrost's
+  integration routes: set providers.bifrost.settings.api to "openai", or
+  point openaiBaseURL at where it serves the OpenAI API`.
+  It is never retried, on that route or another. A 405 is always such an
+  error (Bifrost answers a POST to a path it doesn't serve with 405); a
+  403 or 404 is one when its body isn't an API error (a string `error`
+  from a proxy in front of the gateway, a page that isn't JSON, or
+  Bifrost's own `Route not found`). A 403 or 404 that is an API error,
+  such as Bifrost's governance refusing a model for the key, stays the
+  error it was. The model list says the same with `modelsURL` named; the
+  quota read stays silent, as any failed read does.
+- **The model list** is the gateway's `GET <base>/v1/models` (or
+  `modelsURL`) for your key,
   which Bifrost filters to the providers and models the key may use, read
   page by page (`page_size`, `page_token`). It is fetched afresh each time
   a session starts (the terminal UI, `codesmith run`, `serve`, ACP),
@@ -1065,9 +1148,10 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   the catalog's entry for the model at the end of the id
   (`fireworks/anthropic/<claude>` gets Claude's levels), else the
   protocol's family rules. When Bifrost's list names a model's levels,
-  they win over the catalog's, even where the two differ. On the unified
-  API a level is sent as Bifrost's `reasoning` object, `{"effort":
-  "high"}` (or `{"max_tokens": N}` for a token budget); on the Anthropic
+  they win over the catalog's, even where the two differ. On Chat (the
+  unified API or the OpenAI integration) a level is sent as Bifrost's
+  `reasoning` object, `{"effort": "high"}` (or `{"max_tokens": N}` for a
+  token budget), which both routes read; on the Anthropic
   route, as `thinking` and `output_config.effort`, which Bifrost passes
   through; on the Responses API, as `reasoning.effort`; on the Gemini
   route, as `generationConfig.thinkingConfig` (`thinkingLevel`, or
@@ -1092,8 +1176,9 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   nothing gives has no `usd_estimated`. It is an estimate: no operator
   overrides, long-context tiers or batch rates.
 - **Run total.** A `codesmith run --usage-log` on Bifrost reads the key's
-  budget (`GET <base>/api/governance/virtual-keys/quota`, with the key
-  alone) as the run starts, beside the turn, and again at its end, each
+  budget (`GET <base>/api/governance/virtual-keys/quota`, or `quotaURL`,
+  with the key alone) as the run starts, beside the turn, and again at
+  its end, each
   read given at most 1.5 seconds, and logs what the budget moved by as one
   `{"type": "run", "usd_quota": …}` line, never as a step's cost. It logs
   nothing when the key has no budget, a read fails, or the budget's cycle
