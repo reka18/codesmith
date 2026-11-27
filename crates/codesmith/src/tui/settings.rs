@@ -71,6 +71,9 @@ pub struct Settings {
     /// `prompt.paste: "full"`: pastes go in whole rather than as
     /// `[Pasted ~N lines]` chips (`"compact"`, the default).
     pub paste_full: bool,
+    /// `animations`: tool group glyphs animate (`false` keeps each on its
+    /// first frame).
+    pub animations: bool,
 }
 
 /// The attention sounds, as OpenCode names them.
@@ -144,6 +147,7 @@ impl Default for Settings {
             turn_tokens: false,
             attention: Attention::default(),
             paste_full: false,
+            animations: true,
         }
     }
 }
@@ -341,6 +345,13 @@ pub fn load(tui: &Value) -> (Settings, Vec<String>) {
         Some(Value::String(p)) if p == "full" => s.paste_full = true,
         Some(Value::String(p)) if p == "compact" => s.paste_full = false,
         Some(_) => errors.push("tui.prompt.paste: must be \"compact\" or \"full\"".into()),
+    }
+    match v.get("animations") {
+        None => {}
+        Some(b) => match b.as_bool() {
+            Some(b) => s.animations = b,
+            None => errors.push("tui.animations: must be true or false".into()),
+        },
     }
     match get(&v, &["terminal", "title"]) {
         None => {}

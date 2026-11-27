@@ -78,6 +78,9 @@ mod tabs_host;
 mod term;
 pub(crate) mod theme;
 mod toast;
+mod tool_group;
+#[cfg(test)]
+mod tool_group_tests;
 mod turn;
 mod usage;
 mod view;
@@ -2712,6 +2715,7 @@ async fn run_in(
     r.app.grouping = tui.grouping;
     r.app.tps = tui.tps;
     r.app.paste_full = tui.paste_full;
+    r.app.still = !tui.animations;
     r.app.turn_tokens = tui.turn_tokens;
     r.diffs = tui.diffs;
     r.app.diff_source = tui.diffs.source;
@@ -2828,7 +2832,7 @@ async fn run_in(
             terminal.draw(|f| view::draw(f, &r.app))?;
             // The forge hammer swings while a turn runs, even when no events
             // arrive; the shell poll and toasts tick alongside it.
-            let anim = r.app.busy.then_some(view::FORGE_FRAME);
+            let anim = r.app.animating().then_some(view::FORGE_FRAME);
             let tick = [following.then_some(SHELL_POLL), toast, anim]
                 .into_iter()
                 .flatten()

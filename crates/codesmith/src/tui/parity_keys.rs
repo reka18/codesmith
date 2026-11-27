@@ -137,7 +137,8 @@ fn oc_preserves_current_navigation_defaults() {
         // menu is Ctrl+X o.
         ("open.menu", "<leader>o"),
         ("session.tab.next", "ctrl+tab,alt+down"),
-        ("session.tab.previous", "ctrl+shift+tab,alt+up"),
+        // (adapted) Alt+Up selects a tool group in CodeSmith.
+        ("session.tab.previous", "ctrl+shift+tab"),
         ("session.tab.next_unread", "alt+shift+down"),
         ("session.tab.previous_unread", "alt+shift+up"),
         // (adapted) CodeSmith adds ctrl+x shift+t, which terminals
@@ -419,7 +420,10 @@ fn oc_opens_the_subagent_picker_with_down() {
 fn oc_navigates_session_tabs_with_option_arrows() {
     let b = resolve(Value::Null, true);
     assert_eq!(keys(&b, "session.tab.next"), ["ctrl+tab,alt+down"]);
-    assert_eq!(keys(&b, "session.tab.previous"), ["ctrl+shift+tab,alt+up"]);
+    // (adapted) Alt+Up selects a tool group in CodeSmith
+    // (`session.tool.select`), so the previous tab is Ctrl+Shift+Tab.
+    assert_eq!(keys(&b, "session.tab.previous"), ["ctrl+shift+tab"]);
+    assert_eq!(keys(&b, "session.tool.select"), ["alt+up"]);
     assert_eq!(keys(&b, "session.tab.next_unread"), ["alt+shift+down"]);
     assert_eq!(keys(&b, "session.tab.previous_unread"), ["alt+shift+up"]);
 }

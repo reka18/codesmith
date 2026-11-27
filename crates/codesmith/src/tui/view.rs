@@ -8,6 +8,7 @@ use super::editor;
 use super::group::{self, GroupKind, Grouping, Item, Node, Part, State, Verbosity};
 use super::markdown;
 use super::theme;
+use super::tool_group;
 use codesmith_core::tool::todo::Status;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -550,10 +551,22 @@ fn live_lines(live: &str, max: usize, w: usize) -> Vec<Line<'static>> {
 }
 
 fn tool_lines(t: &Tool, expand: bool, w: usize, hint: &str) -> Vec<Line<'static>> {
+    marked_tool_lines(t, expand, w, hint, None)
+}
+
+/// A call's rows, its head led by `mark` (a tool group's glyph or ✓/✗)
+/// in place of the gear when one is given.
+fn marked_tool_lines(
+    t: &Tool,
+    expand: bool,
+    w: usize,
+    hint: &str,
+    mark: Option<Span<'static>>,
+) -> Vec<Line<'static>> {
     if let Some(sub) = &t.sub {
-        return sub_lines(t, sub, expand, w, hint);
+        return sub_lines(t, sub, expand, w, hint, mark);
     }
-    let mut out = tool_body(t, expand, w, hint);
+    let mut out = tool_body(t, expand, w, hint, mark);
     out.extend(t.media.iter().map(|m| media_line(m, w)));
     out
 }
@@ -640,7 +653,14 @@ fn titlecase(s: &str) -> String {
 /// A `subagent` call's row once its subagent started: OpenCode's
 /// `Explore Subagent — description`, then (while it runs, or expanded) its
 /// latest tool calls, its latest text when expanded, and how it stands.
-fn sub_lines(t: &Tool, sub: &Sub, expand: bool, w: usize, hint: &str) -> Vec<Line<'static>> {
+fn sub_lines(
+    t: &Tool,
+    sub: &Sub,
+    expand: bool,
+    w: usize,
+    hint: &str,
+    glyph: Option<Span<'static>>,
+) -> Vec<Line<'static>> {
     let p = theme::current();
     let agent = if sub.agent.is_empty() {
         "Subagent".to_string()
@@ -654,8 +674,14 @@ fn sub_lines(t: &Tool, sub: &Sub, expand: bool, w: usize, hint: &str) -> Vec<Lin
         (SubStatus::Interrupted, _) => ("■", p.warning),
         _ => ("✗", p.error),
     };
+    let lead = match glyph {
+        // In a tool group the running subagent's glyph leads its row.
+        Some(g) if running || t.result.is_none() => g,
+        _ => Span::styled(mark.to_string(), Style::default().fg(color)),
+    };
     let mut head = vec![
-        Span::styled(format!("{mark} "), Style::default().fg(color)),
+        lead,
+        Span::raw(" "),
         Span::styled(agent, fg(p.agent)),
         Span::styled(
             format!(" — {}", escape_controls(&sub.title).replace('\n', " ")),
@@ -738,13 +764,20 @@ fn sub_lines(t: &Tool, sub: &Sub, expand: bool, w: usize, hint: &str) -> Vec<Lin
     out
 }
 
-fn tool_body(t: &Tool, expand: bool, w: usize, hint: &str) -> Vec<Line<'static>> {
+fn tool_body(
+    t: &Tool,
+    expand: bool,
+    w: usize,
+    hint: &str,
+    mark: Option<Span<'static>>,
+) -> Vec<Line<'static>> {
     let p = theme::current();
     let mut out = Vec::new();
-    let mut head = vec![
-        Span::styled(format!("⚙ {} ", t.name), fg(p.primary)),
-        Span::styled(t.detail.clone(), dim()),
-    ];
+    let mut head = match mark {
+        Some(m) => vec![m, Span::styled(format!(" {} ", t.name), fg(p.primary))],
+        None => vec![Span::styled(format!("⚙ {} ", t.name), fg(p.primary))],
+    };
+    head.push(Span::styled(t.detail.clone(), dim()));
     if let Some(d) = &t.diff {
         head.push(Span::styled(
             format!(" (+{} -{})", d.added, d.removed),
@@ -853,8 +886,69 @@ fn thought_visible(t: &str) -> bool {
 /// rows that reach into those lines are laid out, so drawing a long
 /// session costs what is on screen, not the whole history. A row is an
 /// entry, or a run of entries grouped as [`group`] says.
+#[cfg(test)]
 pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
-    layout_tail(app, width, n, &mut |_, _| {})
+    layout_tail(app, width, n, &mut |_, _, _| {})
+}
+
+/// A tool group in the transcript: low verbosity's activity group with a
+/// tool call in it, known by its first call's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRef {
+    pub key: String,
+    /// Its first entry.
+    pub first: usize,
+}
+
+/// The transcript's tool groups, oldest first, as [`transcript_tail`]
+/// draws them.
+pub fn tool_groups(app: &App) -> Vec<GroupRef> {
+    let mut out = Vec::new();
+    let entries = &app.entries;
+    let activity =
+        |p: Option<&'static [GroupKind]>| p.and_then(|p| p.first()) == Some(&GroupKind::Activity);
+    let mut i = 0;
+    while i < entries.len() {
+        if !activity(entry_path(app, &entries[i])) {
+            i += 1;
+            continue;
+        }
+        let first = i;
+        let mut key = None;
+        while i < entries.len() {
+            let p = entry_path(app, &entries[i]);
+            if p.is_some() && !activity(p) {
+                break;
+            }
+            if let (None, Entry::Tool(t)) = (&key, &entries[i]) {
+                key = Some(t.id.clone());
+            }
+            i += 1;
+        }
+        if let Some(key) = key {
+            out.push(GroupRef { key, first });
+        }
+    }
+    out
+}
+
+/// Where each tool group's line is: its key, its row from the top of the
+/// whole transcript and its height, with the transcript's height.
+pub fn group_rows(app: &App, width: u16) -> (Vec<(String, usize, usize)>, usize) {
+    let groups = tool_groups(app);
+    let mut found = Vec::new();
+    let lines = layout_tail(app, width, usize::MAX, &mut |i, below, h| {
+        if let Some(g) = groups.iter().find(|g| g.first == i) {
+            found.push((g.key.clone(), below, h));
+        }
+    });
+    let total = lines.len();
+    let mut out: Vec<(String, usize, usize)> = found
+        .into_iter()
+        .map(|(k, below, h)| (k, total.saturating_sub(below), h))
+        .collect();
+    out.reverse();
+    (out, total)
 }
 
 /// Where each prompt and answer starts in the whole transcript (its row
@@ -863,7 +957,7 @@ pub fn transcript_tail(app: &App, width: u16, n: usize) -> Vec<Line<'static>> {
 /// moves between.
 pub fn message_marks(app: &App, width: u16) -> (Vec<super::navigation::Mark>, usize) {
     let mut from_bottom = Vec::new();
-    let lines = layout_tail(app, width, usize::MAX, &mut |i, below| {
+    let lines = layout_tail(app, width, usize::MAX, &mut |i, below, _| {
         from_bottom.push((i, below))
     });
     let total = lines.len();
@@ -887,13 +981,14 @@ pub fn message_marks(app: &App, width: u16) -> (Vec<super::navigation::Mark>, us
     (marks, total)
 }
 
-/// [`transcript_tail`], telling `mark` each entry drawn alone and the
-/// rows from its first to the bottom.
+/// [`transcript_tail`], telling `mark` each row drawn (an entry alone, or
+/// a group by its first entry), the rows from its first to the bottom and
+/// its height.
 fn layout_tail(
     app: &App,
     width: u16,
     n: usize,
-    mark: &mut dyn FnMut(usize, usize),
+    mark: &mut dyn FnMut(usize, usize, usize),
 ) -> Vec<Line<'static>> {
     let w = width.saturating_sub(4) as usize;
     let cx = Rows::new(app, w);
@@ -913,7 +1008,7 @@ fn layout_tail(
         match path.first() {
             None => {
                 entry_lines(app, &entries[i], w, &mut lines);
-                mark(i, have + lines.len());
+                mark(i, have + lines.len(), lines.len());
                 end = i;
             }
             Some(&kind) => {
@@ -929,6 +1024,10 @@ fn layout_tail(
                     |&j| entry_path(app, &entries[j]).unwrap_or_default(),
                 );
                 cx.nodes(&tree, later || !app.busy, &mut lines);
+                if let Some(first) = (start..end).find(|&j| entry_path(app, &entries[j]).is_some())
+                {
+                    mark(first, have + lines.len(), lines.len());
+                }
                 end = start;
             }
         }
@@ -949,6 +1048,12 @@ struct Rows<'a> {
     w: usize,
     /// The last entry drawn: a thought there may still be streaming.
     last: Option<usize>,
+    /// The glyphs' clock step and colours.
+    tick: u64,
+    look: tool_group::Look,
+    /// Drawing inside an open tool group: calls are led by their glyph or
+    /// ✓/✗, and the subgroups in it are open.
+    grouped: std::cell::Cell<bool>,
 }
 
 impl<'a> Rows<'a> {
@@ -957,7 +1062,36 @@ impl<'a> Rows<'a> {
             .entries
             .iter()
             .rposition(|e| entry_path(app, e).is_some());
-        Rows { app, w, last }
+        Rows {
+            app,
+            w,
+            last,
+            tick: app.frame(),
+            look: tool_group::Look::from_palette(&theme::current()),
+            grouped: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Subgroups are open: all of them (tool output expanded), or those in
+    /// an open tool group.
+    fn open_subgroups(&self) -> bool {
+        self.app.expand_tools || self.grouped.get()
+    }
+
+    /// What leads a call's row in a tool group: its glyph while it runs,
+    /// then ✓ or ✗.
+    fn call_mark(&self, t: &Tool) -> Span<'static> {
+        match &t.result {
+            None => tool_group::running(&tool_group::Glyph::of(t.base()), self.tick, &self.look),
+            Some((_, failed)) => tool_group::mark(*failed, &self.look),
+        }
+    }
+
+    /// A call's rows, marked when in a tool group.
+    fn call_lines(&self, t: &Tool, expand: bool, out: &mut Vec<Line<'static>>) {
+        let hint = self.app.keymap.hint("session.toggle.tool_output");
+        let mark = self.grouped.get().then(|| self.call_mark(t));
+        out.extend(marked_tool_lines(t, expand, self.w, &hint, mark));
     }
 
     fn streaming(&self, i: usize) -> bool {
@@ -978,7 +1112,12 @@ impl<'a> Rows<'a> {
 
     fn node(&self, n: &Node<usize, GroupKind>, completed: bool, out: &mut Vec<Line<'static>>) {
         match n {
-            Node::Entry(i) => entry_lines(self.app, &self.app.entries[*i], self.w, out),
+            Node::Entry(i) => match &self.app.entries[*i] {
+                Entry::Tool(t) if self.grouped.get() => {
+                    self.call_lines(t, self.app.expand_tools, out)
+                }
+                e => entry_lines(self.app, e, self.w, out),
+            },
             Node::Group { kind, children, .. } => {
                 let mut leaves = Vec::with_capacity(n.size());
                 n.leaves(&mut leaves);
@@ -1003,10 +1142,9 @@ impl<'a> Rows<'a> {
     /// A running call with something live to show (a command's output, a
     /// subagent's activity) stays in view below its collapsed group.
     fn live(&self, leaves: &[usize], out: &mut Vec<Line<'static>>) {
-        let hint = self.app.keymap.hint("session.toggle.tool_output");
         for t in leaves.iter().filter_map(|&i| self.tool(i)) {
             if t.result.is_none() && !t.forming && (t.sub.is_some() || !t.live.is_empty()) {
-                out.extend(tool_lines(t, false, self.w, &hint));
+                self.call_lines(t, false, out);
             }
         }
     }
@@ -1042,6 +1180,10 @@ impl<'a> Rows<'a> {
                 _ => None,
             })
             .collect();
+        let tools: Vec<&Tool> = leaves.iter().filter_map(|&i| self.tool(i)).collect();
+        if !tools.is_empty() {
+            return self.tool_group(&tools, children, leaves, completed, out);
+        }
         let s = group::summarize(&items, completed);
         if s.label.is_empty() {
             return;
@@ -1059,6 +1201,87 @@ impl<'a> Rows<'a> {
         } else {
             self.live(leaves, out);
         }
+    }
+
+    /// A tool group's line: the glyph of the call running now (or, once
+    /// done, its last call's settled glyph), what the calls did, then what
+    /// collapsing never hides: a permission or question waiting, failures
+    /// and the diff summary. Its calls' rows follow when it is open.
+    fn tool_group(
+        &self,
+        tools: &[&Tool],
+        children: &[Node<usize, GroupKind>],
+        leaves: &[usize],
+        completed: bool,
+        out: &mut Vec<Line<'static>>,
+    ) {
+        let app = self.app;
+        let p = theme::current();
+        let live = !completed && tools.iter().any(|t| t.result.is_none());
+        let names: Vec<String> = tools
+            .iter()
+            .flat_map(|t| {
+                // Code Mode is counted by the calls its program made.
+                if group::canonical(t.base()) == "execute" && !t.calls.is_empty() {
+                    t.calls.iter().map(|c| c.tool.clone()).collect()
+                } else {
+                    vec![t.base().to_string()]
+                }
+            })
+            .map(|n| escape_controls(&n).replace('\n', " "))
+            .collect();
+        let failed = tools
+            .iter()
+            .filter(|t| matches!(t.result, Some((_, true))))
+            .count();
+        let (added, removed) = tools
+            .iter()
+            .filter(|t| !matches!(t.result, Some((_, true))))
+            .filter_map(|t| t.diff.as_ref())
+            .fold((0, 0), |(a, r), d| (a + d.added, r + d.removed));
+        let glyph = match tools.iter().rev().find(|t| t.result.is_none()) {
+            Some(t) if live => {
+                tool_group::running(&tool_group::Glyph::of(t.base()), self.tick, &self.look)
+            }
+            _ => {
+                let last = tools.last().map(|t| t.base()).unwrap_or_default();
+                tool_group::settled(&tool_group::Glyph::of(last), failed > 0, &self.look)
+            }
+        };
+        let key = tools.first().map(|t| t.id.as_str()).unwrap_or_default();
+        let open = app.group_open(key);
+        let waiting = live.then(|| waiting(app)).flatten();
+        let (label, label_style) = match &waiting {
+            Some(w) => (w.clone(), fg(p.warning)),
+            None => (
+                tool_group::label(&names, !live),
+                fg(if live { p.text } else { p.muted }),
+            ),
+        };
+        let mut tail: Vec<Span<'static>> = Vec::new();
+        if failed > 0 {
+            tail.push(Span::styled(format!(" · {failed} failed"), fg(p.error)));
+        }
+        if added + removed > 0 {
+            tail.push(Span::styled(format!(" +{added}"), fg(p.diff_added)));
+            tail.push(Span::styled(format!(" −{removed}"), fg(p.diff_removed)));
+        }
+        tail.push(Span::styled(if open { " ⌄" } else { " ›" }, fg(p.faint)));
+        let fixed: usize = 2 + tail.iter().map(|s| s.content.width()).sum::<usize>();
+        let mut line = vec![
+            glyph,
+            Span::raw(" "),
+            Span::styled(cut(&label, self.w.saturating_sub(fixed)), label_style),
+        ];
+        line.extend(tail);
+        out.push(Line::from(line));
+        let was = self.grouped.replace(true);
+        if open {
+            self.nodes(children, completed, out);
+        } else {
+            self.live(leaves, out);
+        }
+        self.grouped.set(was);
     }
 
     /// Adjacent instruction loads: "◈ Instructions: 2 files", the files
@@ -1084,7 +1307,7 @@ impl<'a> Rows<'a> {
             if files == 1 { "file" } else { "files" }
         );
         out.push(Line::from(Span::styled(cut(&label, self.w), dim())));
-        if self.app.expand_tools || self.app.verbosity == Verbosity::High {
+        if self.open_subgroups() || self.app.verbosity == Verbosity::High {
             self.nodes(children, completed, out);
         }
     }
@@ -1098,7 +1321,9 @@ impl<'a> Rows<'a> {
         completed: bool,
         out: &mut Vec<Line<'static>>,
     ) {
-        if self.app.grouping == Grouping::None {
+        // In an open tool group its calls are rows of their own: the
+        // group's line already says what they did.
+        if self.app.grouping == Grouping::None || self.grouped.get() {
             return self.nodes(children, completed, out);
         }
         let tools: Vec<&Tool> = leaves.iter().filter_map(|&i| self.tool(i)).collect();
@@ -1112,7 +1337,7 @@ impl<'a> Rows<'a> {
             cut(&format!("{icon} {label}"), self.w),
             dim(),
         )));
-        if self.app.expand_tools || self.app.verbosity == Verbosity::High {
+        if self.open_subgroups() || self.app.verbosity == Verbosity::High {
             self.nodes(children, completed, out);
         } else {
             self.live(leaves, out);
@@ -1190,6 +1415,23 @@ impl<'a> Rows<'a> {
                 ));
             }
         }
+    }
+}
+
+/// What a live tool group waits on, when it does: a permission request or
+/// a question, which takes over its line until answered.
+fn waiting(app: &App) -> Option<String> {
+    match &app.modal {
+        Some(Modal::Permission { req, .. }) => {
+            let what = escape_controls(&req.title).replace('\n', " ");
+            Some(if what.trim().is_empty() {
+                "Waiting for permission".to_string()
+            } else {
+                format!("Waiting for permission: {}", what.trim())
+            })
+        }
+        _ if app.asking() => Some("Waiting for your answer".into()),
+        _ => None,
     }
 }
 
@@ -1507,11 +1749,24 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
 
     let visible = body.height as usize;
     app.view_size.set((body.width, body.height));
-    let mut lines = transcript_tail(
+    // The transcript cursor's group, to mark its line.
+    let selected = app
+        .tool_cursor
+        .as_ref()
+        .and_then(|k| tool_groups(app).into_iter().find(|g| &g.key == k))
+        .map(|g| g.first);
+    let mut selected_below = None;
+    let mut lines = layout_tail(
         app,
         body.width,
         visible.saturating_add(app.scroll.saturating_sub(app.nav_slack)),
+        &mut |i, below, _| {
+            if Some(i) == selected {
+                selected_below = Some(below);
+            }
+        },
     );
+    let selected_row = selected_below.map(|b| lines.len().saturating_sub(b));
     lines.extend(std::iter::repeat_n(Line::default(), app.nav_slack));
     let max_scroll = lines.len().saturating_sub(visible);
     let scroll = app.scroll.min(max_scroll);
@@ -1523,15 +1778,31 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         ..body
     };
     f.render_widget(Paragraph::new(shown), text_area);
+    // The selected group's bar, in the margin left of its line.
+    if let Some(row) = selected_row {
+        if row >= start && row < start + visible && body.width > 0 {
+            if let Some(c) = f
+                .buffer_mut()
+                .cell_mut((body.x, body.y + (row - start) as u16))
+            {
+                c.set_symbol("▌").set_style(fg(p.primary));
+            }
+        }
+    }
 
     draw_input(f, app, input);
 
-    let mut line = Vec::new();
-    if let Some((label, color)) = goal_label(app) {
-        line.push(Span::styled(label, fg(color)));
-        line.push(Span::styled(" · ", dim()));
-    }
-    line.push(Span::styled(status_text(app, scroll), dim()));
+    let line = if app.tool_cursor.is_some() {
+        cursor_keys(app, &p)
+    } else {
+        let mut line = Vec::new();
+        if let Some((label, color)) = goal_label(app) {
+            line.push(Span::styled(label, fg(color)));
+            line.push(Span::styled(" · ", dim()));
+        }
+        line.push(Span::styled(status_text(app, scroll), dim()));
+        line
+    };
     f.render_widget(Paragraph::new(Line::from(line)), status);
 
     if app.modal.is_none() {
@@ -1543,6 +1814,43 @@ fn draw_main(f: &mut Frame, app: &App, area: Rect) {
         Some(m) => draw_modal(f, area, m, app),
         None => {}
     }
+}
+
+/// The status line while the transcript cursor is on a tool group: its
+/// keys, under a `TRANSCRIPT` label.
+pub fn cursor_keys(app: &App, p: &theme::Palette) -> Vec<Span<'static>> {
+    let k = &app.keymap;
+    let both = |a: &str, b: &str| match (k.hint(a), k.hint(b)) {
+        (a, b) if a.is_empty() => b,
+        (a, b) if b.is_empty() => a,
+        (a, b) => format!("{a}/{b}"),
+    };
+    // The first of several keys and the shortest of the rest: enter/→.
+    let two = |l: &[String]| match l {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, rest @ ..] => {
+            let short = rest
+                .iter()
+                .min_by_key(|s| s.chars().count())
+                .unwrap_or(first);
+            format!("{first}/{short}")
+        }
+    };
+    let keys = keys_line(&[
+        (both("session.tool.previous", "session.tool.next"), "move"),
+        (two(&k.list("session.tool.open")), "open"),
+        (k.hint("session.tool.close"), "close"),
+        (k.hint("session.tool.exit"), "back to input"),
+        (k.hint("session.toggle.tool_output"), "all"),
+    ]);
+    vec![
+        Span::styled(
+            " TRANSCRIPT ",
+            Style::default().fg(p.primary).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" {keys}"), dim()),
+    ]
 }
 
 /// What OpenCode's prompt footer shows.
@@ -1735,7 +2043,7 @@ const SHIMMER_BAND: f32 = 2.5;
 
 /// Steel's colour as it heats: cherry red, orange, yellow, white. On a light
 /// background the top of the ramp stops at deep amber, which stays legible.
-fn heat_color(heat: f32, light: bool) -> (u8, u8, u8) {
+pub(crate) fn heat_color(heat: f32, light: bool) -> (u8, u8, u8) {
     const DARK: &[(f32, (u8, u8, u8))] = &[
         (0.0, (0x8b, 0x1a, 0x1a)),
         (0.35, (0xd9, 0x48, 0x0f)),
@@ -1762,7 +2070,7 @@ pub(crate) struct ForgeLook {
 }
 
 impl ForgeLook {
-    fn from_palette(p: &theme::Palette) -> ForgeLook {
+    pub(crate) fn from_palette(p: &theme::Palette) -> ForgeLook {
         static NO_COLOR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let no_color =
             *NO_COLOR.get_or_init(|| std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()));
@@ -1779,7 +2087,7 @@ impl ForgeLook {
         }
     }
 
-    fn heat(self, heat: f32) -> Style {
+    pub(crate) fn heat(self, heat: f32) -> Style {
         self.rgb(heat_color(heat, self.light))
     }
 
@@ -1894,7 +2202,7 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     if !text.is_empty() {
         f.render_widget(Paragraph::new(shown).style(fg(p.text)), inner);
     }
-    if app.modal.is_none() && !app.diff_focused() && inner.height > 0 {
+    if app.modal.is_none() && !app.diff_focused() && app.tool_cursor.is_none() && inner.height > 0 {
         let y = inner.y + (crow - top).min(height.saturating_sub(1)) as u16;
         let x = inner.x + (ccol as u16).min(inner.width.saturating_sub(1));
         // A toast over the cursor hides it (the terminal draws it on top).

@@ -585,7 +585,7 @@ async fn background_commands_survive_an_interrupt_switches_and_undo() {
     )
     .await;
     // At medium verbosity the running command has its own row (at low it
-    // is summed up as "Running command…").
+    // is in a tool group, "Running a command…").
     e.config(&m.url, json!({"tui": {"session": {"verbosity": "medium"}}}));
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
@@ -640,7 +640,7 @@ async fn an_interrupt_does_not_resume_for_commands_already_finished() {
     )
     .await;
     // At medium verbosity the running command has its own row (at low it
-    // is summed up as "Running command…").
+    // is in a tool group, "Running a command…").
     e.config(&m.url, json!({"tui": {"session": {"verbosity": "medium"}}}));
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'build it'") else {
         return;
@@ -703,8 +703,8 @@ async fn without_tabs_a_new_session_stops_the_old_ones_background_commands() {
     m.assert_done();
 }
 
-// At the default (low) verbosity a run of tool calls is one summary row,
-// as OpenCode draws it; ctrl+o opens it.
+// At the default (low) verbosity a run of tool calls is one tool group's
+// line, worded by what the calls did; ctrl+o opens it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_of_tool_calls_is_summed_up_and_opens_with_ctrl_o() {
     let e = Env::new();
@@ -730,8 +730,8 @@ async fn a_run_of_tool_calls_is_summed_up_and_opens_with_ctrl_o() {
     let Some(mut ui) = Ui::start(&e, "--auto --prompt 'check it'") else {
         return;
     };
-    // Only changed cells are redrawn: the row was "+ Running command…".
-    ui.wait_for("1 command").await;
+    // Read off the screen: the line was "Running a command…".
+    ui.wait_for("Ran a command").await;
     ui.wait_for("Checked it.").await;
     // (Its output may have been drawn as it ran, below the summary.)
     ui.send(b"\x0f").await;
@@ -861,7 +861,7 @@ async fn a_bang_prompt_runs_a_shell_command_without_the_model() {
     let Some(mut ui) = Ui::start(&e, "--prompt '!echo user-shell-output'") else {
         return;
     };
-    ui.wait_for("1 command").await;
+    ui.wait_for("Ran a command").await;
     ui.send(b"\x0f").await;
     ui.wait_for("user-shell-output").await;
     ui.quit().await;
@@ -872,9 +872,10 @@ async fn a_bang_prompt_runs_a_shell_command_without_the_model() {
     assert!(h[0].to_string().contains("user-shell-output"));
 }
 
-/// Alt+Up and Alt+Shift+Down: the previous tab, and the next tab that is
-/// unread or waiting for its user.
-const PREVIOUS_TAB: &[u8] = b"\x1b[1;3A";
+/// Ctrl+X 1 and Alt+Shift+Down: the first tab (the previous one in these
+/// tests; Alt+Up selects a tool group), and the next tab that is unread or
+/// waiting for its user.
+const PREVIOUS_TAB: &[u8] = b"\x181";
 const NEXT_UNREAD_TAB: &[u8] = b"\x1b[1;4B";
 
 // With tabs (on by default, as in OpenCode), `/new` opens a tab of its own
@@ -982,7 +983,7 @@ async fn a_background_tabs_permission_request_is_surfaced() {
         return;
     };
     // `/new` while the turn runs: it goes on in its tab.
-    ui.wait_for("Running command").await;
+    ui.wait_for("Running a command").await;
     ui.send(b"/new\r").await;
     ui.wait_for("new session").await;
     ui.wait_for("needs your permission").await;
@@ -1342,7 +1343,7 @@ async fn a_bang_command_that_reads_the_terminal_fails_at_once() {
     else {
         return;
     };
-    ui.wait_for("1 command").await;
+    ui.wait_for("Ran a command").await;
     ui.send(b"\x0f").await;
     ui.wait_for("tty-refused").await;
     ui.quit().await;

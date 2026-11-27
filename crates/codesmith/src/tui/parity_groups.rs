@@ -111,7 +111,8 @@ fn instructions(paths: &[&str]) -> Entry {
     Entry::Instructions(paths.iter().map(std::path::PathBuf::from).collect())
 }
 
-// (adapted) No footer row.
+// (adapted) No footer row; the run is a tool group, worded by what its
+// calls did (CodeSmith's tool groups).
 #[test]
 fn oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run() {
     let mut a = app(Verbosity::Low);
@@ -138,7 +139,7 @@ fn oc_low_hydration_nests_subgroups_inside_one_activity_group_per_run() {
         ]
     );
     assert!(
-        has(&a, "+ 1 command, 1 thought, 2 reads, 1 tool, 1 instruction"),
+        has(&a, "⠶ Read 2 files, ran a search, ran a command ›"),
         "{:?}",
         lines(&a)
     );
@@ -157,7 +158,7 @@ fn oc_medium_hydration_keeps_production_shape_plus_instruction_groups() {
     assert_eq!(shape(&a), ["exploration:2", "instructions:2", "shell"]);
 }
 
-// (adapted) Through the session's events.
+// (adapted) Through the session's events, worded as a tool group.
 #[test]
 fn oc_live_appends_under_low_merge_into_the_open_activity_group() {
     let mut a = app(Verbosity::Low);
@@ -178,18 +179,14 @@ fn oc_live_appends_under_low_merge_into_the_open_activity_group() {
         });
     }
     assert_eq!(shape(&a), ["activity:4"]);
-    assert!(
-        has(&a, "+ 1 command, 1 thought, 2 reads"),
-        "{:?}",
-        lines(&a)
-    );
+    assert!(has(&a, "Read 2 files, ran a command ›"), "{:?}", lines(&a));
     a.on_event(Ev::Text("Done".into()));
     assert_eq!(shape(&a), ["activity:4", "text"]);
 }
 
-// (adapted) A call waiting for permission is still running: it is not
-// counted, keeps its place in the group, and its command output stays in
-// view below the summary.
+// (adapted) A call waiting for permission is still running: the group
+// reads in the present tense with the command's glyph, the call keeps its
+// place, and its command output stays in view below the group's line.
 #[test]
 fn oc_permission_blocked_tools_inside_an_activity_group_are_tracked_as_pending_without_reordering()
 {
@@ -210,8 +207,8 @@ fn oc_permission_blocked_tools_inside_an_activity_group_are_tracked_as_pending_w
         ["exploration:1", "shell", "exploration:1"]
     );
     let l = lines(&a);
-    assert_eq!(l[0], "+ 2 reads …");
-    assert!(l.iter().any(|l| l == "⚙ shell cargo build …"), "{l:?}");
+    assert_eq!(l[0], "▖ Reading 2 files, running a command… ›");
+    assert!(l.iter().any(|l| l == "▖ shell cargo build …"), "{l:?}");
     assert!(l.iter().any(|l| l.contains("│ Compiling a")), "{l:?}");
 }
 
@@ -226,18 +223,20 @@ fn oc_questions_stand_alone_at_every_level_and_end_an_activity_run() {
     assert_eq!(shape(&a), ["activity:1", "question", "activity:1"]);
 }
 
+// (adapted) A tool group names every call while it runs, with the glyph
+// of the latest.
 #[test]
 fn oc_until_something_finishes_the_label_is_the_first_running_items_status() {
     let mut a = app(Verbosity::Low);
     a.busy = true;
     a.entries = vec![running("edit", "a.rs"), running("shell", "ls")];
-    assert_eq!(lines(&a), ["+ Running edit…"]);
+    assert_eq!(lines(&a), ["▖ Editing a file, running a command… ›"]);
 }
 
 // ----- tui/test/cli/tui/session-grouping ------------------------------------
 
 // (adapted) CodeSmith's rows are entries, not ids: a call still running
-// does not hide a later one with its call id.
+// does not hide a later one with its call id. Worded as a tool group.
 #[test]
 fn oc_a_pending_tool_does_not_hide_a_later_tool_reusing_its_call_id_in_another_message() {
     let mut a = app(Verbosity::Low);
@@ -251,18 +250,19 @@ fn oc_a_pending_tool_does_not_hide_a_later_tool_reusing_its_call_id_in_another_m
         t.id = "call-reused".into();
     }
     a.entries = vec![blocked, later];
-    assert_eq!(lines(&a), ["+ 1 read …"]);
+    assert_eq!(lines(&a), ["⡀ Reading 2 files… ›"]);
     a.on_event(Ev::ToolEnd {
         id: "call-reused".into(),
         name: "read".into(),
         output: "Read".into(),
         error: false,
     });
-    assert_eq!(lines(&a), ["+ 2 reads"]);
+    assert_eq!(lines(&a), ["⠶ Read 2 files ›"]);
 }
 
 /// "execute counts its finished nested calls instead of itself", drawn:
-/// the call's progress rows reach its row, and the summary counts them.
+/// the call's progress rows reach its row, and the tool group's line
+/// words its nested calls in place of it.
 #[test]
 fn oc_execute_counts_its_finished_nested_calls_in_the_activity_row() {
     let mut a = app(Verbosity::Low);
@@ -273,7 +273,11 @@ fn oc_execute_counts_its_finished_nested_calls_in_the_activity_row() {
         detail: String::new(),
         diff: None,
     });
-    assert_eq!(lines(&a), ["+ Running code…"]);
+    let sprite = super::tool_group::Glyph::of("execute");
+    assert_eq!(
+        lines(&a),
+        [format!("{} Calling execute… ›", sprite.frames[0])]
+    );
     let calls = |rows: serde_json::Value| Ev::ToolCalls {
         id: "x".into(),
         calls: super::group::nested_calls(&json!({ "toolCalls": rows })).unwrap(),
@@ -282,7 +286,13 @@ fn oc_execute_counts_its_finished_nested_calls_in_the_activity_row() {
         {"tool": "read", "status": "completed"},
         {"tool": "custom.slow", "status": "running"},
     ])));
-    assert_eq!(lines(&a), ["+ 1 read …"]);
+    assert_eq!(
+        lines(&a),
+        [format!(
+            "{} Reading a file, calling custom.slow… ›",
+            sprite.frames[0]
+        )]
+    );
     a.on_event(calls(json!([
         {"tool": "read", "status": "completed"},
         {"tool": "read", "status": "completed"},
@@ -295,7 +305,13 @@ fn oc_execute_counts_its_finished_nested_calls_in_the_activity_row() {
         output: "done".into(),
         error: false,
     });
-    assert_eq!(lines(&a), ["+ 2 reads, 1 tool"]);
+    assert_eq!(
+        lines(&a),
+        [format!(
+            "{} Read 2 files, called custom.lookup, called custom.slow ›",
+            sprite.rest
+        )]
+    );
 }
 
 // ----- tui/test/cli/tui/session-rows ----------------------------------------
@@ -406,22 +422,26 @@ fn oc_retains_nested_expansion_state_and_registers_exact_headers_and_parts() {
     assert!(has(&a, "Reset thought body"));
 }
 
+// (adapted) Worded as a tool group.
 #[test]
 fn oc_a_low_activity_group_with_nothing_finished_stays_collapsed_behind_a_status() {
     let mut a = app(Verbosity::Low);
     a.busy = true;
     a.entries = vec![running("shell", "one"), running("shell", "two")];
-    assert_eq!(lines(&a), ["+ Running command…"]);
+    assert_eq!(lines(&a), ["▖ Running 2 commands… ›"]);
 }
 
+// (adapted) A tool group's chevron is its disclosure icon, and its line
+// says how many calls failed.
 #[test]
 fn oc_failed_low_activity_uses_a_disclosure_icon_and_keeps_details_expandable() {
     let mut a = app(Verbosity::Low);
     a.entries = vec![failed("shell", "make", "command failed")];
-    assert_eq!(lines(&a), ["+ 1 command"]);
+    assert_eq!(lines(&a), ["▞ Ran a command · 1 failed ›"]);
     ctrl_o(&mut a);
     let l = lines(&a);
-    assert_eq!(l[0], "− 1 command");
+    assert_eq!(l[0], "▞ Ran a command · 1 failed ⌄");
+    assert_eq!(l[1], "✗ shell make");
     assert!(has(&a, "command failed"), "{l:?}");
 }
 
@@ -477,7 +497,7 @@ fn instruction_loads_reach_the_transcript_live_and_replayed() {
 // ----- tui/test/session-activity-anchor --------------------------------------
 
 // (adapted) Following the bottom, the opened details end the transcript
-// and the summary moves up above them.
+// and the tool group's line moves up above them.
 #[test]
 fn oc_a_low_activity_summary_that_ends_the_transcript_opens_like_v2_at_the_bottom() {
     let mut a = app(Verbosity::Low);
@@ -495,15 +515,15 @@ fn oc_a_low_activity_summary_that_ends_the_transcript_opens_like_v2_at_the_botto
                 .contains(s)
         })
     };
-    assert_eq!(at(&before, "+ 1 command"), Some(3));
+    assert_eq!(at(&before, "Ran a command ›"), Some(3));
     ctrl_o(&mut a);
     let after = view::transcript_tail(&a, 80, 5);
-    let row = at(&after, "− 1 command").unwrap();
+    let row = at(&after, "Ran a command ⌄").unwrap();
     assert!(row < 3);
     assert!(at(&after[row..], "running step 0 output").is_some());
     ctrl_o(&mut a);
     assert_eq!(
-        at(&view::transcript_tail(&a, 80, 5), "+ 1 command"),
+        at(&view::transcript_tail(&a, 80, 5), "Ran a command ›"),
         Some(3)
     );
 }
@@ -609,12 +629,12 @@ fn grouping_and_verbosity_commands_switch_the_transcript() {
     assert_eq!(l[0], "→ Explored: 1 read, 1 search");
     assert!(l.contains(&"⚙ read a.rs".to_string()), "high opens it");
     a.verbosity = Verbosity::Low;
-    // A search is a tool in the summary.
-    assert_eq!(lines(&a), ["+ 1 read, 1 tool"]);
+    // At low they are one tool group.
+    assert_eq!(lines(&a), ["⠶ Read a file, ran a search ›"]);
 }
 
 // A subagent's row stays in view below its collapsed group while it
-// runs, then folds into the summary.
+// runs, then folds into the group's line.
 #[test]
 fn a_running_subagent_stays_in_view_below_its_summary() {
     let mut a = app(Verbosity::Low);
@@ -632,9 +652,9 @@ fn a_running_subagent_stays_in_view_below_its_summary() {
         agent: "explore".into(),
     });
     let l = lines(&a);
-    assert_eq!(l[0], "+ 1 read …");
+    assert_eq!(l[0], "⣾ Reading a file, running a subagent… ›");
     assert!(
-        l.iter().any(|l| l.contains("Explore Subagent — Survey")),
+        l.iter().any(|l| l.contains("⣾ Explore Subagent — Survey")),
         "{l:?}"
     );
     a.on_event(Ev::ChildEnd {
@@ -648,7 +668,7 @@ fn a_running_subagent_stays_in_view_below_its_summary() {
         output: "done".into(),
         error: false,
     });
-    assert_eq!(lines(&a), ["+ 1 read, 1 tool"]);
+    assert_eq!(lines(&a), ["⣿ Read a file, ran a subagent ›"]);
 }
 
 // The verbosity and grouping commands have no keys by default, as in
