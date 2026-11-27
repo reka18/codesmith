@@ -3,6 +3,34 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Security: shell commands that reach a folder outside the project now
+  need `external_directory` approval, like `cd`.** Before, a command
+  could point git, env, make or others at a folder outside the project,
+  or write files there by name, without it: `git -C ../other commit`,
+  `GIT_DIR=../other/.git git reset --hard`, `env -C ../other rm f`, `make
+  -C ../other`, `rm ../other/f`, `cp a ../other/b`, `perl -i -pe ...
+  ../other/f`, `curl -o ../other/f` and the like ran with the default
+  rules, in a headless run too, where `cd ../other` was refused. Now
+  every option that runs a program in another folder or points it at a
+  repository or work tree elsewhere is checked like a `cd` target, and
+  every file a known program writes, moves or deletes by name like a
+  redirect target (`external_directory`, then `edit`). A path only known
+  at run time (`rm "$f"`, `ls | xargs rm`, `patch -p1 < x.diff`) asks,
+  and is refused when nobody can answer. See [shell
+  commands](docs/permissions.md#shell-commands) for the full list.
+- Under the `plan` agent, `rm`, `cp`, `mv` and the other programs that
+  write files by name are refused inside the project too, as redirects
+  already were.
+- A relative `cd` after another one is checked from where the first one
+  went: `cd .. && cd ../x` from a subfolder goes outside the project.
+- An `external_directory` request now says whether the command only reads
+  there or may write (`access`), for rules that will use it. A declined
+  one names the folder, so a model in a headless run sees why.
+- Quoted paths in inline code (`python3 -c "open('../x/f', 'w')"`) are
+  checked for `external_directory`.
+
 ## 0.6.1 — 2026-11-26
 
 - **Bifrost's route is a setting.** `providers.bifrost.settings.api`
