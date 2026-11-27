@@ -2108,7 +2108,7 @@ impl Config {
         let configured_url = user
             .and_then(|u| u.settings.base_url.clone())
             .filter(|u| !u.is_empty());
-        let plugin = self.plugin_route(PluginRoute {
+        let (plugin, bifrost_route) = self.plugin_route(PluginRoute {
             pid,
             p: &p,
             user,
@@ -2400,6 +2400,7 @@ impl Config {
                 encoding,
                 compat,
                 hooks: None,
+                bifrost_route,
             },
             body,
             options,
@@ -2556,12 +2557,14 @@ impl Config {
     /// hosted provider's key fingerprint (see [`crate::providers::hosted`]).
     pub fn live_account(&self, pid: &str) -> Option<String> {
         let p = self.provider(pid)?;
-        // Bifrost's is for the gateway and virtual key it was fetched with.
+        // Bifrost's is for the model list URL and virtual key it was
+        // fetched with.
         if pid == crate::providers::bifrost::ID {
-            let root =
-                crate::providers::bifrost::root(&p.settings, &crate::providers::process_env())?;
+            let urls =
+                crate::providers::bifrost::urls(&p.settings, &crate::providers::process_env())
+                    .ok()??;
             return Some(crate::providers::bifrost::account(
-                &root,
+                &urls.models.url,
                 provider_key(pid, &p).as_deref(),
             ));
         }
@@ -2605,9 +2608,16 @@ struct PluginRoute<'a> {
 }
 
 impl Config {
-    /// The route a provider plugin gives the model, if one owns it.
-    fn plugin_route(&self, r: PluginRoute) -> Result<Option<crate::providers::Route>> {
-        crate::providers::route(&crate::providers::Input {
+    /// The route a provider plugin gives the model, if one owns it, and on
+    /// Bifrost what chose it.
+    fn plugin_route(
+        &self,
+        r: PluginRoute,
+    ) -> Result<(
+        Option<crate::providers::Route>,
+        Option<codesmith_ai::bifrost::RouteOrigin>,
+    )> {
+        let input = crate::providers::Input {
             provider_id: r.pid,
             settings: &r.p.settings,
             configured_url: r.configured_url,
@@ -2620,7 +2630,12 @@ impl Config {
             api_key: provider_key(r.pid, r.p),
             stored: crate::auth::entry(crate::providers::login_id(r.pid)),
             env: codesmith_ai::aws::process_env(),
-        })
+        };
+        if r.pid == crate::providers::bifrost::ID {
+            let (route, origin) = crate::providers::bifrost::route_with_origin(&input)?;
+            return Ok((Some(route), Some(origin)));
+        }
+        Ok((crate::providers::route(&input)?, None))
     }
 }
 

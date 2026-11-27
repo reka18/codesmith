@@ -163,6 +163,8 @@ pub struct Resolved {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Urls {
     pub root: String,
+    /// Where the root came from: `settings.baseURL` or `BIFROST_BASE_URL`.
+    pub root_from: String,
     pub api: Api,
     /// Where `api` came from: `settings.api`, `BIFROST_API` or the default.
     pub api_from: String,
@@ -175,6 +177,10 @@ pub struct Urls {
 }
 
 const SETTINGS: &str = "providers.bifrost.settings";
+/// How a surface's default URL is named: `the default, from <root's setting>`.
+const DEFAULT: &str = "the default, from";
+/// Where an unset `api` comes from.
+const DEFAULT_API: &str = "the default (providers.bifrost.settings.api unset)";
 
 /// An `api` value, or an error naming where it came from.
 fn parse_api(v: &str, from: &str) -> Result<Api> {
@@ -224,17 +230,23 @@ pub fn urls_at(
         ),
         None => match env(API_VAR).filter(|v| !v.trim().is_empty()) {
             Some(v) => (parse_api(&v, API_VAR)?, API_VAR.to_string()),
-            None => (Api::Unified, "the default".to_string()),
+            None => (Api::Unified, DEFAULT_API.to_string()),
         },
+    };
+    let root_from = if set(&settings.base_url).is_some() {
+        format!("{SETTINGS}.baseURL")
+    } else {
+        URL_VAR.to_string()
     };
     let or = |r: Option<Resolved>, url: String| {
         r.unwrap_or(Resolved {
             url,
-            from: format!("{SETTINGS}.baseURL"),
+            from: format!("{DEFAULT} {root_from}"),
         })
     };
     Ok(Urls {
         root: root.to_string(),
+        root_from: root_from.clone(),
         api,
         api_from,
         openai_override: url_setting(&s.openai_base_url, "openaiBaseURL", OPENAI_URL_VAR, env)?,
@@ -270,6 +282,16 @@ pub fn urls(settings: &crate::config::ProviderSettings, env: &super::Env) -> Res
     }
 }
 
+/// `url` as shown to the person: without user info, a query or a fragment.
+pub fn shown(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(u) => codesmith_ai::bifrost::shown_url(&u)
+            .trim_end_matches('/')
+            .to_string(),
+        Err(_) => codesmith_ai::redact_urls(url),
+    }
+}
+
 impl Urls {
     /// The OpenAI-shaped root a model uses: its own `api` (`model_api`),
     /// else `openaiBaseURL`, else the provider's `api`.
@@ -289,6 +311,92 @@ impl Urls {
         }
     }
 
+    /// What chose the route of `protocol` (with the model's own `api`,
+    /// `model_api`), and the one change to try when the gateway doesn't
+    /// serve it.
+    pub fn origin(
+        &self,
+        protocol: Protocol,
+        model_api: Option<(Api, String)>,
+    ) -> codesmith_ai::bifrost::RouteOrigin {
+        use codesmith_ai::bifrost::RouteOrigin;
+        let other = |a: Api| match a {
+            Api::Unified => Api::Openai,
+            Api::Openai => Api::Unified,
+        };
+        let why = |a: Api| match a {
+            Api::Unified => " (this gateway may serve only Bifrost's integration routes)",
+            Api::Openai => " (this gateway may serve only Bifrost's unified API)",
+        };
+        let surface = |r: &Resolved, name: &str, what: &str| {
+            if r.from.starts_with(DEFAULT) {
+                RouteOrigin {
+                    setting: format!("{} ({}; {SETTINGS}.{name} is unset)", r.from, shown(&r.url)),
+                    fix: format!(
+                        "set {SETTINGS}.{name} to where this gateway serves Bifrost's {what} API"
+                    ),
+                }
+            } else {
+                RouteOrigin {
+                    setting: format!("{} ({})", r.from, shown(&r.url)),
+                    fix: format!(
+                        "set {} to where this gateway serves Bifrost's {what} API",
+                        r.from
+                    ),
+                }
+            }
+        };
+        match protocol {
+            Protocol::AnthropicMessages => {
+                surface(&self.anthropic, "anthropicBaseURL", "Anthropic")
+            }
+            Protocol::GoogleGemini => surface(&self.gemini, "geminiBaseURL", "Gemini"),
+            _ => {
+                if let Some((a, from)) = model_api {
+                    return RouteOrigin {
+                        setting: format!("{from} (\"{}\")", a.name()),
+                        fix: format!("set {from} to \"{}\"{}", other(a).name(), why(a)),
+                    };
+                }
+                if let Some(o) = &self.openai_override {
+                    let unset = if o.from == OPENAI_URL_VAR {
+                        "unset"
+                    } else {
+                        "remove"
+                    };
+                    return RouteOrigin {
+                        setting: format!("{} ({})", o.from, shown(&o.url)),
+                        fix: format!(
+                            "set {} to where this gateway serves the OpenAI API, or {unset} it so {SETTINGS}.api picks the route",
+                            o.from
+                        ),
+                    };
+                }
+                if self.api_from == DEFAULT_API {
+                    return RouteOrigin {
+                        setting: format!(
+                            "{DEFAULT_API}, which is \"unified\" ({}/v1)",
+                            shown(&self.root)
+                        ),
+                        fix: format!(
+                            "set {SETTINGS}.api to \"openai\" (or BIFROST_API=openai){}",
+                            why(Api::Unified)
+                        ),
+                    };
+                }
+                RouteOrigin {
+                    setting: format!("{} (\"{}\")", self.api_from, self.api.name()),
+                    fix: format!(
+                        "set {} to \"{}\"{}",
+                        self.api_from,
+                        other(self.api).name(),
+                        why(self.api)
+                    ),
+                }
+            }
+        }
+    }
+
     /// The base URL of `protocol`.
     pub fn base(&self, protocol: Protocol, model_api: Option<(Api, String)>) -> Resolved {
         match protocol {
@@ -301,27 +409,36 @@ impl Urls {
     /// One line per surface: its URL and the setting it came from.
     pub fn describe(&self) -> Vec<String> {
         let o = self.openai(None);
+        let u = |r: &Resolved| shown(&r.url);
         vec![
             format!(
-                "openai:    {}/chat/completions, {}/responses (from {})",
-                o.url, o.url, o.from
+                "openai:    {0}/chat/completions, {0}/responses (from {1})",
+                u(&o),
+                o.from
             ),
             format!(
                 "anthropic: {}/messages (from {})",
-                self.anthropic.url, self.anthropic.from
+                u(&self.anthropic),
+                self.anthropic.from
             ),
             format!(
                 "gemini:    {}/models/<id>:streamGenerateContent (from {})",
-                self.gemini.url, self.gemini.from
+                u(&self.gemini),
+                self.gemini.from
             ),
-            format!("models:    {} (from {})", self.models.url, self.models.from),
-            format!("quota:     {} (from {})", self.quota.url, self.quota.from),
+            format!("models:    {} (from {})", u(&self.models), self.models.from),
+            format!("quota:     {} (from {})", u(&self.quota), self.quota.from),
         ]
     }
 }
 
 /// The route of a Bifrost model.
 pub fn route(input: &Input) -> Result<Route> {
+    route_with_origin(input).map(|(r, _)| r)
+}
+
+/// The route of a Bifrost model, and what chose it.
+pub fn route_with_origin(input: &Input) -> Result<(Route, codesmith_ai::bifrost::RouteOrigin)> {
     let root = input
         .configured_url
         .map(normalize_root)
@@ -342,14 +459,18 @@ pub fn route(input: &Input) -> Result<Route> {
         }
         None => None,
     };
-    Ok(Route {
-        protocol,
-        base_url: urls.base(protocol, model_api).url,
-        auth: Auth::Header(KEY_HEADER.into()),
-        api_key: input.api_key.clone(),
-        headers: vec![],
-        model_id: None,
-    })
+    let origin = urls.origin(protocol, model_api.clone());
+    Ok((
+        Route {
+            protocol,
+            base_url: urls.base(protocol, model_api).url,
+            auth: Auth::Header(KEY_HEADER.into()),
+            api_key: input.api_key.clone(),
+            headers: vec![],
+            model_id: None,
+        },
+        origin,
+    ))
 }
 
 /// Whether Bifrost is set up: a gateway URL and a virtual key.
@@ -364,12 +485,41 @@ pub fn ready(cfg: &crate::config::Config) -> bool {
         && cfg.provider_key(ID, &p).is_some_and(|k| !k.is_empty())
 }
 
-/// The account a kept list belongs to: a hash of the gateway and the key.
-pub fn account(root: &str, key: Option<&str>) -> String {
+/// The account a kept list belongs to: a hash of the model list's URL
+/// (`modelsURL` as resolved) and the key.
+pub fn account(models_url: &str, key: Option<&str>) -> String {
+    format!(
+        "vk:{}",
+        super::live::fingerprint(&format!("list {models_url}\n{}", key.unwrap_or("")))
+    )
+}
+
+/// The account 0.6.0 kept a list under: a hash of the gateway's root and
+/// the key.
+pub fn legacy_account(root: &str, key: Option<&str>) -> String {
     format!(
         "vk:{}",
         super::live::fingerprint(&format!("{root}\n{}", key.unwrap_or("")))
     )
+}
+
+/// Keep a list 0.6.0 saved for this gateway and key as this key's list:
+/// with the default model list URL (`<root>/v1/models`, the URL 0.6.0
+/// read), the list kept under [`legacy_account`] is moved to
+/// [`account`], its fetch time kept, so it still stands in when the
+/// gateway can't be reached. With another `modelsURL` it isn't this
+/// list, and stays unused. Whether a list was moved.
+pub fn adopt_legacy(path: &Path, urls: &Urls, key: Option<&str>) -> bool {
+    if urls.models.url != format!("{}/v1/models", urls.root) {
+        return false;
+    }
+    super::live::move_account_in(
+        path,
+        ID,
+        &legacy_account(&urls.root, key),
+        &account(&urls.models.url, key),
+    )
+    .unwrap_or(false)
 }
 
 /// Whether a kept list is a Bifrost one.
@@ -525,6 +675,7 @@ pub async fn refresh(
     urls: &Urls,
 ) -> Result<Vec<String>> {
     let root = urls.root.as_str();
+    adopt_legacy(path, urls, p.api_key.as_deref());
     if p.api_key.as_deref().is_none_or(str::is_empty) {
         anyhow::bail!(
             "Bifrost needs a virtual key: set {KEY_VAR}, settings.apiKey, or run `codesmith auth login bifrost`"
@@ -535,7 +686,13 @@ pub async fn refresh(
         .map_err(|e| anyhow!("listing Bifrost models: {e:#}"))?;
     let raw = normalize(&data);
     let ids = super::hosted::chat_ids(&raw);
-    super::live::save_in(path, ID, &account(root, p.api_key.as_deref()), root, raw)?;
+    super::live::save_in(
+        path,
+        ID,
+        &account(&urls.models.url, p.api_key.as_deref()),
+        root,
+        raw,
+    )?;
     Ok(ids)
 }
 
@@ -814,7 +971,7 @@ pub fn session_start_in(cfg: &crate::config::Config, path: &Path) -> Option<Pend
     let root = urls.root.clone();
     let m = cfg.resolve_model(&format!("{ID}/_")).ok()?;
     m.provider.api_key.as_deref().filter(|k| !k.is_empty())?;
-    let account = account(&root, m.provider.api_key.as_deref());
+    let account = account(&urls.models.url, m.provider.api_key.as_deref());
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((a, f)) = running.as_ref() {
         if *a == account && f.peek().is_none() {

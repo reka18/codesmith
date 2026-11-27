@@ -94,12 +94,22 @@ fn a_kept_list_of_another_key_never_refuses_or_allows() {
 }
 
 #[test]
-fn the_account_is_a_hash_of_the_gateway_and_key() {
-    let a = account("http://gw", Some("sk-bf-secret"));
+fn the_account_is_a_hash_of_the_model_list_url_and_key() {
+    let a = account("http://gw/v1/models", Some("sk-bf-secret"));
     assert!(a.starts_with("vk:") && !a.contains("secret"));
-    assert_ne!(a, account("http://gw", Some("sk-bf-other")));
-    assert_ne!(a, account("http://gw2", Some("sk-bf-secret")));
-    assert_eq!(a, account("http://gw", Some("sk-bf-secret")));
+    assert!(is_account(&a) && is_account(&legacy_account("http://gw", None)));
+    assert_ne!(a, account("http://gw/v1/models", Some("sk-bf-other")));
+    assert_ne!(a, account("http://gw2/v1/models", Some("sk-bf-secret")));
+    assert_ne!(
+        a,
+        account("http://gw/openai/v1/models", Some("sk-bf-secret"))
+    );
+    assert_eq!(a, account("http://gw/v1/models", Some("sk-bf-secret")));
+    // Never 0.6.0's hash of the root, whatever the URL.
+    assert_ne!(
+        account("http://gw", Some("sk-bf-secret")),
+        legacy_account("http://gw", Some("sk-bf-secret"))
+    );
 }
 
 #[test]

@@ -2050,6 +2050,7 @@ fn utility_provider(url: &str) -> codesmith_ai::Provider {
         encoding: Default::default(),
         compat: Default::default(),
         hooks: None,
+        bifrost_route: None,
     }
 }
 

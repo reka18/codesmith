@@ -58,6 +58,22 @@ pub fn save_in(
     Ok(())
 }
 
+/// Move a provider's kept list from account `from` to `to`, keeping
+/// everything else (when it was fetched included): whether it was moved.
+pub fn move_account_in(path: &Path, provider: &str, from: &str, to: &str) -> Result<bool> {
+    if load_in(path, provider).is_none_or(|k| k["account"].as_str() != Some(from)) {
+        return Ok(false);
+    }
+    let _lock = crate::auth::FileLock::acquire(path)?;
+    let mut all: Map<String, Value> = crate::auth::read_for_update(path)?;
+    match all.get_mut(provider) {
+        Some(k) if k["account"].as_str() == Some(from) => k["account"] = json!(to),
+        _ => return Ok(false),
+    }
+    crate::paths::write_private(path, serde_json::to_string_pretty(&all)?.as_bytes())?;
+    Ok(true)
+}
+
 pub fn save(provider: &str, account: &str, base_url: &str, models: Vec<Value>) -> Result<()> {
     save_in(&file(), provider, account, base_url, models)
 }

@@ -461,6 +461,7 @@ mod tests {
             encoding: Encoding::None,
             compat: Compatibility::default(),
             hooks: None,
+            bifrost_route: None,
         };
         let client = reqwest::Client::new();
         let resp = send(&p, client.post(p.url("x")).body("{}")).await.unwrap();

@@ -923,6 +923,7 @@ fn info(provider: &str, id: &str, input: &[&str], released: i64) -> generate::Me
             encoding: codesmith_ai::Encoding::None,
             compat: Default::default(),
             hooks: None,
+            bifrost_route: None,
         },
         media_input: None,
     }
