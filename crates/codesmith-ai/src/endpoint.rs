@@ -331,7 +331,22 @@ pub(crate) async fn send(
     let resp = execute(p, rb).await?;
     let status = resp.status();
     if !status.is_success() {
+        let url = resp.url().clone();
         let text = resp.text().await.unwrap_or_default();
+        if crate::bifrost::is(p) {
+            // A route the gateway doesn't serve is a configuration error,
+            // named as one; any other answer keeps its status, never the key.
+            if crate::bifrost::is_route_refusal(status.as_u16(), &text) {
+                return Err(crate::bifrost::route_error(p, &url, status.as_u16(), &text));
+            }
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: crate::bifrost::redact(
+                    &crate::redact_urls(&text.chars().take(2000).collect::<String>()),
+                    p.api_key.as_deref(),
+                ),
+            });
+        }
         return Err(Error::Status {
             status: status.as_u16(),
             body: crate::redact_urls(&text.chars().take(2000).collect::<String>()),

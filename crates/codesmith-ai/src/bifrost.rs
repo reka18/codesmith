@@ -158,6 +158,105 @@ pub async fn get_json(
     serde_json::from_str(&text).map_err(|e| crate::Error::Decode(e.to_string()))
 }
 
+/// Whether a gateway's `status` and `body` say the route itself isn't
+/// served there, rather than anything about the key or the model: a 405;
+/// or a 403 or 404 whose body isn't an API error, which every Bifrost
+/// refusal of a key or model is (`{"error": {"type": …, "message": …}}`),
+/// passed on from an upstream or written by Bifrost's governance. A string
+/// `error` (a proxy in front of the gateway), a page that isn't JSON, and
+/// Bifrost's own "Route not found" are route refusals.
+pub fn is_route_refusal(status: u16, body: &str) -> bool {
+    match status {
+        405 => true,
+        403 | 404 => {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+                return true;
+            };
+            match v.get("error") {
+                Some(serde_json::Value::Object(e)) => e
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|m| m.starts_with("Route not found")),
+                _ => true,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// What a gateway's error body says, short: its `error` text or
+/// `error.message`, else the body itself, with URLs' queries and `key`
+/// taken out.
+pub fn gateway_message(body: &str, key: Option<&str>) -> String {
+    let v = serde_json::from_str::<serde_json::Value>(body.trim()).ok();
+    let said = v
+        .as_ref()
+        .and_then(|v| {
+            v["error"]
+                .as_str()
+                .or_else(|| v["error"]["message"].as_str())
+                .or_else(|| v["message"].as_str())
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| body.trim().to_string());
+    let said: String = said
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(300)
+        .collect();
+    let said = redact(&crate::redact_urls(&said), key);
+    if said.trim().is_empty() {
+        "no message".into()
+    } else {
+        said.trim().to_string()
+    }
+}
+
+/// `url` as shown in an error: without its query (which may carry
+/// configured parameters) or any user info.
+pub fn shown_url(url: &reqwest::Url) -> String {
+    let mut u = url.clone();
+    u.set_query(None);
+    u.set_fragment(None);
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    u.to_string()
+}
+
+/// The setting that picks the route of a request to `url` in `protocol`,
+/// and what to try.
+fn route_hint(protocol: crate::Protocol, url: &reqwest::Url) -> String {
+    use crate::Protocol::*;
+    let setting = "providers.bifrost.settings";
+    match protocol {
+        AnthropicMessages => format!(
+            "Anthropic models go to <baseURL>/anthropic/v1 unless {setting}.anthropicBaseURL (BIFROST_ANTHROPIC_BASE_URL) is set; set it to where this gateway serves Bifrost's Anthropic API"
+        ),
+        GoogleGemini => format!(
+            "models with protocol \"google-gemini\" go to <baseURL>/genai/v1beta unless {setting}.geminiBaseURL (BIFROST_GEMINI_BASE_URL) is set; set it to where this gateway serves Bifrost's Gemini API"
+        ),
+        _ if url.path().contains("/openai/v1/") => format!(
+            "this is Bifrost's OpenAI integration route, which {setting}.api (BIFROST_API) or the model's own api picks with \"openai\", unless {setting}.openaiBaseURL (BIFROST_OPENAI_BASE_URL) is set; if this gateway serves only the unified API, set api to \"unified\", or set openaiBaseURL to where it serves the OpenAI API (`codesmith debug model` shows where each URL came from)"
+        ),
+        _ => format!(
+            "the route is {setting}.openaiBaseURL (BIFROST_OPENAI_BASE_URL) when that is set, else what {setting}.api (BIFROST_API) picks: \"unified\" (the default) is <baseURL>/v1, \"openai\" is <baseURL>/openai/v1 (`codesmith debug model` shows where each URL came from); this gateway may serve only Bifrost's integration routes: set {setting}.api to \"openai\", or point openaiBaseURL at where it serves the OpenAI API"
+        ),
+    }
+}
+
+/// The error for a request to `url` that the gateway answered as a route
+/// it doesn't serve ([`is_route_refusal`]): the URL, the gateway's own
+/// message without the key, and the setting that picks the route. It is
+/// never retried, on this route or another.
+pub fn route_error(p: &Provider, url: &reqwest::Url, status: u16, body: &str) -> crate::Error {
+    crate::Error::Invalid(format!(
+        "Bifrost: {} answered HTTP {status} ({}): the gateway doesn't serve this route. Nothing else was tried; {}.",
+        shown_url(url),
+        gateway_message(body, p.api_key.as_deref()),
+        route_hint(p.protocol, url),
+    ))
+}
+
 /// `text` with every copy of `key` taken out.
 pub fn redact(text: &str, key: Option<&str>) -> String {
     match key.filter(|k| k.len() >= 4) {
@@ -228,6 +327,126 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(req.headers().get_all(REQUEST_ID).iter().count(), 1);
         assert_eq!(req.headers()[REQUEST_ID], b.as_str());
+    }
+
+    #[test]
+    fn only_an_answer_about_the_route_is_a_route_refusal() {
+        let api_error = r#"{"error": {"type": "policy_model_blocked", "message": "blocked"}}"#;
+        for (status, body, want) in [
+            (405, "Method Not Allowed", true),
+            (405, api_error, true),
+            (
+                403,
+                r#"{"error":"This hostname serves inference only. Use the admin hostname for administration."}"#,
+                true,
+            ),
+            (403, "<html>Forbidden</html>", true),
+            (403, "", true),
+            (403, r#"{"message": "forbidden"}"#, true),
+            (403, api_error, false),
+            (
+                403,
+                r#"{"type":"error","error":{"type":"permission_error","message":"no"}}"#,
+                false,
+            ),
+            (
+                404,
+                r#"{"is_bifrost_error":false,"status_code":404,"error":{"message":"Route not found: /v1/x"}}"#,
+                true,
+            ),
+            (404, "404 page not found", true),
+            (
+                404,
+                r#"{"error":{"message":"The model `x` does not exist","code":"model_not_found"}}"#,
+                false,
+            ),
+            (401, "Unauthorized", false),
+            (400, "bad", false),
+            (500, "<html>", false),
+            (429, "", false),
+        ] {
+            assert_eq!(is_route_refusal(status, body), want, "{status} {body}");
+        }
+    }
+
+    #[test]
+    fn route_refusal_is_decided_by_the_status_and_the_bodys_error_alone() {
+        // Bounded: every status from 100 to 599 over a set of bodies.
+        let bodies = [
+            "",
+            "x",
+            "{}",
+            "[]",
+            "null",
+            r#"{"error": null}"#,
+            r#"{"error": 3}"#,
+            r#"{"error": "s"}"#,
+            r#"{"error": {}}"#,
+            r#"{"error": {"message": "Route not found: /"}}"#,
+            r#"{"error": {"message": "route not found"}}"#,
+            "\u{0}\u{ffff}",
+        ];
+        for status in 100..600u16 {
+            for b in bodies {
+                let got = is_route_refusal(status, b);
+                let object = serde_json::from_str::<serde_json::Value>(b)
+                    .ok()
+                    .is_some_and(|v| v.get("error").is_some_and(|e| e.is_object()));
+                let not_found = b.contains(r#""message": "Route not found"#);
+                let want = match status {
+                    405 => true,
+                    403 | 404 => !object || not_found,
+                    _ => false,
+                };
+                assert_eq!(got, want, "{status} {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_route_error_names_the_url_the_message_and_the_setting_never_the_key() {
+        let key = "sk-bf-route-secret-1";
+        let mut p = Provider {
+            name: ID.into(),
+            api_key: Some(key.into()),
+            protocol: crate::Protocol::OpenaiChat,
+            ..Default::default()
+        };
+        let url = reqwest::Url::parse(&format!(
+            "https://u:{key}@bifrost.example/v1/chat/completions?k={key}#f"
+        ))
+        .unwrap();
+        let e = route_error(&p, &url, 403, &format!(r#"{{"error":"no {key} here"}}"#));
+        let m = e.to_string();
+        assert!(!e.retryable());
+        assert!(!m.contains(key) && !format!("{e:?}").contains(key), "{m}");
+        assert!(
+            m.contains(
+                "https://bifrost.example/v1/chat/completions answered HTTP 403 (no [redacted] here)"
+            ),
+            "{m}"
+        );
+        assert!(
+            m.contains(r#"set providers.bifrost.settings.api to "openai""#),
+            "{m}"
+        );
+        let url = reqwest::Url::parse("https://bifrost.example/openai/v1/responses").unwrap();
+        p.protocol = crate::Protocol::OpenaiResponses;
+        let m = route_error(&p, &url, 404, "").to_string();
+        assert!(
+            m.contains("(no message)") && m.contains(r#"set api to "unified""#),
+            "{m}"
+        );
+        p.protocol = crate::Protocol::AnthropicMessages;
+        let m = route_error(&p, &url, 404, "").to_string();
+        assert!(m.contains("anthropicBaseURL"), "{m}");
+        p.protocol = crate::Protocol::GoogleGemini;
+        let m = route_error(&p, &url, 405, "").to_string();
+        assert!(m.contains("geminiBaseURL"), "{m}");
+        // A long or control-laden message is cut and cleaned.
+        let m = gateway_message(&format!("{}\n\u{7}end", "a".repeat(1000)), None);
+        assert_eq!(m.chars().count(), 300);
+        assert!(!m.chars().any(char::is_control));
     }
 
     #[test]
