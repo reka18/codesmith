@@ -26,6 +26,13 @@ fn git(dir: &Path, args: &[&str]) {
             "commit.gpgsign=false",
             "-c",
             "init.defaultBranch=main",
+            // No automatic maintenance: newer gits start it in the
+            // background after a commit, and its lock file in `.git` would
+            // show up as a change to the sibling.
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
         ])
         .args(args)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -40,6 +47,9 @@ fn repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("f"), "a\n").unwrap();
     git(dir, &["init", "-q"]);
+    // Kept in the repository too, for the git commands the tests run in it.
+    git(dir, &["config", "maintenance.auto", "false"]);
+    git(dir, &["config", "gc.auto", "0"]);
     git(dir, &["add", "f"]);
     git(dir, &["commit", "-qm", "first"]);
 }

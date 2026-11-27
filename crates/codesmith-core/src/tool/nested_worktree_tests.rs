@@ -26,6 +26,10 @@ fn git(dir: &Path, args: &[&str]) {
             "user.email=t@t",
             "-c",
             "commit.gpgsign=false",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
         ])
         .args(args)
         .output()
@@ -48,6 +52,8 @@ fn have_git() -> bool {
 fn nested(env: &Env) -> PathBuf {
     let root = env.root();
     git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "maintenance.auto", "false"]);
+    git(&root, &["config", "gc.auto", "0"]);
     env.write("src/lib.txt", "needle in main\n");
     git(&root, &["add", "."]);
     git(&root, &["commit", "-q", "-m", "first"]);
@@ -137,7 +143,8 @@ async fn the_shell_can_cd_and_write_into_a_nested_worktree_without_asking() {
         "cd .worktrees/w && echo one > from-cd.txt",
         "echo two > .worktrees/w/redirected.txt",
         "cd .worktrees/w/src && cat lib.txt > copied.txt",
-        "pushd .worktrees/w >/dev/null && git status --short > status.txt",
+        // `cd`, not `pushd`: `sh` is dash on Linux, which has no `pushd`.
+        "cd .worktrees/w && git status --short > status.txt",
     ] {
         let r = Tool::Shell.run(&ctx, &json!({"command": command})).await;
         assert!(r.is_ok(), "{command}: {r:?}");
