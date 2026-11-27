@@ -438,6 +438,14 @@ pub struct App {
     /// Show tool output and diffs in full rather than collapsed, and
     /// every group open.
     pub expand_tools: bool,
+    /// Tool groups opened or closed one at a time, by key; the others
+    /// follow `expand_tools`.
+    pub groups_open: std::collections::HashMap<String, bool>,
+    /// The transcript cursor (`session.tool.select`): the selected tool
+    /// group's key while it is active.
+    pub tool_cursor: Option<String>,
+    /// `tui.animations: false`: glyphs stay on their first frame.
+    pub still: bool,
     /// How much tool activity the transcript shows.
     pub verbosity: super::group::Verbosity,
     /// Whether adjacent reads and searches are one row.
@@ -705,6 +713,21 @@ const HELP_KEYS: &[(&str, &str)] = &[
         "session.toggle.tool_output",
         "expand or collapse tool output and groups",
     ),
+    ("session.tool.select", "select the latest tool group"),
+    (
+        "session.tool.previous",
+        "with a tool group selected: the one before",
+    ),
+    (
+        "session.tool.next",
+        "with a tool group selected: the one after",
+    ),
+    ("session.tool.open", "with a tool group selected: open it"),
+    ("session.tool.close", "with a tool group selected: close it"),
+    (
+        "session.tool.exit",
+        "with a tool group selected: back to the input",
+    ),
     (
         "session.toggle.exploration_grouping",
         "group reads and searches, or show each",
@@ -916,6 +939,7 @@ impl App {
         std::mem::swap(&mut self.session_labels, &mut to.session_labels);
         to.show_reasoning = self.show_reasoning;
         to.expand_tools = self.expand_tools;
+        to.still = self.still;
         to.verbosity = self.verbosity;
         to.grouping = self.grouping;
         to.tps = self.tps;
@@ -933,8 +957,122 @@ impl App {
     }
 
     /// Replace the transcript (a session loaded or cleared).
+    /// Groups opened by hand stay so (their keys are call ids, the same
+    /// when the session is read again), and the transcript cursor stays on
+    /// its group while it is still there.
     pub fn set_entries(&mut self, entries: Vec<Entry>) {
         self.entries = entries;
+        if let Some(k) = &self.tool_cursor {
+            if !super::view::tool_groups(self).iter().any(|g| &g.key == k) {
+                self.tool_cursor = None;
+            }
+        }
+    }
+
+    /// The glyphs' step on the forge's clock: one every
+    /// [`FORGE_FRAME`](super::view::FORGE_FRAME) of the turn, or the first
+    /// always with `tui.animations: false`. A tool group is live only
+    /// while a turn runs, when the event loop ticks at that rate.
+    pub fn frame(&self) -> u64 {
+        if self.still {
+            return 0;
+        }
+        let e = self.busy_since.map(|t| t.elapsed()).unwrap_or_default();
+        (e.as_millis() / super::view::FORGE_FRAME.as_millis()) as u64
+    }
+
+    /// Whether the event loop ticks for the animations: while a turn runs
+    /// (the input's ember, and every live tool group's glyph).
+    pub fn animating(&self) -> bool {
+        self.busy
+    }
+
+    /// Whether the tool group `key` is open.
+    pub fn group_open(&self, key: &str) -> bool {
+        self.groups_open
+            .get(key)
+            .copied()
+            .unwrap_or(self.expand_tools)
+    }
+
+    /// Open or close every tool group, and all tool output (Ctrl+O).
+    fn toggle_all_tools(&mut self) {
+        self.expand_tools = !self.expand_tools;
+        self.groups_open.clear();
+    }
+
+    /// Scroll so the selected tool group's line (and as much of it as fits
+    /// when open) is in view.
+    pub(super) fn follow_cursor(&mut self) {
+        let Some(key) = self.tool_cursor.clone() else {
+            return;
+        };
+        let (w, h) = self.view_size.get();
+        let h = h as usize;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let (rows, total) = super::view::group_rows(self, w);
+        let Some(&(_, y, height)) = rows.iter().find(|r| r.0 == key) else {
+            return;
+        };
+        self.end_navigation();
+        let scroll = self.scroll.min(total.saturating_sub(h));
+        let top = total.saturating_sub(h + scroll);
+        let bottom = total - scroll;
+        let end = y + height.clamp(1, h);
+        self.scroll = if y < top {
+            total.saturating_sub(h + y)
+        } else if end > bottom {
+            total - end
+        } else {
+            scroll
+        };
+    }
+
+    /// Move the transcript cursor `by` groups, stopping at the ends.
+    fn move_cursor(&mut self, by: i64) {
+        let groups = super::view::tool_groups(self);
+        let Some(at) = groups
+            .iter()
+            .position(|g| Some(&g.key) == self.tool_cursor.as_ref())
+        else {
+            self.tool_cursor = None;
+            return;
+        };
+        let to = (at as i64 + by).clamp(0, groups.len() as i64 - 1) as usize;
+        self.tool_cursor = Some(groups[to].key.clone());
+        self.follow_cursor();
+    }
+
+    /// A key while the transcript cursor is active: its own keys, or `None`
+    /// once it has left the cursor for the key to do what it does.
+    fn cursor_key(&mut self, k: &KeyEvent) -> Option<Option<Action>> {
+        let stroke = keymap::stroke(k)?;
+        let ids = self
+            .keymap
+            .lookup(scope::TRANSCRIPT, std::slice::from_ref(&stroke))
+            .exact;
+        let key = self.tool_cursor.clone()?;
+        if let Some(id) = ids.first() {
+            match *id {
+                "session.tool.previous" => self.move_cursor(-1),
+                "session.tool.next" => self.move_cursor(1),
+                "session.tool.open" | "session.tool.close" => {
+                    self.groups_open.insert(key, *id == "session.tool.open");
+                    self.follow_cursor();
+                }
+                "session.tool.exit" => self.tool_cursor = None,
+                "session.toggle.tool_output" => {
+                    self.toggle_all_tools();
+                    self.follow_cursor();
+                }
+                other => return self.run(other, false),
+            }
+            return Some(None);
+        }
+        self.tool_cursor = None;
+        None
     }
 
     pub fn error(&mut self, s: impl Into<String>) {
@@ -1799,7 +1937,14 @@ impl App {
                 return Some(None);
             }
             "session.toggle.tool_output" => {
-                self.expand_tools = !self.expand_tools;
+                self.toggle_all_tools();
+                return Some(None);
+            }
+            "session.tool.select" => {
+                let last = super::view::tool_groups(self).pop()?;
+                self.popup = None;
+                self.tool_cursor = Some(last.key);
+                self.follow_cursor();
                 return Some(None);
             }
             "session.toggle.exploration_grouping" => {
@@ -1966,6 +2111,11 @@ impl App {
         }
         if diff {
             return self.diff_key(k);
+        }
+        if self.tool_cursor.is_some() && self.pending.is_empty() {
+            if let Some(out) = self.cursor_key(&k) {
+                return out;
+            }
         }
         let stroke = keymap::stroke(&k)?;
         if self

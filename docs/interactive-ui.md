@@ -30,19 +30,19 @@ See [CLI](cli.md#codesmith) for every flag.
   shows its latest 20 calls and the text it wrote last. A permission prompt
   from a subagent says which one asks (`asked by the general subagent ·
   <description>`).
-- **Groups.** Tool calls and thoughts are grouped as OpenCode groups them,
-  by the [verbosity](#verbosity) level. At `low`, the default, each run of
-  tool calls and thoughts between two replies is one row that sums it up
-  (`+ 3 commands, 1 edit, 2 thoughts, 4 reads, 1 tool`, or `+ Running
-  command…` until something finished). At `medium` and `high`, calls stand
+- **Groups.** Tool calls and thoughts are grouped by the
+  [verbosity](#verbosity) level. At `low`, the default, each run of tool
+  calls between two replies is a [tool group](#tool-groups): one line that
+  says what the calls did (`▞ Ran 2 commands, read a file, edited 3 files
+  ›`), with a glyph that moves while they run. A run of thoughts with no
+  call in it is one row that counts them (`+ 2 thoughts`). At `medium` and `high`, calls stand
   alone except adjacent reads and searches (`→ Explored: 2 reads, 1
   search`, `✱ Exploring` while they run), which `high` shows open. While
   reasoning is hidden, adjacent thoughts are one row (`+ Thought: <title>
   · 2 steps`, `Thinking` while they stream). A running command's latest
   output and a running subagent's row stay in view below their collapsed
-  group, then fold into its summary. **ctrl+o** opens every group (and
-  shows tool output in full), and closes them again. Questions are never
-  grouped.
+  group, then fold into it. **ctrl+o** opens every group (and shows tool
+  output in full), and closes them again. Questions are never grouped.
 - **Turn footers.** After each turn, OpenCode's footer: the agent, the
   model, how long the turn took and its throughput (`Build · openai/gpt-5
   · 12.3s · 48.2 tok/s`). The throughput counts output and reasoning
@@ -135,6 +135,7 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **ctrl+c** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
 | **ctrl+d** on an empty prompt, **ctrl+x q** | Quit. |
 | **ctrl+o** | Expand or collapse all tool output, subagent activity and [groups](#verbosity) (CodeSmith's). |
+| **ctrl+x ↑** | Select the latest [tool group](#tool-groups), to open or close it from the keyboard (CodeSmith's). |
 | **ctrl+t** | Next model [variant](configuration.md#provider-options-and-variants) (as `/variant`). |
 | **pgup/pgdn**, **ctrl+alt+b/f** | Scroll the transcript a page. |
 | **ctrl+alt+u/d**, **ctrl+alt+y/e** | Scroll half a page, or a line. |
@@ -146,7 +147,7 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **alt+↓** / **alt+↑**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). |
 | **alt+shift+↓** / **alt+shift+↑** | Next or previous tab that is unread or waiting for you. |
 | **ctrl+shift+t**, **ctrl+x shift+t** | Reopen the last closed tab (the second is CodeSmith's: most terminals send ctrl+shift+t as ctrl+t). |
-| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), CodeSmith's **o** [open menu](#projects-worktrees-and-other-folders), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
+| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), CodeSmith's **o** [open menu](#projects-worktrees-and-other-folders), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background, **↑** select a [tool group](#tool-groups) and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
 
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
 `/thinking` shows or hides it. Nor have the verbosity and grouping
@@ -206,7 +207,8 @@ The commands CodeSmith runs, by where they apply:
   `.10`, `session.tab.move.left/right` (CodeSmith's),
   `session.undo`, `session.redo`, `help.show`, `theme.switch`,
   `theme.switch_mode`, `theme.mode.lock`, `session.toggle.thinking`,
-  `session.toggle.tool_output` (CodeSmith's), `session.verbosity.cycle`,
+  `session.toggle.tool_output` and `session.tool.select` (CodeSmith's),
+  `session.verbosity.cycle`,
   `session.toggle.exploration_grouping`, `session.page.up/down`,
   `session.half.page.up/down`, `session.line.up/down`, `session.first`,
   `session.last`, `session.message.next/previous`,
@@ -220,6 +222,10 @@ The commands CodeSmith runs, by where they apply:
 - **Subagent and shell panel:** `composer.subagent.up/down/select/interrupt`,
   `composer.shell.up/down/select/kill`, and `dialog.mcp.toggle` in the MCP
   servers dialog.
+- **Tool groups** (CodeSmith's, once `session.tool.select` selected one):
+  `session.tool.previous/next`, `session.tool.open/close`,
+  `session.tool.exit`, `session.toggle.tool_output`, and the scrolling
+  commands (`session.page.up/down` and the rest).
 - **Questions:** `dialog.prompt.submit`.
 - **Permission dialog:** `permission.allow.once` (**y**),
   `permission.allow.always` (**a**), `permission.reject` (**n**), CodeSmith's.
@@ -247,28 +253,106 @@ and cycled with `/verbosity` (or `session.verbosity.cycle` when bound):
 
 | Level | Thoughts (reasoning hidden) | Thoughts (shown) | Reads and searches | Other calls, output and diffs |
 |---|---|---|---|---|
-| `low` (default) | counted in the run's summary row | counted in the summary row | counted in the summary row | counted in the summary row |
+| `low` (default) | in the run's [tool group](#tool-groups) | in the tool group | in the tool group | in the tool group, which says what they did |
 | `medium` | one `Thought` row per run | in full | one `Explored` row per run | each on its own row, output and diffs collapsed |
 | `high` | one `Thought` row per run | in full | an `Explored` row, open | each on its own row, output and diffs collapsed |
 
-The summary counts finished work by kind: commands, edits (`edit`,
-`write`, `patch`), thoughts, reads, other tools (searches, fetches,
-subagents, …) and instruction files; failed calls count, running ones do
-not. A Code Mode `execute` call counts the calls its program finished
-(`+ 2 reads, 1 tool`) rather than itself, and itself as one tool when its
-program called none (or, in a continued session, whose calls were not
-stored).
+A tool group's line counts its calls by kind (see [tool
+groups](#tool-groups)). A Code Mode `execute` call is counted by the calls
+its program made (`Read 2 files, called custom.lookup`) rather than itself,
+and as itself (`called execute`) when its program called none (or, in a
+continued session, whose calls were not stored). A run of thoughts with
+no call in it is a summary row that counts thoughts and instruction files
+(`+ 2 thoughts, 1 instruction`).
 
 When a read brings in the `AGENTS.md` (or `CLAUDE.md`) files of the
 folders above it, the load is a row of its own: adjacent loads are one
-`◈ Instructions: 2 files` row (inside the run's summary at `low`, where
-they count as `2 instructions`, and open at `high`), with each file below
+`◈ Instructions: 2 files` row (inside the run's tool group at `low`, and
+open at `high`), with each file below
 it (`↳ Loaded src/AGENTS.md`) when opened. **ctrl+o** opens
 every group at any level and shows output and diffs in full.
 `session.grouping` set to `none` (or `session.toggle.exploration_grouping`)
 draws reads and searches one by one at `medium` and `high`. The level and
 grouping changed in the UI last for the run; the config sets them for the
 next one. A continued session's transcript is grouped the same way.
+
+## Tool groups
+
+At the default verbosity (`low`), a run of tool calls with no text from
+the model between them is one line, collapsed:
+
+```text
+▞ Ran 2 commands ›
+⠶ Read a file, ran a search ›
+⡴ Edited 2 files, fetched a page, ran a subagent, called github_create_issue · 1 failed +16 −4 ›
+```
+
+- **The wording** counts the calls by kind, in the order the kinds first
+  came: commands (`shell`), files read (`read`), searches (`grep`, `glob`,
+  `list`), files edited (`edit`, `write`, `patch`), pages fetched
+  (`webfetch`, `websearch`) and subagents. Any other tool, such as an MCP
+  server's or a plugin's, is named: `called github_create_issue` (`twice`,
+  `3 times`). While the group runs, it reads in the present tense and
+  grows as calls arrive: `Running a command, reading a file…`.
+- **Never hidden by collapsing:** how many calls failed (`· 1 failed`, in
+  the error colour); the lines the group's edits added and removed (`+16
+  −4`); and while a permission request or a question waits on you, the
+  line says so (`Waiting for permission: $ rm x`) until it is answered.
+- **Open** (`⌄` in place of `›`), a group shows each call's row as the
+  other levels draw them, with its output and diff; a running call is led
+  by its glyph, a finished one by `✓` or `✗`. A running command's latest
+  output and a running subagent's row stay in view below a collapsed group.
+
+### Glyphs
+
+Each group's line starts with a one-column glyph: while the group runs,
+the glyph of the call running now, moving on the same 120 ms clock as the
+input box's ember and glowing through the forge's heat colours (cherry
+red, orange, amber; a light theme stops at deep amber). Once it is done,
+the group settles on its last call's resting glyph, in the success colour
+when every call succeeded and in the error colour when any failed.
+
+| Kind | Tools | While it runs | Settled |
+|---|---|---|---|
+| Looking | `read`, `grep`, `glob`, `list` | `⡀ ⠄ ⠂ ⠁ ⠈ ⠐ ⠠ ⢀`, a dot sweeping around the cell | `⠶` |
+| Shaping | `edit`, `write`, `patch` | `▁ ▂ ▃ ▅ ▇ █ ✶ ▂`, a hammer striking, the spark in the hottest colour | `▆` |
+| Commands | `shell` | `▖ ▘ ▝ ▗`, a turning block | `▞` |
+| Web | `webfetch`, `websearch` | `◜ ◝ ◞ ◟`, an orbit | `◯` |
+| Subagents | `subagent` | `⣾ ⣽ ⣻ ⢿ ⡿ ⣟ ⣯ ⣷`, in the agent colour | `⣿` |
+| Any other | MCP, plugin and other tools | a braille sprite made from the tool's name | the sprite at rest |
+
+A generated sprite takes 2 to 4 of the braille cell's 8 dots and a
+direction from a hash of the tool's full name, and steps them around the
+cell; at rest it adds the two centre dots. The same name always gives the
+same sprite. Every glyph is one terminal column, with no emoji, so a line
+never shifts as it moves. Under `NO_COLOR` glyphs still move, in the muted
+colour; [`tui.animations: false`](configuration.md#the-terminal-ui-tui)
+keeps every glyph on its first frame.
+
+### Opening groups from the keyboard
+
+CodeSmith never takes the mouse, so groups open from the keyboard:
+
+| Key | Action |
+|---|---|
+| **ctrl+o** | Open or close every group at once (and all tool output). |
+| **ctrl+x ↑** | Select the latest group (`session.tool.select`: the leader key, then ↑). |
+| **↑** / **↓** | With a group selected, the one before or after it; the transcript scrolls to follow. |
+| **enter**, **space**, **→** | Open the selected group. |
+| **←** | Close it. |
+| **esc**, or typing | Back to the prompt (esc does not interrupt the turn here); a typed key goes into the prompt. |
+
+The selected group is marked with a bar in the primary colour left of its
+line, and the status line shows these keys under `TRANSCRIPT`. Any other
+key leaves the selection and does what it does in the prompt; the
+scrolling keys scroll without leaving it. **↑** in an empty prompt still
+steps through the prompt history. Each key is a command
+(`session.tool.previous`, `.next`, `.open`, `.close`, `.exit`) that
+[`tui.keybinds`](#key-bindings) can rebind.
+
+Groups are only how the terminal UI draws calls: `codesmith run`, the
+[ACP](editors-acp.md) and [local server](local-server.md) clients and
+[exports](sessions.md) keep one entry per call.
 
 ## The diff viewer and review panel
 

@@ -2088,6 +2088,7 @@ theme):
     "keybinds": { "leader": "ctrl+o", "session.list": "ctrl+l", "help.show": "f1" },
     "leader": { "timeout": 1500 },
     "cursor": { "style": "line", "blinking": false },
+    "animations": true,
     "session": { "thinking": "show", "markdown": "rendered", "verbosity": "medium", "grouping": "auto" },
     "diffs": { "source": "working", "view": "auto", "tree": true, "single": false, "fullscreen": false }
   }
@@ -2104,7 +2105,8 @@ theme):
 | `cursor.blinking` | `true` | Whether the cursor blinks. |
 | `session.thinking` | `hide` | `show` shows reasoning from the start (`/thinking` toggles it). |
 | `session.markdown` | `rendered` | Reasoning as rendered Markdown, or `source` for its highlighted Markdown text. |
-| `session.verbosity` | `low` | How much tool activity the transcript shows: `low` sums up each run of tool calls and thoughts on one row, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
+| `session.verbosity` | `low` | How much tool activity the transcript shows: `low` draws each run of tool calls as one [tool group](interactive-ui.md#tool-groups) line, `medium` shows calls on their own rows with reads and searches grouped, `high` also opens those groups. See [verbosity](interactive-ui.md#verbosity). |
+| `animations` | `true` | `false` keeps every [tool group glyph](interactive-ui.md#glyphs) on its first frame, for less motion. The input box's busy ember is not affected. |
 | `prompt.paste` | `compact` | `full` pastes long text in whole rather than as a `[Pasted ~N lines]` chip. |
 | `session.tps` | `true` | Show a turn's throughput (output tokens a second) in its footer. |
 | `session.new_location` | `launch` | Where `/new` starts a session after the [open menu](interactive-ui.md#projects-worktrees-and-other-folders) moved the UI to another folder: `launch`, the folder CodeSmith was started in, or `inherit`, the folder it is in now. |

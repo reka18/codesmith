@@ -776,6 +776,32 @@ pub const DEFINITIONS: &[Def] = &[
         "Expand or collapse tool output",
     ),
     d(
+        "session.tool.select",
+        "<leader>up",
+        "Select the latest tool group",
+    ),
+    d(
+        "session.tool.previous",
+        "up",
+        "Select the tool group before",
+    ),
+    d("session.tool.next", "down", "Select the tool group after"),
+    d(
+        "session.tool.open",
+        "return,space,right",
+        "Open the selected tool group",
+    ),
+    d(
+        "session.tool.close",
+        "left",
+        "Close the selected tool group",
+    ),
+    d(
+        "session.tool.exit",
+        "escape",
+        "Leave the tool groups for the input",
+    ),
+    d(
         "permission.allow.once",
         "y",
         "Allow a permission request once",
@@ -795,7 +821,8 @@ pub const DEFINITIONS: &[Def] = &[
 /// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T). Ctrl+O stays the
 /// tool output key, so the open menu is Ctrl+X o; and since those terminals
 /// send Ctrl+M as Enter, the worktrees dialog also moves the session with
-/// Ctrl+G.
+/// Ctrl+G. Closing the terminal pane has no key, since CodeSmith has no
+/// terminal pane and Ctrl+X ↑ selects a tool group.
 pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
     ("agent.cycle", "tab"),
@@ -806,6 +833,7 @@ pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("dialog.select.next", "down,ctrl+n,tab"),
     ("open.menu", "<leader>o"),
     ("dialog.move_session.move", "ctrl+m,ctrl+g"),
+    ("terminal.close", "none"),
 ];
 
 /// OpenCode's first-format names (`CommandMap`).
@@ -1598,6 +1626,7 @@ pub mod scope {
         "theme.mode.lock",
         "session.toggle.thinking",
         "session.toggle.tool_output",
+        "session.tool.select",
         "session.toggle.exploration_grouping",
         "session.verbosity.cycle",
         "session.page.up",
@@ -1650,6 +1679,24 @@ pub mod scope {
         "model.dialog.favorite",
     ];
     pub const QUESTION: &[&str] = &["dialog.prompt.submit"];
+    /// The transcript cursor on a tool group (`session.tool.select`): any
+    /// other key leaves it and does what it does in the prompt.
+    pub const TRANSCRIPT: &[&str] = &[
+        "session.tool.previous",
+        "session.tool.next",
+        "session.tool.open",
+        "session.tool.close",
+        "session.tool.exit",
+        "session.toggle.tool_output",
+        "session.page.up",
+        "session.page.down",
+        "session.half.page.up",
+        "session.half.page.down",
+        "session.line.up",
+        "session.line.down",
+        "session.first",
+        "session.last",
+    ];
     pub const PERMISSION: &[&str] = &[
         "permission.allow.once",
         "permission.allow.always",
@@ -1687,6 +1734,7 @@ pub mod scope {
         DIFF,
         PICKER,
         QUESTION,
+        TRANSCRIPT,
         PERMISSION,
         PANEL,
         WORKTREES,
