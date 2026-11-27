@@ -3,7 +3,17 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.7.0 — 2026-11-27
+
+**Upgrading:** this release changes where per-project settings live. A
+repository's own `codesmith.json` and `.codesmith/` config (agents, modes,
+themes) are no longer read, and `codesmith trust` is gone. Put a
+repository's settings in `~/.config/codesmith/projects/<name>.jsonc` with
+a `"path"` naming its folder (see `docs/configuration.md`). Saved "always"
+approvals are now kept per folder, so a second clone or a worktree starts
+without them. Shell commands that reach a folder outside the project, or
+write files there by name, now ask, and are refused in headless runs with
+no one to ask.
 
 - **A repository's config is no longer read.** CodeSmith ignores a
   repository's `codesmith.json[c]` and `.codesmith/codesmith.json[c]`
