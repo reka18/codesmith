@@ -481,6 +481,7 @@ async fn oc_blob_stores_media_refs_at_admission_when_config_enables_media_blob()
             config,
             files: vec![],
             root: dir.path().to_path_buf(),
+            ..Default::default()
         };
         let mut s = Session::new(
             &loaded,

@@ -117,20 +117,14 @@ pub fn parse(source: &Value, name: &str) -> Result<Value, String> {
 }
 
 /// The folders whose `themes/*.json` are read, lowest precedence first: the
-/// global config folder, then each `.codesmith` folder from the project
-/// root down to `cwd` (OpenCode's `configDirectories`, which walks from the
-/// filesystem root; CodeSmith's config stops at the project root).
-pub fn theme_dirs(global: &Path, cwd: &Path, root: &Path) -> Vec<PathBuf> {
+/// global config folder, then the matching per-repo folders
+/// (`projects/<name>/`) in the order they apply. A repository's own
+/// `.codesmith/themes/` is never read: a repository is someone else's input.
+pub fn theme_dirs(global: &Path, repo: &[PathBuf]) -> Vec<PathBuf> {
     let mut dirs = vec![global.to_path_buf()];
-    let mut project: Vec<PathBuf> = cwd
-        .ancestors()
-        .take_while(|d| d.starts_with(root))
-        .map(|d| d.join(".codesmith"))
-        .collect();
-    project.reverse();
-    for d in project {
-        if !dirs.contains(&d) {
-            dirs.push(d);
+    for d in repo {
+        if !dirs.contains(d) {
+            dirs.push(d.clone());
         }
     }
     dirs

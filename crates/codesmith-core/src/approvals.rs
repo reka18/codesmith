@@ -76,17 +76,18 @@ impl std::fmt::Debug for Book {
     }
 }
 
-/// The key approvals are saved under: the project's id for a Git or
-/// Mercurial project (shared by its clones and worktrees, as OpenCode's
-/// are), else the directory itself (OpenCode shares one "global" project
-/// between every directory outside version control).
+/// The key approvals are saved under: `dir:` and the project root's real
+/// path (symlinks resolved, as per-repo config matching resolves it). Only
+/// the folder decides: nothing read from the repository (its commits,
+/// remotes or `.git` file) does, since a fork or a crafted repository can
+/// copy any of those. So a second clone or a worktree of a repository
+/// starts with no approvals, and a symlink to the folder shares them.
+///
+/// Approvals saved before under a repository's first commit are left in
+/// the database unread: no key is ever a bare commit id again.
 pub fn project_key(root: &Path) -> String {
-    let p = crate::vcs::resolve(root);
-    if p.vcs.is_some() && p.id != crate::vcs::GLOBAL {
-        p.id
-    } else {
-        format!("dir:{}", p.directory.display())
-    }
+    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    format!("dir:{}", real.display())
 }
 
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Saved> {

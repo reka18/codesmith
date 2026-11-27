@@ -9,7 +9,6 @@ Every command accepts `-h`/`--help`. `codesmith --version` prints the version.
 | [`generate`](#codesmith-generate) | One model call outside any session's history: text or an image. |
 | [`session`](#codesmith-session) | List, archive, export, import, delete, fork, undo, redo, diff sessions; migrate their media. |
 | [`permissions`](#codesmith-permissions) | List, edit or remove saved approvals. |
-| [`trust`](#codesmith-trust) | Trust a project's config, or list and revoke the answers. |
 | [`models`](#codesmith-models) | List providers and models. |
 | [`auth`](#codesmith-auth) | Sign in to providers (keys, browser and device logins), list or remove logins; sign in for another home or into a key file. |
 | [`commands`](#codesmith-commands) | List commands. |
@@ -59,7 +58,8 @@ bridge that sets its own `HOME` and starts in yours is still refused.
 
 `--any-folder` (or `CODESMITH_ANY_FOLDER=1`) skips the question and the
 refusal. `"repo_warning": false` in your own config turns off the warning
-for other folders; a folder's own `codesmith.json` can't. Your answers are
+for other folders; config is never read from the folder itself, so a folder
+can't. Your answers are
 in `folders.json` in the state folder.
 
 ## `codesmith run`
@@ -170,22 +170,6 @@ codesmith permissions remove ID [ID...]
 What "always" answers saved for the project (see
 [saved approvals](permissions.md#saved-approvals)). An edit or removal
 applies to running sessions at their next request.
-
-## `codesmith trust`
-
-```sh
-codesmith trust [DIR]                 # show what DIR's config asks for, and trust it
-codesmith trust --distrust [DIR]      # remember not to trust it
-codesmith trust --show [DIR] [--json] # what it asks for and the answer kept
-codesmith trust --list [--json]       # every answer kept
-codesmith trust --revoke [DIR | ID]   # forget an answer
-```
-
-DIR defaults to the current folder. The interactive UI and commands run at
-a terminal ask on their own the first time a project's config needs an
-answer; this answers ahead, for scripts, CI, `acp`, `serve` and
-automations, which never ask. See
-[trusting a project's config](configuration.md#trusting-a-projects-config).
 
 ## `codesmith models`
 
@@ -385,7 +369,7 @@ The [local bus](bus.md) between sessions on this machine.
 | Command | Shows |
 |---|---|
 | `debug paths` | The config, data, tool-output, scratch and cache folders. |
-| `debug config` | The merged config and the files it came from. |
+| `debug config` | The merged config, the files it came from (per-repo files marked with the `path` that matched), and warnings such as equally specific per-repo files. |
 | `debug agents` | Every agent, its tools and its final permission rules. |
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
 | `debug model [provider/model[#variant]]` | What a model resolves to: provider, URL, protocol, limits, extra body, provider options (JSON), the selected variant, and every variant with its options. |

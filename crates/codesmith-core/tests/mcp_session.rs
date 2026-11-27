@@ -102,6 +102,7 @@ async fn mcp_in_a_session() {
         config,
         files: vec![],
         root: dir.path().to_path_buf(),
+        ..Default::default()
     };
     let mcp: Arc<Mcp> = Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     let db = dir.path().join("s.db");
@@ -217,6 +218,7 @@ async fn a_deny_on_a_shared_name_still_denies_the_renamed_tools() {
         config,
         files: vec![],
         root: dir.path().to_path_buf(),
+        ..Default::default()
     };
     let mcp: Arc<Mcp> = Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     let echoes: Vec<String> = mcp
@@ -318,6 +320,7 @@ async fn a_deny_on_a_long_name_still_denies_the_cut_tool() {
         config,
         files: vec![],
         root: dir.path().to_path_buf(),
+        ..Default::default()
     };
     let mcp: Arc<Mcp> = Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     let echo = mcp

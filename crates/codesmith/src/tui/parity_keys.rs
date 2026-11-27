@@ -472,7 +472,7 @@ fn oc_merges_inline_cli_config_content_over_the_global_config() {
         file: None,
         content: Some(json!({ "tui": { "keybinds": { "help.show": false } } }).to_string()),
         project: false,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     };
     let loaded = config::load_from(tmp.path(), &sources).unwrap();
     assert_eq!(

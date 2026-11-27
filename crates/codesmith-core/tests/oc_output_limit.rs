@@ -34,6 +34,7 @@ async fn bodies(provider: &str) -> Vec<Value> {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let db = project.path().join("s.db");
     let mut s = Session::new(

@@ -317,6 +317,7 @@ async fn oc_session_reports_a_refused_connection_in_its_own_words() {
         config: config("http://127.0.0.1:9/v1", json!({})),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,

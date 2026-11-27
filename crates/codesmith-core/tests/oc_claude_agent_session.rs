@@ -69,6 +69,7 @@ fn loaded(dir: &std::path::Path, extra: Value) -> Loaded {
         config,
         files: vec![],
         root: dir.to_path_buf(),
+        ..Default::default()
     }
 }
 

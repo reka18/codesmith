@@ -120,6 +120,7 @@ fn session(dir: &std::path::Path, base: &str, model: &str, extra: Value) -> Sess
         config: serde_json::from_value::<Config>(v).unwrap(),
         files: vec![],
         root: dir.to_path_buf(),
+        ..Default::default()
     };
     Session::new(
         &l,

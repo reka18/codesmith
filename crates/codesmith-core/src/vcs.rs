@@ -24,7 +24,9 @@ pub struct Project {
     pub vcs: Option<Kind>,
     /// Git: the first commit (see [`crate::worktree::project_id`]);
     /// Mercurial: the first root changeset; otherwise, or when the
-    /// metadata cannot be read, [`GLOBAL`].
+    /// metadata cannot be read, [`GLOBAL`]. It comes from the repository,
+    /// which anyone can copy, so it never decides permissions: saved
+    /// approvals are keyed by folder (see [`crate::approvals::project_key`]).
     pub id: String,
 }
 

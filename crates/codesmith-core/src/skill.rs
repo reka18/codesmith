@@ -190,11 +190,13 @@ pub fn roots(
         }
     }
     // The home folder's `.agents` and `.claude` are global however the
-    // walk reaches them.
+    // walk reaches them. `$CODESMITH_DISABLE_PROJECT_CONFIG` turns the
+    // repository's own skills off.
     let mut dirs: Vec<&Path> = cwd
         .ancestors()
         .take_while(|d| d.starts_with(root))
         .filter(|d| global || !crate::config::global_source(d, config_dir, home))
+        .filter(|_| !crate::config::project_disabled())
         .collect();
     dirs.reverse();
     for d in dirs {

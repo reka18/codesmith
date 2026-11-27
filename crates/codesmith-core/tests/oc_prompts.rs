@@ -129,6 +129,7 @@ fn session(config: serde_json::Value, agent: Option<&str>) -> Session {
         config: serde_json::from_value(v).unwrap(),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: agent.map(String::from),
