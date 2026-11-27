@@ -305,6 +305,7 @@ impl T {
             ),
             files: vec![],
             root: self.dir.path().canonicalize().unwrap(),
+            ..Default::default()
         }
     }
     /// The stored session, opened again (as after a restart), against the
@@ -393,6 +394,7 @@ pub async fn start(setup: Setup) -> T {
         ),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let data = tempfile::tempdir().unwrap();
     let store = setup

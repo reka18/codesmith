@@ -363,8 +363,11 @@ shows that one, and the pinned mode comes back with the next theme that
 has it.
 
 Your own themes go in `themes/<name>.json` in the global config folder
-(`~/.config/codesmith/themes/`) or a project's `.codesmith/themes/`;
-a project's override the global ones and the built-ins of the same name.
+(`~/.config/codesmith/themes/`), or for one repository in its
+[per-repo folder](configuration.md#per-repo-config)
+(`~/.config/codesmith/projects/<name>/themes/`); a per-repo theme overrides
+the global ones and the built-ins of the same name. A repository's own
+`.codesmith/themes/` is not read.
 Both of OpenCode's theme formats load: the current one (a `base` of
 semantic tokens, and `light`/`dark` modes with their hue scales, see
 OpenCode's `opencode.json`) and the first one (`defs` and a flat `theme`

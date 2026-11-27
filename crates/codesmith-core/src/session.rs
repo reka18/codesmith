@@ -3363,7 +3363,11 @@ impl Session {
             Some((server, name)) => self.mcp.prompt_text(server, name, args).await,
             None => {
                 let text = crate::command::expand(&c.template, args);
-                crate::command::interpolate_shell(&text, &self.shell, &self.cwd).await
+                // A command file may come from the repository: what it runs
+                // asks permission as the `shell` tool would.
+                let ctx = self.attach_ctx();
+                let allow = |cmd: &str| crate::tool::shell::authorize(&ctx, cmd, &self.cwd);
+                crate::command::interpolate_shell(&text, &self.shell, &self.cwd, &allow).await
             }
         }
     }
@@ -4166,7 +4170,8 @@ impl Session {
         crate::media::attachment(&target, path, &self.loaded.config.media.image)
     }
 
-    /// The tool context an attachment's read is authorized in.
+    /// The tool context an attachment's read, and a command template's
+    /// shell, are authorized in.
     fn attach_ctx(&self) -> Ctx<'_> {
         Ctx {
             cwd: self.cwd.clone(),
@@ -5594,6 +5599,7 @@ mod tests {
             config,
             files: vec![],
             root: dir.path().to_path_buf(),
+            ..Default::default()
         };
         let mut s = Session::new(
             &loaded,

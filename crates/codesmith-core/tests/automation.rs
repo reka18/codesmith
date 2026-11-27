@@ -82,6 +82,7 @@ fn loader(base: String) -> au::Loader {
             config,
             files: vec![],
             root: dir.to_path_buf(),
+            ..Default::default()
         })
     })
 }
@@ -293,6 +294,7 @@ fn event_loader(base: String, py: &'static str) -> au::Loader {
             config,
             files: vec![],
             root: dir.to_path_buf(),
+            ..Default::default()
         })
     })
 }
@@ -470,6 +472,7 @@ fn open_loader(base: String, extra: Value) -> au::Loader {
             config,
             files: vec![],
             root: dir.to_path_buf(),
+            ..Default::default()
         })
     })
 }

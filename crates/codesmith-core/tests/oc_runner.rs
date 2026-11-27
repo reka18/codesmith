@@ -266,6 +266,7 @@ async fn start(setup: Setup) -> T {
         config: config_with(&base, setup.protocol, setup.models, setup.extra),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let data = tempfile::tempdir().unwrap();
     let store = setup
@@ -597,6 +598,7 @@ async fn oc_session_fails_before_the_model_request_when_the_agent_is_unavailable
         config: config(&base, json!({})),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: Some("missing".into()),

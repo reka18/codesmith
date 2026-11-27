@@ -898,7 +898,7 @@ async fn debug_model_shows_the_url_of_every_bifrost_surface() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_untrusted_projects_bifrost_routes_are_ignored_and_never_get_the_key() {
+async fn a_repositorys_bifrost_routes_are_never_read_and_never_get_the_key() {
     let g = start(vec![priced("openai/test-gpt-1")]).await;
     g.with(|s| s.quota = vec![budget(1.0, "r"), budget(1.5, "r")]);
     // Another gateway, answering everything, that the project points at.
@@ -952,12 +952,8 @@ async fn an_untrusted_projects_bifrost_routes_are_ignored_and_never_get_the_key(
         !paths.iter().any(|p| p.starts_with("/openai/")),
         "{paths:?}"
     );
-    let note = out
-        .stderr
-        .lines()
-        .find(|l| l.contains("not trusted"))
-        .unwrap_or_else(|| panic!("no notice:\n{}", out.both()));
-    assert!(note.contains("provider bifrost"), "{note}");
+    // The repository's config isn't read, so there is nothing to say.
+    assert!(!out.stderr.contains("trust"), "{}", out.both());
     assert!(!out.both().contains(KEY));
 }
 

@@ -17,23 +17,31 @@ fn config(v: Value) -> Config {
     serde_json::from_value(v).unwrap()
 }
 
-/// `first` as the global config and `second` as the project's, merged as
-/// CodeSmith loads them.
-fn layered(first: Value, second: Value) -> Config {
+/// `first` as the global config and `second` as the project's per-repo
+/// file, merged as CodeSmith loads them.
+fn layered(first: Value, mut second: Value) -> Config {
     scripted::isolate();
     let d = tempfile::tempdir().unwrap();
-    let global = d.path().join("global");
-    let project = d.path().join("project");
-    std::fs::create_dir_all(&global).unwrap();
-    std::fs::create_dir_all(&project).unwrap();
+    let base = d.path().canonicalize().unwrap();
+    let global = base.join("global");
+    let project = base.join("project");
+    std::fs::create_dir_all(global.join("projects")).unwrap();
+    std::fs::create_dir_all(project.join(".git")).unwrap();
     std::fs::write(global.join("codesmith.json"), first.to_string()).unwrap();
-    std::fs::write(project.join("codesmith.json"), second.to_string()).unwrap();
+    second["path"] = serde_json::json!(project);
+    let file = global.join("projects/project.json");
+    std::fs::write(&file, second.to_string()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
     let sources = Sources {
         global_dir: global,
         file: None,
         content: None,
         project: true,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     };
     load_from(&project, &sources).unwrap().config
 }

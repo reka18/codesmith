@@ -1063,6 +1063,10 @@ pub fn secret_guards_for(
         for name in crate::config::NAMES {
             rules.push(ask(&format!("{c}/{name}")));
         }
+        // Per-repo files can hold provider keys too.
+        for ext in ["json", "jsonc"] {
+            rules.push(ask(&format!("{c}/{}/*.{ext}", crate::per_repo::DIR)));
+        }
     }
     let mut out: Vec<Rule> = Vec::new();
     for r in rules {

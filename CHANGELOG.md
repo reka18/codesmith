@@ -5,6 +5,50 @@ All notable changes to CodeSmith are listed here. Versions follow
 
 ## Unreleased
 
+- **A repository's config is no longer read.** CodeSmith ignores a
+  repository's `codesmith.json[c]` and `.codesmith/codesmith.json[c]`
+  (at the root and in every folder down to where you start), and its
+  `.codesmith/agents/`, `.codesmith/modes/` and `.codesmith/themes/`. A
+  cloned repository can no longer add `allow` rules, agents, providers,
+  MCP servers, a shell, language servers or anything else: a repository
+  is someone else's input.
+- **Per-repo settings live in your own config folder.** Put them in
+  `~/.config/codesmith/projects/<name>.json[c]`, with the same keys as the
+  global config plus `"path"`: a folder, a glob or a list, `~` expanded,
+  matched against the project root after symlinks are resolved (never a
+  git remote). Every matching file applies after the global config and
+  before `$CODESMITH_CONFIG`, least specific first: an exact path beats a
+  glob, then the longer literal start wins, and equally specific files
+  apply in file-name order with a warning in `codesmith debug config`.
+  Agents, modes, commands and themes for that repository go in
+  `projects/<name>/`. A per-repo file or folder that others can write, or
+  that another user owns, is refused with an error naming it. `swap`,
+  `claude_agent`, `shell.env.pass` and `update` stay global-only.
+- **`codesmith trust` is gone**, with the trust prompt and its notice.
+  Nothing in a repository is settings any more, so there is nothing to
+  trust. An existing `trust.json` is left alone and no longer read.
+- **A repository still brings text, not settings.** Its `AGENTS.md`,
+  `CLAUDE.md`, skills and commands load as before. A command's `model` is
+  honoured, but its `agent` only when that agent is yours; otherwise it
+  runs on the session's agent with a one-line notice.
+- **A command's `` !`cmd` `` asks permission.** Each command a template
+  expands is checked against your rules as the `shell` tool's commands
+  are, and none run unless all are allowed. Before, they ran without a
+  check, so a repository's command file could run anything when invoked.
+- `$CODESMITH_DISABLE_PROJECT_CONFIG` now turns off the repository's
+  instructions files, skills and commands (skills and `.claude/commands/`
+  were read regardless before). Per-repo files keep loading.
+- A new worktree gets the repository's untracked `.codesmith/commands/`,
+  `.codesmith/skills/` and `.codesmith/review.json`, no longer an
+  untracked `codesmith.json`.
+- Reading a per-repo file asks, as reading the global `codesmith.json`
+  does: it can hold keys.
+- **Saved "always" approvals are kept per folder.** They're keyed by the
+  project root's real path, no longer by the repository's first commit,
+  which a fork or a crafted repository could share to inherit them. A
+  second clone or a worktree starts with none; a symlink to the folder
+  shares them. Approvals saved under a first commit stay in the database
+  but no longer apply.
 - **Security: shell commands that reach a folder outside the project now
   need `external_directory` approval, like `cd`.** Before, a command
   could point git, env, make or others at a folder outside the project,

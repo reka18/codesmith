@@ -16,11 +16,19 @@
 //! agent and model alone; `subagent: false` keeps it in the session.
 //!
 //! Command files are `commands/**/*.md` (and `command/`) in each config
-//! folder (the global one and each `.codesmith/`), read in config order with
-//! the config files, so a later definition, inline or file, replaces an
-//! earlier one whole. A nested file `commands/git/sync.md` is `/git/sync`.
-//! Claude Code's `~/.claude/commands` and `.claude/commands` are read too,
-//! below every config layer.
+//! folder (the global one, each matching per-repo folder, and each of the
+//! repository's `.codesmith/` folders), read in config order with the config
+//! files, so a later definition, inline or file, replaces an earlier one
+//! whole. A nested file `commands/git/sync.md` is `/git/sync`. Claude Code's
+//! `~/.claude/commands` and `.claude/commands` are read too, below every
+//! config layer. `$CODESMITH_DISABLE_PROJECT_CONFIG` turns the repository's
+//! command files off.
+//!
+//! A repository's command is text, not settings: its `model` is honoured,
+//! but its `agent` only when that agent is in your config (agents are never
+//! read from a repository). Otherwise it runs on the session's agent, with
+//! a one-line notice (see [`settle`]). Any `` !`cmd` `` it expands still
+//! asks permission like any shell command.
 //!
 //! Deliberate difference: a subagent command's child runs to completion
 //! before the command returns (OpenCode runs it in the background), and
@@ -63,6 +71,10 @@ pub struct Command {
     /// by name.
     #[serde(skip)]
     pub plugin: Option<String>,
+    /// The `agent` [`settle`] dropped because your config doesn't define
+    /// it: the command runs on the session's agent instead.
+    #[serde(skip)]
+    pub unknown_agent: Option<String>,
 }
 
 impl Command {
@@ -89,6 +101,32 @@ impl Command {
             return (None, None);
         }
         (self.agent.clone(), self.model.clone())
+    }
+}
+
+impl Command {
+    /// The one-line notice for a command whose `agent` [`settle`] dropped.
+    pub fn agent_notice(&self, name: &str) -> Option<String> {
+        self.unknown_agent.as_ref().map(|a| {
+            format!(
+                "/{name} asks for agent {a:?}, which isn't in your config; running it on this session's agent"
+            )
+        })
+    }
+}
+
+/// Drop each command's `agent` that `config` doesn't define, keeping its
+/// name in `unknown_agent` for [`Command::agent_notice`]. Agents are never
+/// read from a repository, so a repository's command can name only one of
+/// yours. Its `model` is kept: it can only pick a model your providers
+/// serve.
+pub fn settle(all: &mut BTreeMap<String, Command>, config: &crate::config::Config) {
+    for c in all.values_mut() {
+        if let Some(a) = &c.agent {
+            if crate::agent::resolve(config, a).is_none() {
+                c.unknown_agent = c.agent.take();
+            }
+        }
     }
 }
 
@@ -165,10 +203,13 @@ pub fn roots(cwd: &Path, root: &Path, config_dir: &Path, home: &Path) -> Vec<Pat
     if global {
         out.push(home.join(".claude/commands"));
     }
+    // `$CODESMITH_DISABLE_PROJECT_CONFIG` turns the repository's own
+    // command files off.
     let mut dirs: Vec<&Path> = cwd
         .ancestors()
         .take_while(|d| d.starts_with(root))
         .filter(|d| global || !crate::config::global_source(d, config_dir, home))
+        .filter(|_| !crate::config::project_disabled())
         .collect();
     dirs.reverse();
     for d in dirs {
@@ -197,6 +238,7 @@ pub fn parse_markdown(text: &str) -> Option<Command> {
         native: false,
         mcp: None,
         plugin: None,
+        unknown_agent: None,
     })
 }
 
@@ -361,17 +403,31 @@ pub fn expand(template: &str, args: &str) -> String {
         .to_string()
 }
 
+/// What [`interpolate_shell`] asks before it runs a command: `Ok` to run
+/// it, or why not.
+pub type Allow<'a> = &'a (dyn Fn(&str) -> Result<(), String> + Sync);
+
 /// Replace each `` !`cmd` `` in `text` with what `cmd` prints (stdout and
 /// stderr together), run with `shell` in `cwd` with no input, two at a
 /// time, as OpenCode's command templates do. Runs after argument
-/// expansion, so arguments can supply commands, as in OpenCode: a command
-/// is the user's own, and runs without a permission prompt. A command that
-/// cannot start fails the whole template.
-pub async fn interpolate_shell(text: &str, shell: &str, cwd: &Path) -> anyhow::Result<String> {
+/// expansion, so arguments can supply commands, as in OpenCode. Every
+/// command is put to `allow` first (a session asks permission as for the
+/// `shell` tool, since a command file may come from the repository), and
+/// nothing runs unless all are allowed. A command that cannot start fails
+/// the whole template.
+pub async fn interpolate_shell(
+    text: &str,
+    shell: &str,
+    cwd: &Path,
+    allow: Allow<'_>,
+) -> anyhow::Result<String> {
     let re = regex::Regex::new(r"!`([^`]+)`").unwrap();
     let sources: Vec<String> = re.captures_iter(text).map(|c| c[1].to_string()).collect();
     if sources.is_empty() {
         return Ok(text.to_string());
+    }
+    for s in &sources {
+        allow(s).map_err(|e| anyhow::anyhow!("not running {s:?} from the command: {e}"))?;
     }
     let run = |source: String| async move {
         let out = crate::child_env::scrubbed_tokio(shell)
@@ -612,6 +668,7 @@ mod tests {
                 native: false,
                 mcp: None,
                 plugin: None,
+                unknown_agent: None,
             }
         );
     }

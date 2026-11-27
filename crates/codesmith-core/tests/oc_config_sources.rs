@@ -28,7 +28,7 @@ fn sources(global: &Path) -> Sources {
         file: None,
         content: None,
         project: true,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     }
 }
 
@@ -122,14 +122,15 @@ fn oc_config_excludes_missing_files_under_symlinked_global_roots_when_global_is_
     std::os::unix::fs::symlink(&global, &link).unwrap();
     let project = link.join("plugins").join("demo");
     std::fs::create_dir(link.join(".git")).unwrap();
-    let layers = with_global_disabled(true, || config::layers(&project, &link, &sources(&global)));
+    let (layers, _) =
+        with_global_disabled(true, || config::layers(&project, &link, &sources(&global))).unwrap();
     assert!(!layers.is_empty());
     let global_level: Vec<&Layer> = layers
         .iter()
         .filter(|l| {
             let p = match l {
-                Layer::File(p) => p.parent().unwrap(),
-                Layer::Dir(p) => p.as_path(),
+                Layer::File(p) | Layer::Repo(p) => p.parent().unwrap(),
+                Layer::Dir(p) | Layer::Commands(p) => p.as_path(),
             };
             p == link || p == global
         })

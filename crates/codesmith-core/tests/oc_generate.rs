@@ -330,6 +330,7 @@ async fn harness(cut: usize, context: &str) -> H {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let db = outside.path().join("s.db");
     let mut s = Session::new(

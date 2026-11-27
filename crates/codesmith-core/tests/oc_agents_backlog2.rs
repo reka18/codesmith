@@ -132,7 +132,7 @@ fn oc_config_treats_unreadable_discovery_roots_as_absent() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&global).unwrap();
     std::fs::write(
-        project.join("codesmith.json"),
+        global.join("codesmith.json"),
         r#"{"small_model": "fake/project"}"#,
     )
     .unwrap();
@@ -145,7 +145,7 @@ fn oc_config_treats_unreadable_discovery_roots_as_absent() {
             file: None,
             content: None,
             project: true,
-            trust: codesmith_core::trust::Mode::All,
+            per_repo: true,
         },
     );
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();

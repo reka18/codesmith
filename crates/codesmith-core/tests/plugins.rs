@@ -180,6 +180,7 @@ fn loaded(dir: &std::path::Path, base: &str, extra: Value) -> Loaded {
         config,
         files: vec![],
         root: dir.to_path_buf(),
+        ..Default::default()
     }
 }
 

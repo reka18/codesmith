@@ -901,6 +901,9 @@ impl Runner {
             self.native(other, args);
             return Ok(());
         }
+        if let Some(n) = c.agent_notice(other) {
+            self.app.notice(n);
+        }
         let mut rebuild = false;
         // A subagent command runs in a child session and leaves this one's
         // agent and model alone.
@@ -2603,15 +2606,11 @@ async fn run_in(
     // Before the UI takes the terminal: a folder outside any repository
     // is asked about.
     crate::cli::folder_check(&cwd, opts.any_folder)?;
-    // Started again in another folder: its project may need an answer.
-    crate::cli::trust_prompt(&cwd)?;
     let loaded = config::load(&cwd)?;
-    let (tui, mut tui_warnings) = settings::load(&loaded.config.tui);
-    tui_warnings.extend(loaded.config.trust.notice());
+    let (tui, tui_warnings) = settings::load(&loaded.config.tui);
     let (custom, theme_errors) = theme::discover(&theme::theme_dirs(
         &codesmith_core::paths::config_dir(),
-        &cwd,
-        &loaded.root,
+        &loaded.repo_dirs(),
     ));
     let (remembered, remembered_mode) = theme::remembered(tui.theme.as_deref());
     let themes = theme::Themes::new(

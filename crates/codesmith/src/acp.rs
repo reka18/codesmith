@@ -2860,6 +2860,12 @@ impl Agent {
         };
         if let Some((name, args)) = command::find_invocation(text, &all) {
             if let Some(c) = all.get(&name) {
+                if let Some(n) = c.agent_notice(&name) {
+                    self.conn.update(
+                        &s.id,
+                        chunk("agent_thought_chunk", "notice", &format!("{n}\n")),
+                    );
+                }
                 if c.native {
                     let env = codesmith_core::review::Env::new(
                         &slot.loaded,
@@ -3651,6 +3657,7 @@ mod tests {
                 config: config.clone(),
                 files: vec![],
                 root: cwd.to_path_buf(),
+                ..Default::default()
             })
         });
         let db = dir.join("acp.db");
@@ -6767,6 +6774,7 @@ mod tests {
                 config: config::Config::default(),
                 files: vec![],
                 root: cwd.to_path_buf(),
+                ..Default::default()
             })
         });
         let served = tokio::spawn(serve(

@@ -248,8 +248,15 @@ like `swift-otter`. As in OpenCode, the name needs the `=`: in
   them there by name.
 - They start detached at `HEAD`, and the session opens in the same subfolder
   you started from.
-- CodeSmith config that git doesn't track (an uncommitted `codesmith.json`, a
-  `.codesmith/` folder) is copied in.
+- The CodeSmith files that git doesn't track and that CodeSmith still reads
+  from a repository (uncommitted `.codesmith/commands/` and
+  `.codesmith/skills/`, and `.codesmith/review.json`) are copied in. A
+  repository's `codesmith.json` and other `.codesmith/` files are never read,
+  so they aren't copied.
+- A worktree is its own folder, so a [per-repo file](configuration.md#per-repo-config)
+  whose `path` names the main checkout doesn't match it. Add the worktree
+  folder, or a glob such as `~/.local/share/codesmith/worktree/**`, to its
+  `path`.
 - `worktree.start` runs a setup command in each new worktree, with
   `$CODESMITH_WORKTREE_BASE` and `$CODESMITH_WORKTREE_PATH` set.
 

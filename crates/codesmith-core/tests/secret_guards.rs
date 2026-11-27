@@ -56,6 +56,8 @@ fn secret_paths() -> Vec<String> {
         format!("{data}/mcp-auth.json"),
         format!("{conf}/codesmith.json"),
         format!("{conf}/codesmith.jsonc"),
+        format!("{conf}/projects/app.json"),
+        format!("{conf}/projects/app.jsonc"),
         format!("{h}/.minisign/codesmith.key"),
         format!("{h}/.minisign"),
         ".env".into(),

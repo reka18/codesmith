@@ -43,8 +43,9 @@
 //! - `catalog`: the models.dev catalog: listing, resolution, background
 //!   refresh.
 //! - `swap`: `codesmith models swap` and a provider's `swap` setting.
-//! - `trust`: project config trust: the prompt, `codesmith trust`, and an
-//!   untrusted project reaching no URL of its own (a loopback recorder).
+//! - `repo_config`: a repository's config is never read (in `run`, `serve`,
+//!   `acp`, automations and the UI, against a loopback recorder), per-repo
+//!   files apply, and `codesmith trust` is gone.
 //! - `folder`: starting outside a repository: the warning, the question
 //!   at a terminal, the refusal in the home folder or `/` without one.
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
@@ -66,10 +67,10 @@ mod mcp;
 mod oc_cli;
 mod outside;
 mod pty;
+mod repo_config;
 mod run_bridge;
 mod run_cli;
 mod serve;
 mod swap;
-mod trust;
 mod tui;
 mod worktree;

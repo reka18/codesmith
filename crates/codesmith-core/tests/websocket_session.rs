@@ -71,6 +71,7 @@ fn session(config: Config, root: &std::path::Path) -> Session {
         config,
         files: vec![],
         root: root.to_path_buf(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,

@@ -1979,6 +1979,7 @@ mod tests {
             config,
             files: vec![],
             root: dir.to_path_buf(),
+            ..Default::default()
         };
         let st = Server::new(
             loaded,

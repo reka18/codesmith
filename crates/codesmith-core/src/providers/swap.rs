@@ -12,9 +12,9 @@
 //!
 //! Rules:
 //! - Only the global config file (`<config dir>/codesmith.json[c]`) may set
-//!   `swap`: [`crate::config::load_from`] drops it from project files,
-//!   `.codesmith/`, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT`,
-//!   since it runs commands.
+//!   `swap`: [`crate::config::load_from`] drops it from per-repo files,
+//!   `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT`, since it runs
+//!   commands. (A repository's own config is never read at all.)
 //! - The argv runs as given, with no shell. `{model}` must be a whole argv
 //!   element, and is replaced by the model name as one element. The name
 //!   must be one `list` returned (or, without `list`, a configured model of

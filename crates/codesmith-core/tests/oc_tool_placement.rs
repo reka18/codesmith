@@ -188,6 +188,7 @@ async fn session(model_id: &str, extra: Value) -> Run {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,

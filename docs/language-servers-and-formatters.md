@@ -1,15 +1,13 @@
 # Language servers and formatters
 
-Both are **off by default**, as in OpenCode. Turn them on per project or
-globally. Nothing is ever downloaded: CodeSmith uses only the tools you have
+Both are **off by default**, as in OpenCode. Turn them on globally, or for
+one repository in its [per-repo file](configuration.md#per-repo-config). Nothing is ever downloaded: CodeSmith uses only the tools you have
 installed.
 
-Because a project's config can turn these on, and they run programs from the
-project (`node_modules/.bin`, for example), read a repository's config before
-you use CodeSmith in it. A project's own `command` (or environment) for a
-server or formatter waits until you
-[trust the project](configuration.md#trusting-a-projects-config); turning
-the built-ins on with `true` does not ask.
+Only your own config turns them on: a repository's `codesmith.json` is
+never read. They do run programs from the project (`node_modules/.bin`, for
+example), so turn them on only for repositories whose tools you'd run
+yourself.
 
 ## Formatters
 

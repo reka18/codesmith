@@ -5,7 +5,7 @@ a key from the environment, but most setups want at least a default `model`.
 This page covers where config lives, how files combine, and every key.
 
 - [Files and precedence](#files-and-precedence)
-- [Trusting a project's config](#trusting-a-projects-config)
+- [Per-repo config](#per-repo-config)
 - [Substitution: `{env:}` and `{file:}`](#substitution-env-and-file)
 - [Key reference](#key-reference)
 - [Providers and models](#providers-and-models)
@@ -28,19 +28,34 @@ and trailing commas. Files load in this order, and later files win:
 
 1. the global config, `~/.config/codesmith/codesmith.json[c]`
    (`$CODESMITH_CONFIG_DIR`, else `$XDG_CONFIG_HOME/codesmith`)
-2. the file named by `$CODESMITH_CONFIG`
-3. each folder's `codesmith.json[c]`, from the project root (the nearest
-   folder with `.git` or a Mercurial `.hg`, Git winning in a folder with
-   both) down to the working directory
-4. then each folder's `.codesmith/codesmith.json[c]`, in the same order
-5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
+2. the [per-repo files](#per-repo-config) in that folder's `projects/`
+   whose `path` matches the project, least specific first
+3. the file named by `$CODESMITH_CONFIG`
+4. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 
-Set `$CODESMITH_DISABLE_PROJECT_CONFIG` to skip steps 3 and 4, and
-`$CODESMITH_DISABLE_GLOBAL_CONFIG` to skip step 1 together with every
-other global source: the global folder's agents, commands, skills and
-`AGENTS.md`, and the home folder's `.claude` and `.agents` folders (and
-`AGENTS.md`), even when the project walk passes through the global or home
-folder, as OpenCode's `global: false` does. Steps 2 and 5 still load.
+CodeSmith never reads config from inside a repository. A repository is
+someone else's input, so its `codesmith.json[c]`,
+`.codesmith/codesmith.json[c]`, `.codesmith/agents/`, `.codesmith/modes/`
+and `.codesmith/themes/` are ignored, wherever they are between the project
+root and the working directory. Put settings for one repository in a
+[per-repo file](#per-repo-config) instead.
+
+What CodeSmith still reads from a repository is text the model sees, not
+settings: its instructions files (`AGENTS.md`, `CLAUDE.md`, …), its skills
+(`.codesmith/skills/`, `.agents/skills/`, `.claude/skills/`), its commands
+(`.codesmith/commands/`, `.claude/commands/`) and CodeSmith's own state
+files there, such as the `/calibrate` result in `.codesmith/review.json`.
+A repository's commands load between your global config and your per-repo
+files, so yours win a name they share.
+
+Set `$CODESMITH_DISABLE_PROJECT_CONFIG` to stop reading even those: the
+repository's instructions files, skills and commands. Per-repo files are
+your own config, so they still load. Set `$CODESMITH_DISABLE_GLOBAL_CONFIG`
+to skip steps 1 and 2 together with every other global source: the global
+folder's agents, commands, skills and `AGENTS.md`, and the home folder's
+`.claude` and `.agents` folders (and `AGENTS.md`), even when the project
+walk passes through the global or home folder, as OpenCode's
+`global: false` does. Steps 3 and 4 still load.
 
 Objects merge key by key. `permissions` and `instructions` are the exception:
 those lists are appended, so a later file's rules come after an earlier
@@ -49,104 +64,66 @@ are replaced. If a file does not parse, CodeSmith stops with an error that
 names the file. It does not skip the file, because skipping it could silently
 drop a `deny` rule.
 
-`codesmith debug config` prints the merged config and the files it came from.
+`codesmith debug config` prints the merged config, the files it came from
+(per-repo files marked, with the `path` that matched), and any warnings.
 
-Project config is not applied blindly: anything in it that could send
-your secrets somewhere or run programs waits until you trust the project.
-See [Trusting a project's config](#trusting-a-projects-config).
+Some settings are read only from the global `codesmith.json[c]`: a
+provider's [`swap`](#swapping-the-servers-model-swap) commands,
+[`claude_agent`](#claude-code-processes-claude_agent), `shell.env.pass` and
+`update`. Per-repo files, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT`
+cannot set them. `codesmith debug config` warns about any a per-repo file
+sets, and `codesmith models swap` names any swap it ignored.
 
-One setting is stricter still: a provider's [`swap`](#swapping-the-servers-model-swap)
-commands are read only from the global config file. Project files,
-`.codesmith/`, `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT` cannot
-set or change them; `codesmith models swap` names any it ignored.
+## Per-repo config
 
-## Trusting a project's config
+Settings for one repository go in CodeSmith's global folder, in
+`~/.config/codesmith/projects/*.json[c]` (under `$CODESMITH_CONFIG_DIR` or
+`$XDG_CONFIG_HOME/codesmith`, as the global config is). Each file has the
+same keys as the global config, plus `path`, the repositories it applies to:
 
-A repository's `codesmith.json[c]` or `.codesmith/codesmith.json[c]` can
-ask for things that reach beyond the repository: an `{env:}` or `{file:}`
-value, a provider URL or header, an MCP server, a program to run. Together
-they could send your `ANTHROPIC_API_KEY` or `~/.aws/credentials` to any URL
-the repository names. So the first time a project's config asks for any of
-these, CodeSmith asks you, once per project:
-
-```text
-This project's config (/home/me/src/app) wants to:
-  read environment variables: OPENAI_API_KEY
-  read files: ~/.config/app/token
-  send requests to: https://llm.internal.example/v1 (provider internal), https://mcp.example/mcp (MCP server docs)
-  set request headers: Authorization (MCP server docs)
-  run programs: npx docs-mcp (MCP server local-docs)
-  (from ./codesmith.json)
-
-Trusting lets it use these. Not trusting ignores them: {env:} and {file:} become empty,
-and your global config's providers, MCP servers and programs are used instead.
-[t] Trust   [n] Don't trust (default) >
+```jsonc
+// ~/.config/codesmith/projects/app.jsonc
+{
+  "path": "~/src/app",              // or a list: ["~/src/app", "~/work/app-*"]
+  "model": "anthropic/claude-sonnet-4-5",
+  "permissions": [{ "action": "shell", "resource": "make *", "effect": "allow" }],
+  "mcp": { "servers": { "docs": { "type": "remote", "url": "https://mcp.example/mcp" } } }
+}
 ```
 
-What asks:
+- **What `path` matches.** It is matched against the project root: the
+  nearest folder with `.git` or a Mercurial `.hg`, as above, so starting in
+  a subfolder of the repository matches too. Both sides have symlinks
+  resolved first, so a `path` through a symlink matches the folder it leads
+  to. A clone of the same repository in another folder does not match, and
+  neither does a worktree in another folder: add its path or a glob. A git
+  remote never matches, because a repository can set its own.
+- **How it's written.** An absolute path or one starting with `~/`. It may
+  be a glob: `*`, `?` and `[...]` stay within one folder name, `**` crosses
+  folders, and `{a,b}` is either. A relative path, `..`, or a file with no
+  `path` is an error naming the file.
+- **Several matches.** Every matching file applies, least specific first,
+  so the most specific one wins. An exact path is more specific than any
+  glob; between globs, the one with the longer literal start (the text
+  before its first `*`, `?`, `[` or `{`) is more specific. When a file lists
+  several paths, its most specific match counts. Two equally specific files
+  apply in file-name order, and `codesmith debug config` warns about them.
+- **Agents, modes, commands and themes.** For one repository they go in
+  `~/.config/codesmith/projects/<name>/agents/`, `modes/`, `commands/` and
+  `themes/`, where `<name>` is the per-repo file's name without
+  `.json[c]`. The folder applies wherever its file matches, in the file's
+  place in the order.
+- **Ownership.** A matching per-repo file, its folder, anything in that
+  folder, or the `projects` folder itself that someone else could change
+  (group or world writable, or owned by another user) is refused with an
+  error naming it. A symlink must be yours, and so must what it leads to.
+- **Not settable here.** The global-only settings above (`swap`,
+  `claude_agent`, `shell.env.pass`, `update`) are ignored in a per-repo
+  file, with a warning in `codesmith debug config`.
 
-| In a project file | Counts as |
-|---|---|
-| `{env:NAME}`, `{file:path}` anywhere outside comments (a `{file:}` built from `{env:}` is resolved first) | reading that variable or file |
-| a provider's `env` list | reading those variables |
-| a provider's `baseURL` (any spelling, also in `options`, models and variants), `settings.endpoint`, `headers`, `apiKey` or another credential (`token`, `accessToken`, `serviceKey`) | sending requests, headers or credentials |
-| any other provider `settings` key except `cache`, `encoding`, `transport`, `discovery`, `headerTimeout`, `chunkTimeout`, `apiVersion`, `useDeploymentBasedUrls`, `apiKeyHeader` and `queryParams` (so `region`, `profile`, `resourceName`, `account`, `accountId`, `project`, …, which decide the host) | changing settings |
-| an MCP server's `url`, `headers`, `oauth`, `command`, `environment` or `cwd` | sending requests, or running a program |
-| an `openapi` API's `spec` (a URL, a file, or the servers of an inline one), `base_url`, `headers` or `auth` | sending requests |
-| `websearch.url`, `catalog.url` | sending requests |
-| `shell` (or `shell.path`) naming a path (not a bare name such as `zsh`), `worktree.start`, an `lsp` or `formatter` entry's `command` or environment | running a program |
-| `instructions` and `skills` outside the project (`~/`, absolute, `..`, or a symlink that leads out) or from a URL, `references` to a folder outside the project | reading files, or sending requests |
-
-A project that only picks models and agents, adds rules, permissions,
-commands, instructions inside the repository, or turns on the built-in
-formatters and language servers (`true`) is never asked about.
-
-The answer is kept per project (the project id saved approvals use, so
-clones and worktrees share it) with what it covered, in `trust.json` beside
-the session database (owner-only, 0600; a file others can write is
-ignored). A project whose config later asks for more (another variable,
-file, URL, header or program) is asked about again; one that asks for the
-same or less is not. "Don't trust" is remembered the same way.
-
-When a project is not trusted, because you said no or because no one could
-be asked:
-
-- every `{env:}` and `{file:}` in its files is empty (no file is read);
-- its provider URLs, headers, credentials and host settings, its MCP
-  servers' URLs, headers and commands, its OpenAPI APIs, web search and
-  catalog URLs, programs, and files outside the project are ignored, so
-  your global config's (or the built-in) values are used. An MCP server
-  or OpenAPI API only the project defines is left out;
-- everything else in it (model, agents, rules, permissions, policies,
-  commands) still applies;
-- a one-line notice names what was skipped and the command that trusts it.
-
-Only the interactive UI and commands run at a terminal (`run`, `review`,
-`models`, `mcp`, …) ask. Without a terminal (`codesmith run` in a script
-or CI), and in `acp`, `serve` and automations, an unanswered project is not
-trusted: the run goes on with your global config and prints the notice.
-Answer ahead with `codesmith trust`:
-
-```sh
-codesmith trust [DIR]          # show what DIR's config asks for, and trust it
-codesmith trust --distrust     # remember not to trust it
-codesmith trust --show [--json]
-codesmith trust --list [--json]
-codesmith trust --revoke [DIR | trust_ID]
-```
-
-Your own config is never asked about: the global config, the file named by
-`$CODESMITH_CONFIG` (even one inside the project) and
-`$CODESMITH_CONFIG_CONTENT`. `$CODESMITH_DISABLE_PROJECT_CONFIG` still
-turns project files off altogether. Trust never loosens permissions:
-project `permissions` and `policies` apply whether or not it is trusted,
-and trusting it grants nothing the rules do not.
-
-An `{env:}` written without quotes (`"snapshots": {env:FLAG}`) becomes
-nothing when the project is not trusted, which may leave the file invalid;
-the error then says so.
-
-OpenCode applies project config as trusted. This prompt is CodeSmith's own.
+A per-repo file is yours, in your own folder, so nothing in it is asked
+about: its `{env:}` and `{file:}`, providers, MCP servers and programs apply
+as the global config's do.
 
 ## Substitution: `{env:}` and `{file:}`
 
@@ -160,9 +137,6 @@ is parsed:
 - `{file:path}` becomes the file's trimmed contents, always escaped as string
   content. A relative path is relative to the config file's folder, and `~/`
   is your home folder. A `{file:}` on a `//` comment line is left alone.
-
-In a project's files both are empty until you
-[trust the project](#trusting-a-projects-config).
 
 ```jsonc
 { "providers": { "anthropic": { "settings": { "apiKey": "{file:~/.secrets/anthropic}" } } } }
@@ -206,7 +180,7 @@ In a project's files both are empty until you
 | `worktree` | | `{"directory", "start"}`. `directory` is the folder new worktrees go in: absolute, or relative to the main checkout (default `.worktrees`, inside it, kept out of git by `.git/info/exclude`; `~` is not expanded). `start` is a setup command run in each new one. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
-| `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Read from your own config only, never a project's; your home folder and `/` are asked about regardless. |
+| `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Your own config, so a folder can't silence the warning about itself; your home folder and `/` are asked about regardless. |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `update` | `"disable"` | Global config only: `"notify"` checks for a new release once a day and says so after the UI exits. See [update checks](cli.md#update-checks). |
@@ -1111,10 +1085,9 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   resolves to and the setting it came from, and `codesmith models
   bifrost` prints the same on stderr beside the list.
 
-  A project's `codesmith.json` can't change any of these settings until
-  you trust the project (see
-  [Trusting a project's config](#trusting-a-projects-config)): untrusted,
-  they are ignored and the global config's gateway is used.
+  A repository can't change any of these settings: its own config is
+  never read. Set them for one repository in a
+  [per-repo file](#per-repo-config).
 - **A route the gateway doesn't serve** fails at once with an error that
   names the URL tried, the gateway's own message (without the key), the
   one setting that chose the route, and the one change to try, for
@@ -1475,8 +1448,8 @@ the HTTP hooks of plugins never run, since Claude Code makes the API calls.
 
 How many `claude` processes CodeSmith runs, and which it starts before
 they are needed. Only the **global** `codesmith.json` sets this: in a
-project's config, an explicit `$CODESMITH_CONFIG` file or
-`$CODESMITH_CONFIG_CONTENT` it is ignored, so a project cannot raise (or
+per-repo file, an explicit `$CODESMITH_CONFIG` file or
+`$CODESMITH_CONFIG_CONTENT` it is ignored, so nothing else can raise (or
 change) the cap.
 
 ```jsonc
@@ -2236,11 +2209,11 @@ Idle cost is negligible: on a 100,000-file tree, see
 
 | Variable | Effect |
 |---|---|
-| `CODESMITH_CONFIG` | An extra config file, loaded after the global one. |
+| `CODESMITH_CONFIG` | An extra config file, loaded after the global one and the per-repo files. |
 | `CODESMITH_CONFIG_CONTENT` | Inline JSON config, loaded last. |
 | `CODESMITH_CONFIG_DIR` | The global config folder (default `$XDG_CONFIG_HOME/codesmith`, else `~/.config/codesmith`). |
-| `CODESMITH_DISABLE_PROJECT_CONFIG` | Ignore `codesmith.json[c]` and `.codesmith/` in the project, and its `AGENTS.md`/`CLAUDE.md` files, including the nested ones a read would bring in. |
-| `CODESMITH_DISABLE_GLOBAL_CONFIG` | Ignore the global config folder and the home folder's `.claude` and `.agents`, however they are reached ([files and precedence](#files-and-precedence)). |
+| `CODESMITH_DISABLE_PROJECT_CONFIG` | Don't read what still comes from the repository: its `AGENTS.md`/`CLAUDE.md` files (including the nested ones a read would bring in), its skills and its commands. [Per-repo files](#per-repo-config) in the global folder still load. (A repository's `codesmith.json[c]` and `.codesmith/` config are never read either way.) |
+| `CODESMITH_DISABLE_GLOBAL_CONFIG` | Ignore the global config folder (with its per-repo files) and the home folder's `.claude` and `.agents`, however they are reached ([files and precedence](#files-and-precedence)). |
 | `CODESMITH_DISABLE_CLAUDE_CODE` | Don't read `CLAUDE.md` or `.claude/` skills and commands. |
 | `CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` | Don't read `.claude/skills` only. |
 | `CODESMITH_DB` | The session database (default `<data>/codesmith.db`). |
@@ -2303,7 +2276,7 @@ language server's own configured `environment` reaches it exactly as
 written. Terminals you open yourself keep your whole environment.
 
 To pass a variable through on purpose, list it in the **global** config
-file (a project config, `$CODESMITH_CONFIG` or
+file (a per-repo file, `$CODESMITH_CONFIG` or
 `$CODESMITH_CONFIG_CONTENT` cannot: their `shell.env.pass` is ignored):
 
 ```json

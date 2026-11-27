@@ -69,12 +69,10 @@ any other.
 
 `codesmith mcp list` connects to each server and shows its status and tools.
 
-A project's `codesmith.json` can add MCP servers, and local servers are
-programs that run on your machine, so a project server's `url`, `headers`,
-`oauth`, `command` and `environment` wait until you
-[trust the project](configuration.md#trusting-a-projects-config). Until
-then a server only the project defines is left out, and one your global
-config also defines keeps your settings.
+MCP servers come only from your own config: the global file, a
+[per-repo file](configuration.md#per-repo-config), `$CODESMITH_CONFIG` or
+`$CODESMITH_CONFIG_CONTENT`. A repository's `codesmith.json` is never read,
+so a repository can't add a server or change where one connects.
 
 ## Permissions
 

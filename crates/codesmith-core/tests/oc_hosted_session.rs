@@ -107,6 +107,7 @@ async fn harness(replies: Vec<Reply2>) -> H {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let db = root.join("s.db");
     let s = open(&loaded, &db, None);

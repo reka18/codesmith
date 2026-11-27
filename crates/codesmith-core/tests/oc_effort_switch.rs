@@ -111,6 +111,7 @@ impl T {
             config,
             files: vec![],
             root: self.dir.path().to_path_buf(),
+            ..Default::default()
         };
         Session::new(
             &loaded,
