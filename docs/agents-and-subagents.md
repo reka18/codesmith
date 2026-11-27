@@ -54,7 +54,7 @@ one:
 |---|---|
 | `description` | What the agent is for. For a subagent, this is what the model reads when deciding whether to delegate to it. |
 | `mode` | `primary` (the default for new agents), `subagent`, or `all` (both). |
-| `system` | The system prompt, replacing the default one. |
+| `system` | The system prompt, replacing the default one. An agent with the shell still gets the short "Separate checkouts" guidance after it (worktrees go in `<repo>/.worktrees/`). |
 | `model` | Model as `provider/model` (or `provider/model#variant`), or `{"providerID": "...", "model": "...", "variant": "..."}`; otherwise the session's model. |
 | `steps` | The most model calls per turn (default 200). |
 | `hidden` | `true` leaves a subagent out of the list the `subagent` tool shows, and a primary agent out of agent cycling; it is never the default agent, but can still be chosen by name. |

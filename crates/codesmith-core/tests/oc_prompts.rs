@@ -174,6 +174,37 @@ fn oc_prompt_preserves_an_explicit_agent_system_prompt() {
         .contains("running in CodeSmith, a coding agent harness"));
     let names: Vec<&str> = s.tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"shell") && names.contains(&"read"));
+    // Every agent with the shell is told where separate checkouts go.
+    assert!(
+        s.system
+            .contains("git worktree add <repo>/.worktrees/<name> <ref>"),
+        "{}",
+        s.system
+    );
+}
+
+/// A custom agent of its own (not `build` given a prompt) gets the
+/// checkout guidance after its prompt; one without the shell does not.
+#[test]
+fn a_custom_agent_with_its_own_prompt_gets_the_checkout_guidance() {
+    let s = session(
+        json!({"model": "test/m", "agents": {"stacker": {"system": "You stack branches.", "mode": "primary"}}}),
+        Some("stacker"),
+    );
+    assert!(
+        s.system
+            .starts_with("You stack branches.\n\n# Separate checkouts"),
+        "{}",
+        s.system
+    );
+    assert!(s
+        .system
+        .contains("Never `cd` or `git -C` into folders outside the project."));
+    let s = session(
+        json!({"model": "test/m", "agents": {"reader": {"system": "You only read.", "mode": "primary", "permissions": [{"action": "shell", "resource": "*", "effect": "deny"}]}}}),
+        Some("reader"),
+    );
+    assert!(!s.system.contains("# Separate checkouts"), "{}", s.system);
 }
 
 /// "preserves tools for model aliases and catalog-ID prompt selection by

@@ -697,7 +697,7 @@ impl Session {
             date: String::new(),
         });
         let base_system = match &agent.system {
-            Some(s) => s.clone(),
+            Some(s) => prompt::own(s, &names),
             None => {
                 // Chosen by the model's id in config or the catalog, as
                 // OpenCode's model-lab prompts are.

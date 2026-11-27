@@ -89,7 +89,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   checkout never changes files inside one.
 - The agent's system prompt says to make separate checkouts with `git
   worktree add <repo>/.worktrees/<name>` (or the `codesmith` tool), never
-  as a folder beside the repository.
+  as a folder beside the repository. Every agent with the shell gets it, also one with its own
+  `system` prompt.
 
 ## 0.6.1 — 2026-11-26
 

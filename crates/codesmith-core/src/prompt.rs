@@ -11,13 +11,20 @@ const TRINITY: &str = include_str!("prompt/trinity.txt");
 const META: &str = include_str!("prompt/meta.txt");
 const WORKTREES: &str = include_str!("prompt/worktrees.txt");
 
-/// Guidance on separate checkouts (nested git worktrees), for every base
-/// prompt whose agent has the shell.
+/// Guidance on separate checkouts (nested git worktrees), for every agent
+/// that has the shell, its own prompt or not.
 pub fn checkouts(tools: &[&str]) -> Option<&'static str> {
     tools.contains(&"shell").then(|| WORKTREES.trim_end())
 }
 
-/// `base` followed by the guidance for `tools` that every base prompt gets.
+/// An agent's own system prompt, followed by the guidance every agent
+/// gets for `tools` (see [`checkouts`]): its prompt replaces the base one,
+/// not that.
+pub fn own(system: &str, tools: &[&str]) -> String {
+    with_guidance(system.to_string(), tools)
+}
+
+/// `base` followed by the guidance for `tools` that every agent gets.
 fn with_guidance(base: String, tools: &[&str]) -> String {
     match checkouts(tools) {
         Some(g) => format!("{}\n\n{g}", base.trim_end()),
@@ -193,7 +200,7 @@ pub fn assemble(
     instructions: &str,
 ) -> String {
     let mut parts = vec![match agent_system {
-        Some(s) => s.to_string(),
+        Some(s) => own(s, tools),
         None => base(model_id, tools),
     }];
     parts.push(env.to_string());
@@ -227,6 +234,21 @@ mod tests {
         let q = base("Qwen3.5-122B", &[]);
         assert!(q.starts_with("You are an AI agent running in CodeSmith"));
         assert!(!q.contains("# Code comments") && !q.contains("Intermediate Commentary"));
+    }
+
+    #[test]
+    fn an_agents_own_prompt_gets_the_checkout_guidance_too() {
+        let p = own("Custom agent prompt", &["shell", "read"]);
+        assert!(
+            p.starts_with("Custom agent prompt\n\n# Separate checkouts"),
+            "{p}"
+        );
+        assert_eq!(own("Custom", &["read"]), "Custom");
+        let a = assemble(Some("Mine"), "gpt-5", &["shell"], "ENV", "");
+        assert!(
+            a.starts_with("Mine\n\n# Separate checkouts") && a.ends_with("ENV"),
+            "{a}"
+        );
     }
 
     #[test]
@@ -297,9 +319,10 @@ mod tests {
             );
         }
         assert!(checkouts(&["shell"]).is_some() && checkouts(&[]).is_none());
-        // An agent's own prompt still replaces the base, guidance and all.
+        // An agent's own prompt replaces the base, but not the guidance.
         let s = assemble(Some("You only search."), "gpt-5", &["shell"], "ENV", "");
-        assert!(!s.contains("Separate checkouts"));
+        assert_eq!(s.matches("# Separate checkouts").count(), 1);
+        assert!(!assemble(Some("x"), "m", &["read"], "ENV", "").contains("Separate checkouts"));
         assert!(assemble(None, "m", &["shell"], "ENV", "").contains("Separate checkouts"));
     }
 
