@@ -153,8 +153,9 @@ usually holds credentials:
   file `~/.claude/.credentials.json` (or the one under
   `$CLAUDE_CONFIG_DIR`);
 - CodeSmith's own saved keys, `auth.json` and `mcp-auth.json` (and their
-  backups) in the data folder, where a Claude Code token is kept too, and
-  the global `codesmith.json` or `codesmith.jsonc`.
+  backups) in the data folder, where a Claude Code token is kept too, the
+  global `codesmith.json` or `codesmith.jsonc`, and the per-repo files in
+  its `projects/` folder.
 
 Shell commands that read secrets out of the macOS keychain ask the same
 way: `security find-generic-password`, `security find-internet-password`,
@@ -334,19 +335,8 @@ edit ID --resource PATTERN` narrows or changes one, and `codesmith
 permissions remove ID` drops it; the local server has the same under
 [`/permissions/saved`](local-server.md#routes). Running sessions read the
 saved approvals at every request, so a change applies at once. To make an
-approval part of the project's config instead, add the rule to
-`codesmith.json`.
-
-### Project trust
-
-Beside the saved approvals, `trust.json` keeps your answers on
-[trusting a project's config](configuration.md#trusting-a-projects-config):
-whether its `{env:}` and `{file:}` values, provider and MCP URLs and
-headers, and programs are used. They are kept per project like saved
-approvals, with the capabilities each answer covered, owner-only (0600).
-`codesmith trust --list` lists them and `codesmith trust --revoke [DIR |
-ID]` removes one. Trust is not a permission: trusting a project grants no
-tool call, and not trusting it leaves its rules in force.
+approval part of that repository's config instead, add the rule to its
+[per-repo file](configuration.md#per-repo-config).
 
 ## Where rules come from
 
@@ -355,7 +345,8 @@ An agent's rules are assembled in this order, and the last match wins:
 1. the [defaults](#defaults)
 2. top-level `permissions` from config, from every config file in
    [load order](configuration.md#files-and-precedence): global first, then
-   project files
+   the matching [per-repo files](configuration.md#per-repo-config), then
+   `$CODESMITH_CONFIG` and `$CODESMITH_CONFIG_CONTENT`
 3. the built-in agent's own rules (see the [table above](#defaults))
 4. `agents.<id>.permissions` from config
 5. for [unattended runs](#unattended-runs) only, the unattended denies and
@@ -376,12 +367,15 @@ Consequences:
 - **Rules for an agent override everything above them.** To let `plan` edit
   docs, add `{"action": "edit", "resource": "docs/*", "effect": "allow"}`
   under `agents.plan.permissions`, not at the top level.
-- A project's `codesmith.json` comes after your global config, so **its rules
-  override yours**. This is the main reason to read a repository's config
-  before you run CodeSmith in it, or to set
-  `CODESMITH_DISABLE_PROJECT_CONFIG=1`. [Project
-  trust](#project-trust) does not change this: a project's rules and
-  policies apply whether or not it is trusted.
+- **A repository can't add rules.** CodeSmith never reads a repository's
+  `codesmith.json[c]` or `.codesmith/` agents, so a cloned repository can't
+  allow its own commands. Rules for one repository go in your
+  [per-repo file](configuration.md#per-repo-config), which comes after your
+  global config, so its rules override the global ones there.
+- **A repository's commands still ask.** A command file from the repository
+  is only a prompt: any `` !`cmd` `` it expands is checked against your
+  rules as the `shell` tool's commands are, and nothing in it runs unless
+  every command is allowed.
 
 ### Session rules
 
@@ -429,7 +423,7 @@ but `http`, `https` and `file`.
 
 Because they are judged like saved approvals, they answer an `ask` the way
 an "always" approval does: while a browser is attached, a configured
-`browser` `ask` (yours, the project's, or a built-in agent's) is allowed
+`browser` `ask` (yours, a per-repo file's, or a built-in agent's) is allowed
 for that session without a prompt, and asks again once the attachment
 ends. To forbid opening a URL even with a browser attached, write `deny`:
 
@@ -473,8 +467,8 @@ do. `{"action": "tool.use", "resource": "*", "effect": "deny"}` refuses
 every permission.
 
 Statements apply to every agent. Unlike `permissions`, an earlier config
-file's statements have the final say: a project's `codesmith.json` cannot
-lift a deny in your global config. OpenCode's other policy actions
+file's statements have the final say: a per-repo file cannot lift a deny
+in your global config. OpenCode's other policy actions
 (`provider.use`, `mcp.use`, `integration.use`, …) belong to its managed
 and Console policies and are not read.
 

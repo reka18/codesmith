@@ -27,8 +27,14 @@ same id:
    [catalog URL](#downloaded-skills)
 
 Set `$CODESMITH_DISABLE_CLAUDE_CODE_SKILLS` (or `$CODESMITH_DISABLE_CLAUDE_CODE`)
-to skip the `.claude/skills` folders. Loading a skill is checked with the
-`skill` action and the skill's id.
+to skip the `.claude/skills` folders, and `$CODESMITH_DISABLE_PROJECT_CONFIG`
+to skip the repository's folders (step 2) and its command files. Loading a
+skill is checked with the `skill` action and the skill's id.
+
+A skill is text for the model. CodeSmith reads only its `name` and
+`description` from the header; other fields some tools use, such as
+`allowed-tools`, `model` or `mcp`, are ignored, so a repository's skill can't
+grant a tool, pick a model or start a server.
 
 The folders are read again before each model request. A skill added,
 changed or removed mid-session is announced to the model in a short update
@@ -93,8 +99,10 @@ Commands are prompt templates. Run them as `/name args` in the
 `codesmith commands` lists them all.
 
 Put each one in a Markdown file in a `commands/` (or `command/`) folder
-under the global config folder (`~/.config/codesmith/`) or any `.codesmith/`
-folder from the project root down to the working directory. A nested file
+under the global config folder (`~/.config/codesmith/`), a
+[per-repo folder](configuration.md#per-repo-config)
+(`~/.config/codesmith/projects/<name>/`), or any `.codesmith/` folder in
+the repository from the project root down to the working directory. A nested file
 is a nested name: `commands/git/sync.md` runs as `/git/sync`. Claude Code's
 `~/.claude/commands/` and `.claude/commands/` (top-level `<name>.md` files)
 are read too, below everything else.
@@ -119,10 +127,11 @@ Or define them inline in config:
 ```
 
 Command folders and config files are layers in the same
-[order](configuration.md#files-and-precedence): a `.codesmith/commands/`
-folder comes right after that folder's `.codesmith/codesmith.json`, the
-global folder after the global config. A later definition of a command,
-inline or file, replaces an earlier one whole.
+[order](configuration.md#files-and-precedence): the global folder after the
+global config, then the repository's `.codesmith/commands/` folders, then
+each per-repo folder after its per-repo file. A later definition of a
+command, inline or file, replaces an earlier one whole, so your per-repo
+command beats a repository's of the same name.
 
 In a template, `$ARGUMENTS` is the whole argument string, and `$1`, `$2`,
 … are single arguments (quotes group words; the highest one used takes the
@@ -139,11 +148,19 @@ Review these changes for $ARGUMENTS:
 !`git diff --stat`
 ```
 
-These commands are yours, so they run without asking; a template from a
-project you don't trust can run anything, as a shell script in it could.
+Each of these commands is checked against your
+[permission rules](permissions.md) before any of them runs, as the `shell`
+tool's commands are: a command template may come from the repository, so
+it gets no more than a shell command the model asked for. A deny refuses
+it, an ask asks, and if any is refused, none of the template's commands
+run.
 
 `agent` and `model` switch the session to that agent or model for the
-command. A command runs in a **child session** instead when it sets
+command. The `agent` must be one of yours (built in, or in your global or
+per-repo config): agents are never read from a repository, so a command
+naming one you don't have runs on the session's agent, with a one-line
+notice. The `model` is honoured, and can only name a model your own
+providers serve. A command runs in a **child session** instead when it sets
 `subagent: true` (OpenCode's older `subtask: true` too) or names an agent
 whose mode is `subagent`: the child uses the command's agent (else the
 session's) and model (else that agent's, else the session's), titled with
