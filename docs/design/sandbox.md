@@ -94,16 +94,24 @@ repo:
 ```jsonc
 "sandbox": {
   "enabled": true,              // the default; false opts out
-  "network": "allowlist",       // "all" | "allowlist" | "none"
+  "network": "all",             // the default to start; "allowlist" | "none" tighten it
   "allow": ["internal.example"],// extra hosts for "allowlist"
   "write": ["~/scratch"],       // extra folders commands may always write
-  "unsupported": "warn"         // "warn" | "refuse": when this machine can't sandbox
+  "unsupported": "refuse"       // the default; "run" opts out on a machine that can't sandbox
 }
 ```
 
-- **Headless runs** (`codesmith run`, bridges, automations) use
-  `unsupported: "refuse"` unless set otherwise: a headless agent never runs
-  unsandboxed by surprise.
+- **A machine that can't sandbox** refuses to run agent commands, in the
+  terminal and headless alike, unless you opt out with `"unsupported": "run"`
+  (Ray, 2026-11-27). The refusal says why and names the setting. Nothing
+  ever runs unsandboxed by surprise.
+- **The network starts at `all`** (Ray, 2026-11-27): only files are
+  restricted by default to begin with. `allowlist` and `none` are there to
+  tighten it, and the default may move to `allowlist` later.
+- **Package caches outside the project** (`~/.cargo/registry`, `~/.npm`,
+  `~/.cache/pip`, `~/go/pkg`, and the like) are writable by default (Ray,
+  2026-11-27), as part of the `write` defaults. Docs say how to remove
+  them.
 - `codesmith debug sandbox` prints the policy a command in this folder would
   get, and whether this machine supports it.
 
@@ -191,8 +199,10 @@ Things that should keep working, with tests:
   - an unlisted host asks, and is refused headless.
 - **Failure to prompt:** a refused write offers the right permission, and
   re-runs with only that grant.
-- **Unsupported machines:** `warn` runs unsandboxed with a notice; `refuse`
-  refuses; headless defaults to refuse.
+- **Unsupported machines:** with no setting, commands are refused, in the
+  terminal and headless, and the error names `unsupported: "run"`. With
+  `"run"`, they run unsandboxed with the once-per-session notice.
+- **The defaults:** network `all`, and package caches writable.
 - **Compatibility:** the list above, on both systems.
 - **Repo config can't touch it:** a repo can't set `sandbox.*`, and per-repo
   files in the global folder can.
@@ -200,11 +210,11 @@ Things that should keep working, with tests:
   sandboxed, in the terminal and headless. Each opt-out (`enabled: false`,
   `network: "all"`) works and gets the once-per-session notice.
 
-## Open questions
+## Decided
 
-1. **The default network mode:** `allowlist` (as drafted) or `all` to start,
-   tightening later?
-2. **Package caches outside the project** (`~/.cargo`, `~/.npm`, …): writable
-   by default, as drafted, or ask the first time?
-3. **Interactive sessions on an unsupported machine:** `warn` (as drafted)
-   or `refuse`, like headless?
+Ray, 2026-11-27:
+1. **On by default:** you opt out, never in.
+2. **Network:** `all` to start. Files are the first restriction.
+3. **Package caches outside the project:** writable by default.
+4. **A machine that can't sandbox:** commands are refused unless you opt
+   out with `unsupported: "run"`, in the terminal as well as headless.
