@@ -14,14 +14,20 @@ All notable changes to CodeSmith are listed here. Versions follow
   works with `"api": "openai"`; in 0.6.0 every non-Anthropic model failed
   there. `openaiBaseURL`, `anthropicBaseURL`, `geminiBaseURL`,
   `modelsURL` and `quotaURL` (each with its `BIFROST_…` variable) put a
-  surface elsewhere, and `codesmith debug model` prints the URL each
-  surface resolves to. There is no detection and no fallback.
+  surface elsewhere. `codesmith debug model` and `codesmith models
+  bifrost` print the URL each surface resolves to and the setting it
+  came from. There is no detection and no fallback.
 - **A Bifrost route the gateway doesn't serve fails clearly.** A 405, or
   a 403 or 404 that isn't an API error, names the URL tried, the
-  gateway's message without the key, and the setting to change, instead
-  of saying the key may not have access to the model. It is not retried,
-  and no other route is tried. The model list's error names `modelsURL`
-  the same way.
+  gateway's message without the key, the one setting that chose the
+  route (the model's `api`, `openaiBaseURL`, the provider's `api`, the
+  surface's base URL, their variables, or the default), and the one
+  change to try, instead of saying the key may not have access to the
+  model. It is not retried, and no other route is tried. The model
+  list's error names `modelsURL` the same way.
+- **Bifrost's kept model list is keyed by the model list's URL** and the
+  key, not the gateway's root. A list 0.6.0 kept still stands in when
+  the gateway can't be reached, as long as `modelsURL` is the default.
 - A Bifrost error body that echoes the virtual key no longer shows it.
 
 ## 0.6.0 — 2026-11-26
