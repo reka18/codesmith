@@ -84,6 +84,7 @@ codesmith run --format json "list the TODOs" | jq .
 | `--agent ID` | Agent to use (otherwise `default_agent`, else `build`). `plan` is read-only. |
 | `-f, --file PATH` | Attach a file (repeatable). Text goes into the message, and images, PDFs and videos are sent for the model to see. |
 | `--format default\|json` | `json` prints one JSON object per event, for scripts. |
+| `--output all\|final` | What the default format prints on stdout. `all` (the default) streams the text of every step. `final` prints only the final answer when the run ends: the last step's text, or the last step's that had any text. Narration between tool calls is left out, while tool activity still goes to stderr. A bridge wants `final`. It can't be combined with `--format json`, which already gives every event. |
 | `--auto` | Approve every permission request that no rule denies. |
 | `--thinking` | Show the model's reasoning. |
 | `-c, --continue` | Continue the most recent session in this folder. |

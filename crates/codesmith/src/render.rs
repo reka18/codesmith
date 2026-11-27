@@ -13,6 +13,27 @@ pub struct Printer {
     in_reasoning: bool,
     at_line_start: bool,
     usage_log: Option<UsageLog>,
+    /// `--output final`: hold each step's text and print only the final
+    /// answer when the run ends.
+    final_only: Option<FinalText>,
+}
+
+/// The text `--output final` holds: the current step's, and the last
+/// step's that had any.
+#[derive(Default)]
+struct FinalText {
+    step: String,
+    last: String,
+}
+
+impl FinalText {
+    /// The step ended: its text, when it has any, is the answer so far.
+    fn end_step(&mut self) {
+        let step = std::mem::take(&mut self.step);
+        if !step.trim().is_empty() {
+            self.last = step;
+        }
+    }
 }
 
 /// `codesmith run --usage-log PATH`: one JSON line per model step (its
@@ -214,7 +235,17 @@ impl Printer {
             in_reasoning: false,
             at_line_start: true,
             usage_log: None,
+            final_only: None,
         }
+    }
+
+    /// Print only the final answer (`--output final`). It has no effect on
+    /// `--format json`.
+    pub fn final_only(mut self) -> Self {
+        if !self.json {
+            self.final_only = Some(FinalText::default());
+        }
+        self
     }
 
     /// Also write a [`UsageLog`].
@@ -250,6 +281,13 @@ impl Printer {
         if self.json {
             self.emit(json!({"type": "done", "session": session, "title": title, "usage": usage_json(usage), "error": error}));
             return;
+        }
+        if let Some(mut f) = self.final_only.take() {
+            f.end_step();
+            if !f.last.is_empty() {
+                print!("{}", safe(&f.last));
+                self.at_line_start = f.last.ends_with('\n');
+            }
         }
         if !self.at_line_start {
             println!();
@@ -359,6 +397,10 @@ impl Sink for Printer {
             self.emit(json!({"type": "text", "text": delta}));
             return;
         }
+        if let Some(f) = &mut self.final_only {
+            f.step.push_str(delta);
+            return;
+        }
         print!("{}", safe(delta));
         let _ = std::io::stdout().flush();
         self.at_line_start = delta.ends_with('\n');
@@ -428,12 +470,19 @@ impl Sink for Printer {
         if let Some(log) = &mut self.usage_log {
             log.step(reason, usage);
         }
+        if let Some(f) = &mut self.final_only {
+            f.end_step();
+        }
         if self.json {
             self.emit(json!({"type": "step", "reason": reason.normalized, "finish": reason, "usage": usage_json(usage)}));
         }
     }
 
     fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
+        // A retried step starts again: what it said so far is dropped.
+        if let Some(f) = &mut self.final_only {
+            f.step.clear();
+        }
         if self.json {
             self.emit(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));
         } else {
@@ -481,6 +530,41 @@ impl Sink for Printer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn final_text_keeps_the_last_step_with_text() {
+        let mut f = super::FinalText::default();
+        f.step.push_str("Let me look.");
+        f.end_step();
+        f.step.push_str("The answer.");
+        f.end_step();
+        assert_eq!(f.last, "The answer.");
+        // A step with only whitespace leaves the answer as it was.
+        f.step.push_str("  \n");
+        f.end_step();
+        assert_eq!(f.last, "The answer.");
+    }
+
+    #[test]
+    fn a_retried_step_drops_what_it_said() {
+        let mut p = super::Printer::new(false, false).final_only();
+        use codesmith_core::session::Sink;
+        p.text("half an ans");
+        p.retry(1, "connection reset", std::time::Duration::from_millis(1));
+        p.text("A whole answer.");
+        let f = p.final_only.as_mut().unwrap();
+        f.end_step();
+        assert_eq!(f.last, "A whole answer.");
+    }
+
+    #[test]
+    fn final_only_does_nothing_with_json() {
+        assert!(super::Printer::new(true, false)
+            .final_only()
+            .final_only
+            .is_none());
+    }
+
     use super::{describe, safe, usage_line, StepExtra};
     use serde_json::json;
 

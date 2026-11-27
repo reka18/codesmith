@@ -293,6 +293,10 @@ struct RunArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Default)]
     format: Format,
+    /// What the default format prints on stdout: every step's text
+    /// (`all`), or only the final answer (`final`), as a bridge wants.
+    #[arg(long, value_enum, default_value_t = Output::All)]
+    output: Output,
     /// Approve every permission request that isn't denied.
     #[arg(long)]
     auto: bool,
@@ -831,6 +835,7 @@ impl RunArgs {
             agent: None,
             files: vec![],
             format: Format::Default,
+            output: Output::All,
             auto: true,
             thinking: false,
             r#continue: false,
@@ -851,6 +856,16 @@ impl RunArgs {
 enum Format {
     Default,
     Json,
+}
+
+/// `codesmith run --output`: what the default format prints on stdout.
+#[derive(Clone, Copy, ValueEnum, PartialEq, Debug)]
+enum Output {
+    /// The text of every step, as it streams.
+    All,
+    /// Only the final answer: the last step's text (or, when the last step
+    /// has none, the last step that had any), printed when the run ends.
+    Final,
 }
 
 #[derive(Subcommand)]
@@ -4369,7 +4384,15 @@ async fn run_prompt(cwd: PathBuf, args: RunArgs) -> Result<()> {
         return Err(anyhow!(why));
     }
     let json = args.format == Format::Json;
+    if json && args.output == Output::Final {
+        return Err(anyhow!(
+            "--output final applies to the default format; --format json already gives every event"
+        ));
+    }
     let mut sink = render::Printer::new(json, args.thinking);
+    if args.output == Output::Final {
+        sink = sink.final_only();
+    }
     if let Some(path) = &args.usage_log {
         let cfg = loaded.config.clone();
         let log = render::UsageLog::open(path, &session.model_spec, &session.id)
