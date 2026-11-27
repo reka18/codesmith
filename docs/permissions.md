@@ -325,9 +325,12 @@ asked again either (see [saved approvals](#saved-approvals)):
 ### Saved approvals
 
 "Always" answers are kept in the session database (OpenCode keeps them per
-project too). A Git or Mercurial project's approvals are shared by its
-clones and worktrees (the project is named by its first commit); a folder
-outside version control has its own. A session without the database (an
+project too), keyed by the project root's real path, with symlinks
+resolved: a symlink to the folder shares its approvals. Only the folder
+decides, never anything read from the repository, since a fork or a
+crafted repository can copy its commits, remotes and `.git` file. So a
+second clone or a worktree of the same repository starts with none, and so
+does a folder outside version control other than this one. A session without the database (an
 in-memory one) keeps them for itself only.
 
 `codesmith permissions` lists them with their ids, `codesmith permissions

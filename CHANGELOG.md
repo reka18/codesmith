@@ -43,6 +43,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   untracked `codesmith.json`.
 - Reading a per-repo file asks, as reading the global `codesmith.json`
   does: it can hold keys.
+- **Saved "always" approvals are kept per folder.** They're keyed by the
+  project root's real path, no longer by the repository's first commit,
+  which a fork or a crafted repository could share to inherit them. A
+  second clone or a worktree starts with none; a symlink to the folder
+  shares them. Approvals saved under a first commit stay in the database
+  but no longer apply.
 
 ## 0.6.1 — 2026-11-26
 
