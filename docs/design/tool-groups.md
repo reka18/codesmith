@@ -127,6 +127,4 @@ CodeSmith never captures the mouse, so groups are reached from the keyboard.
 
 ## When
 
-Ray's order (2026-11-27): 0.7.0 is out; 1.0.0 is the OS sandbox; CodeSmith
-Mobile follows. This is a self-contained TUI change that can go in any
-release; when to build it is Ray's call.
+Built alongside the OS sandbox, for 1.0.0 (Ray, 2026-11-27).
