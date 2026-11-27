@@ -25,12 +25,28 @@ const TRINITY: &str = include_str!("../src/prompt/trinity.txt");
 const META: &str = include_str!("../src/prompt/meta.txt");
 const ANTHROPIC: &str = include_str!("../src/prompt/anthropic.txt");
 
-fn render(t: &str) -> String {
+/// A base prompt with what every base prompt ends with for `tools` (the
+/// guidance on separate checkouts when the shell is offered).
+fn guided(base: String, tools: &[&str]) -> String {
+    match prompt::checkouts(tools) {
+        Some(g) => format!("{}\n\n{g}", base.trim_end()),
+        None => base,
+    }
+}
+
+fn plain(t: &str) -> String {
     prompt::render(t, &TOOLS)
 }
 
+fn render(t: &str) -> String {
+    guided(plain(t), &TOOLS)
+}
+
 fn appended() -> String {
-    format!("{}\n\n{}", render(SYSTEM), render(ANTHROPIC).trim_end())
+    guided(
+        format!("{}\n\n{}", plain(SYSTEM), plain(ANTHROPIC).trim_end()),
+        &TOOLS,
+    )
 }
 
 /// "selects model-lab prompts through session context hooks": the prompt
@@ -79,7 +95,7 @@ fn oc_prompt_renders_the_openai_prompt_with_tool_guidance() {
 #[test]
 fn oc_prompt_appends_the_anthropic_prompt_to_the_baseline() {
     let p = prompt::base_named("claude-sonnet-4", "Claude Sonnet 4", &TOOLS);
-    assert!(p.starts_with(&render(SYSTEM)));
+    assert!(p.starts_with(&plain(SYSTEM)));
     assert_eq!(p, appended());
 }
 
@@ -158,6 +174,37 @@ fn oc_prompt_preserves_an_explicit_agent_system_prompt() {
         .contains("running in CodeSmith, a coding agent harness"));
     let names: Vec<&str> = s.tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"shell") && names.contains(&"read"));
+    // Every agent with the shell is told where separate checkouts go.
+    assert!(
+        s.system
+            .contains("git worktree add <repo>/.worktrees/<name> <ref>"),
+        "{}",
+        s.system
+    );
+}
+
+/// A custom agent of its own (not `build` given a prompt) gets the
+/// checkout guidance after its prompt; one without the shell does not.
+#[test]
+fn a_custom_agent_with_its_own_prompt_gets_the_checkout_guidance() {
+    let s = session(
+        json!({"model": "test/m", "agents": {"stacker": {"system": "You stack branches.", "mode": "primary"}}}),
+        Some("stacker"),
+    );
+    assert!(
+        s.system
+            .starts_with("You stack branches.\n\n# Separate checkouts"),
+        "{}",
+        s.system
+    );
+    assert!(s
+        .system
+        .contains("Never `cd` or `git -C` into folders outside the project."));
+    let s = session(
+        json!({"model": "test/m", "agents": {"reader": {"system": "You only read.", "mode": "primary", "permissions": [{"action": "shell", "resource": "*", "effect": "deny"}]}}}),
+        Some("reader"),
+    );
+    assert!(!s.system.contains("# Separate checkouts"), "{}", s.system);
 }
 
 /// "preserves tools for model aliases and catalog-ID prompt selection by
@@ -166,14 +213,17 @@ fn oc_prompt_preserves_an_explicit_agent_system_prompt() {
 #[test]
 fn oc_prompt_selects_by_the_configured_model_id_not_the_api_model() {
     // The prompt each id gets, rendered for the session's own tools.
-    let gpt = |t: &[&str]| prompt::render(GPT, t);
-    let astra = |t: &[&str]| prompt::render(ASTRA, t);
-    let default = |t: &[&str]| prompt::render(SYSTEM, t);
+    let gpt = |t: &[&str]| guided(prompt::render(GPT, t), t);
+    let astra = |t: &[&str]| guided(prompt::render(ASTRA, t), t);
+    let default = |t: &[&str]| guided(prompt::render(SYSTEM, t), t);
     let claude = |t: &[&str]| {
-        format!(
-            "{}\n\n{}",
-            prompt::render(SYSTEM, t),
-            prompt::render(ANTHROPIC, t).trim_end()
+        guided(
+            format!(
+                "{}\n\n{}",
+                prompt::render(SYSTEM, t),
+                prompt::render(ANTHROPIC, t).trim_end()
+            ),
+            t,
         )
     };
     type Pick<'a> = &'a dyn Fn(&[&str]) -> String;

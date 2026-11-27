@@ -356,6 +356,7 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
             resources: vec![shown.clone()],
             save: vec![format!("{} {origin}/*", prepared.method)],
             title: format!("Call {}.{}: {shown}", api.name, tool.dotted()),
+            access: None,
         },
     )?;
     let applied = runtime::resolve_auth(plan, api.resolver.as_deref())?;
@@ -459,6 +460,7 @@ pub async fn call(api: &Api, tool: &Tool, input: &Value, gate: &Gate) -> Result<
                             tool.dotted(),
                             prepared.url.origin().ascii_serialization()
                         ),
+                        access: None,
                     },
                 )
                 .map_err(|e| redact(e, &secrets))?;

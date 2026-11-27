@@ -69,7 +69,8 @@ fn oc_file_access_batches_external_resources_in_first_seen_order() {
         hg.join("nested"),
         first,
     ];
-    c.authorize_external_dirs(&dirs).unwrap();
+    c.authorize_external_dirs(&dirs, codesmith_core::tool::Access::Read)
+        .unwrap();
     {
         let asked = rec.0.lock().unwrap();
         assert_eq!(asked.len(), 1, "one request for every folder");
@@ -88,11 +89,15 @@ fn oc_file_access_batches_external_resources_in_first_seen_order() {
         );
     }
     // Nothing outside: no request.
-    c.authorize_external_dirs(std::slice::from_ref(&project))
-        .unwrap();
+    c.authorize_external_dirs(
+        std::slice::from_ref(&project),
+        codesmith_core::tool::Access::Read,
+    )
+    .unwrap();
     assert_eq!(rec.0.lock().unwrap().len(), 1);
     // Approved once, so asked again.
-    c.authorize_external_dirs(&[git.join("nested")]).unwrap();
+    c.authorize_external_dirs(&[git.join("nested")], codesmith_core::tool::Access::Read)
+        .unwrap();
     let asked = rec.0.lock().unwrap();
     assert_eq!(asked.len(), 2);
     assert_eq!(

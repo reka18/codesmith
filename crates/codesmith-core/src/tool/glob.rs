@@ -153,12 +153,13 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         .map(|l| l.max(1) as usize)
         .unwrap_or(DEFAULT_LIMIT);
     let target = ctx.resolve(path.unwrap_or("."));
-    ctx.authorize_external(&target, true)?;
+    ctx.authorize_external(&target, true, super::Access::Read)?;
     ctx.ask(Request {
         action: "glob".into(),
         resources: vec![pattern.to_string()],
         save: vec!["*".into()],
         title: format!("Find files matching {pattern}"),
+        access: None,
     })?;
     // The read rules apply to the directory searched, and files they deny
     // are left out. (OpenCode checks only `glob` and `external_directory`.)

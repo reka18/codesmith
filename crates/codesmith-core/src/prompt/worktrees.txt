@@ -1,0 +1,5 @@
+# Separate checkouts
+- When a task needs a separate checkout (another branch, a stack of branches, a rebase that should not disturb the main checkout), use the `codesmith` tool's `worktree_create` where it is available. Otherwise create it inside the repository with `git worktree add <repo>/.worktrees/<name> <ref>`, never as a folder beside the repository.
+- Before the first one, add `.worktrees/` to `<repo>/.git/info/exclude` if it is not there. Use the exclude file, not `.gitignore`.
+- Work in it with the normal file tools, and run its commands with the shell's working directory set to it. Never `cd` or `git -C` into folders outside the project.
+- When you are done, check it for uncommitted changes and unpushed commits, then remove it with `git worktree remove <path>` (or `worktree_remove`) and run `git worktree prune`.

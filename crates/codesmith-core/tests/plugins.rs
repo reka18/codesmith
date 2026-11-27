@@ -304,7 +304,8 @@ async fn every_hook_runs() {
                 action: "shell".into(),
                 resources: vec![],
                 save: vec![],
-                title: String::new()
+                title: String::new(),
+                access: None
             })
             .is_none(),
         "a disabled plugin does not answer permission prompts"

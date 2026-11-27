@@ -2671,6 +2671,7 @@ fn ask(t: &mut T) -> tokio::sync::oneshot::Receiver<codesmith_core::permission::
             resources: vec!["ls".into()],
             save: vec![],
             title: "ls".into(),
+            access: None,
         },
         tx,
     ));

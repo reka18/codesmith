@@ -25,7 +25,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     if target.absolute.is_dir() {
         return Err(format!("Path is a directory, not a file: {path}"));
     }
-    ctx.authorize_external(&target, false)?;
+    ctx.authorize_external(&target, false, super::Access::Write)?;
     let existed = target.absolute.exists();
     let lines = super::count_lines(content);
     ctx.ask(Request {
@@ -37,6 +37,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
             if existed { "Overwrite" } else { "Create" },
             target.resource
         ),
+        access: None,
     })?;
     // Read only now that the change is allowed.
     ctx.changing(&target.absolute);

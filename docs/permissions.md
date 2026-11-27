@@ -240,15 +240,100 @@ Beyond the commands as written, CodeSmith also checks:
   `code:python3 *`. To refuse inline code, deny `code:*` (or
   `code:python3 *`). Running a script file (`python3 x.py`, `perl x.pl`)
   or a module (`python3 -m pytest`) adds no `code:` resource.
-- **Redirects.** A file that a redirect writes to (`>`, `>>`, `&>`, `>|`,
-  `<>`), or that a program writes by name (`awk '{print > "f"}'`, `sed 'w
-  f'`, `sed -i` and its backup, `find -fprint f`, `flock`'s lock file,
-  `script`'s typescript), is
-  checked like a `write`: `external_directory` if it is outside the
-  project, then `edit` on the path. Under the `plan` agent,
-  `echo x > notes.md` is refused because `edit` is denied.
+- **Redirects and files written by name.** A file that a redirect writes
+  to (`>`, `>>`, `&>`, `>|`, `<>`), or that a program writes, creates,
+  moves or deletes by name, is checked like a `write`: `external_directory`
+  if it is outside the project, then `edit` on the path. Under the `plan`
+  agent, `echo x > notes.md` and `rm notes.md` are refused because `edit`
+  is denied. The programs and options checked:
+  - every operand of `rm`, `unlink`, `rmdir`, `shred`, `touch`, `mkdir`,
+    `mkfifo`, `truncate`, `tee`, `mv`, and `gzip`/`gunzip`/`bzip2`/`xz`/
+    `zstd` and the like (unless `-c`, `-l` or `-t`); the files after the
+    mode or owner of `chmod`, `chown`, `chgrp`, `chflags`;
+  - the destination of `cp`, `ln`, `install`, `ditto`, `rsync` and `scp`
+    (the last operand, or `-t DIR`), all of `install -d`, and rsync's
+    `--backup-dir`, `--temp-dir`, `--partial-dir`, `--log-file`;
+  - the files `perl -i` and `ruby -i` rewrite, `sed -i` and its backup,
+    `awk '{print > "f"}'`, `sed 'w f'`;
+  - `patch FILE` and `patch -o`/`-r`/`-B`, `dd of=`, `unzip -d`, `zip
+    ARCHIVE`, `tar -f` when creating and `tar -C` when extracting, `sort
+    -o`, `uniq IN OUT`, `cmake -E rm/copy/rename/...`;
+  - `curl -o`/`--output`/`--output-dir`/`-D`/`-c`/`--trace`/`--stderr`,
+    `wget -O`/`-P`/`-o`/`-a`/`--save-cookies`;
+  - `cargo --target-dir`, `go build -o`, `cmake -B`, `pip install
+    --target`/`--prefix`/`--root`, `gradle -g`;
+  - `git clone URL DIR`, `git init DIR`, `git worktree add/move`, `git
+    submodule add`, `git bundle create`, `git archive -o`, `git
+    format-patch -o`, `git diff/log/show --output`, `--separate-git-dir`;
+  - the start folders of `find -delete`, and of `find -exec`/`-execdir`
+    running one of these programs; `find -fprint f`, `flock`'s lock file,
+    `script`'s typescript.
+
+  A glob names its fixed folder (`rm ../x/*.o` is checked as `../x`), and
+  a brace list of plain names its first choice (`mkdir -p src/{a,b}`). A
+  path only known at run time (`rm "$f"`, `ls | xargs rm`, `find | xargs
+  perl -i`, `patch -p1 < x.diff`, which may name any file, `git apply
+  --unsafe-paths`, `tar -xP`, `curl -K`) is checked like a `cd` to a
+  computed folder: it runs only as far as the `external_directory` rules
+  allow in general, so it asks by default and is refused when nobody can
+  answer.
 - **Directories.** `cd` and `pushd` targets, and the tool's `workdir`,
-  outside the project need `external_directory` approval.
+  outside the project need `external_directory` approval, and so does
+  every option that runs a program in another folder or points it at a
+  repository or work tree elsewhere:
+  - `git -C DIR` (each relative to the one before, as git reads them),
+    `--git-dir`, `--work-tree`, and `GIT_DIR`, `GIT_WORK_TREE`,
+    `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` set in the
+    command (`GIT_DIR=../x/.git git commit`, `export GIT_DIR=...`);
+  - `env -C`/`--chdir`, `sudo -D`/`--chdir`/`-R`;
+  - `make -C`/`--directory`, `tar -C`/`--directory`, `patch -d`, `npm
+    --prefix`/`-C`, `pnpm -C`/`--dir`, `yarn --cwd`, `bun --cwd`, `cargo
+    -C`/`--manifest-path`, `go -C`, `mvn -f`, `gradle -p`/`-b`/`-c`, `cmake
+    -S`/`--build`/`--install`, `just -d`/`-f`, `uv --directory`, `poetry
+    -C`, `terraform -chdir=`, `docker compose --project-directory`.
+
+  So `git -C ../other-repo commit -am x`, `make -C /x/y` and
+  `GIT_DIR=/x/y/.git git reset --hard` ask, like `cd ../other-repo`. A
+  folder only known at run time (`git -C "$d" status`) asks the way a
+  computed `cd` does. These are followed through wrappers (`sudo`, `env`,
+  `nice`, `timeout`, `xargs`...), `sh -c` strings, subshells and `$(...)`;
+  and symlinks are resolved, so a link in the project that points
+  outside counts as outside. Each `cd` is checked from the working
+  directory and from where the one before it went (`cd .. && cd ../x`
+  from a subfolder leaves the project).
+- **Where a relative write lands.** In one `&&` list of simple commands
+  (no `;`, `||`, pipes, `&`, subshells or substitutions), a relative
+  write is checked from the folder the `cd`s before it led to: `cd
+  sub/deep && echo x > ../y` writes `sub/y`, inside, and asks nothing. A
+  write before the `cd` is checked from the working directory. Anywhere
+  else (`cd sub; echo x > ../y`, after `git -C` or `env -C` in the chain),
+  it is checked from the working directory and from every folder the
+  command names, since a `cd` may fail or run in a subshell. After a `cd`
+  to a computed folder, a relative write is only known at run time.
+- **Loop variables over plain globs.** In `for f in *.txt; do rm "$f";
+  done`, `"$f"` (or `"${f}"`) is checked as a write to the loop's words
+  (`*.txt`, so the working directory), under the `edit` rules, instead of
+  as a path only known at run time. Every word after `in` must be a plain
+  glob or name: no `..`, no absolute or `~` path, no variable or
+  substitution. The variable must be bound by such loops only (not
+  assigned, `read`, `printf -v`'d or `eval`'d anywhere in the command),
+  not used before the loop, and the command must run no `source`d file
+  or code the scan can't see. An unquoted `$f` is not trusted, since a
+  file named `a ..` would split into `a` and `..`.
+- **Read or write.** Each `external_directory` request says whether the
+  command only reads in the folders it reaches (`access`: `read` or
+  `write`). It reads when every command in it is one known to only read:
+  `ls`, `cat`, `grep`, `find` without `-exec` or `-delete`, `sed` without
+  `-i`, git's `log`, `show`, `diff`, `status`, `blame`, `grep`,
+  `ls-files`, `rev-parse`, `cat-file`, and branch, tag, remote and config
+  listing, and the like. Anything else, a command only known at run time,
+  or code in another language counts as a write. Rules don't use this
+  yet.
+- **Code in another language** that quotes a path (`python3 -c
+  "open('/x/f', 'w')"`, `node -e "...('../y')"`) is checked for
+  `external_directory` on that path, since the code may read or write it.
+  Paths the code computes, and what a script file (`python3 x.py`) does,
+  are not seen: deny `code:*` or ask for interpreters if you need that.
 
 Some commands cannot be analyzed: malformed syntax, a construct the scanner
 does not know, a command name computed at run time, `eval` of a variable, or
@@ -263,7 +348,10 @@ rules allow writes in general.
 The project is the nearest folder with `.git` (or `.hg`) above the working directory, or
 the working directory itself. Reading, writing or editing a file outside it,
 searching there, or `cd`-ing there needs `external_directory` approval first,
-and then the tool's own permission. Symlinks are resolved first, so a link
+and then the tool's own permission. In the shell that covers options that
+point a program at another folder (`git -C`, `make -C`, `GIT_DIR=`) and
+programs that write files by name (`rm`, `cp`, `perl -i`, `curl -o`): see
+[Shell commands](#shell-commands). Symlinks are resolved first, so a link
 inside the project that points outside it counts as outside.
 
 A project at `/` or at your home folder (a dotfiles repository, say) is too

@@ -120,6 +120,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         resources: vec![query.to_string()],
         save: vec!["*".into()],
         title: format!("Search the web for {query:?}"),
+        access: None,
     })?;
     let mut params = vec![("q", query.to_string()), ("format", "json".to_string())];
     if let Some(e) = &cfg.engines {

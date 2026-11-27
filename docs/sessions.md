@@ -224,9 +224,28 @@ is. `-w=NAME` (or `--worktree=NAME`) names it, otherwise it gets a name
 like `swift-otter`. As in OpenCode, the name needs the `=`: in
 `codesmith run -w "fix it"`, `fix it` is the message.
 
-- New worktrees go under the data folder's `worktree/<project>/`, or under
-  `worktree.directory` (an absolute path, or one relative to the project
-  root; `~` is not expanded).
+- New worktrees go inside the repository, at `<repo>/.worktrees/<name>`,
+  where `<repo>` is the main checkout. That holds when you start from
+  inside another worktree too: CodeSmith finds the main checkout through
+  git's own common directory (`git rev-parse --git-common-dir`), so a new
+  worktree goes beside the others, never inside one. Keeping them in the
+  project means the agent never needs to write outside it.
+- Before the first one, CodeSmith adds `.worktrees/` to the main
+  repository's `.git/info/exclude` (creating `info/` if needed, and
+  leaving the file alone when a line such as `.worktrees`, `/.worktrees/`
+  or `**/.worktrees` already covers it). It never touches `.gitignore`. So
+  `git status` in the main checkout doesn't show them, and `grep`, `glob`
+  and the file watcher run from the main checkout skip them. Undo
+  snapshots of the main checkout leave out every nested worktree, so
+  undoing a turn there never changes files inside one.
+- `worktree.directory` (an absolute path, or one relative to the main
+  checkout; `~` is not expanded) puts new worktrees somewhere else. A
+  folder inside the repository is added to `.git/info/exclude` the same
+  way (`/build/trees/` for `build/trees`); one outside it is left alone.
+- Worktrees made by CodeSmith 0.6.1 and earlier under the data folder's
+  `worktree/<project>/` stay where they are and keep working: git tracks
+  them, so `worktree list` shows them and `worktree remove NAME` finds
+  them there by name.
 - They start detached at `HEAD`, and the session opens in the same subfolder
   you started from.
 - The CodeSmith files that git doesn't track and that CodeSmith still reads
@@ -242,12 +261,27 @@ like `swift-otter`. As in OpenCode, the name needs the `=`: in
   `$CODESMITH_WORKTREE_BASE` and `$CODESMITH_WORKTREE_PATH` set.
 
 ```jsonc
-{ "worktree": { "directory": "/Users/me/worktrees", "start": "npm ci" } }
+{ "worktree": { "directory": "/Users/x/worktrees", "start": "npm ci" } }
 ```
 
 Manage them with `codesmith worktree list`, `worktree create [NAME] [--from
-REF] [-b BRANCH]` and `worktree remove NAME_OR_PATH [--force]`.
+REF] [-b BRANCH]` and `worktree remove NAME_OR_PATH [--force]`. `list`
+shows each worktree on its own line, the main checkout first.
+`remove` refuses, and says which, when the worktree has uncommitted
+changes (modified or untracked files, named in the error), or has commits
+that are on no remote branch and not on its base: the commit it was made
+from, or the main checkout's `HEAD` for a worktree CodeSmith didn't make.
+Removing a detached worktree would lose those commits. Push them first, or
+pass `--force` to remove it anyway.
+
 In the UI, `/worktrees` opens, makes and removes them and moves the session
 to one, and the [open menu](interactive-ui.md#projects-worktrees-and-other-folders)
 lists each project's worktrees. The model can list, create and remove them
 too, with the [`codesmith` tool](tools.md#codesmith).
+
+A session started inside `.worktrees/<name>` (or any other worktree) has
+that worktree as its project, as before: its `.git` file marks the
+nearest repository, so its undo snapshots and searches are its
+own. A session at the main checkout's root has the nested worktrees
+inside its project, so reading and editing their files, or `cd`-ing into
+one in the shell, asks nothing extra.

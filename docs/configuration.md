@@ -177,7 +177,7 @@ is parsed:
 | `openapi` | `{}` | `{"<name>": {"spec", "base_url", "auth", "headers", "timeout", "enabled"}}`: OpenAPI specs whose operations are Code Mode tools. See [OpenAPI tools](mcp.md#openapi-tools). |
 | `websearch` | off | `{"url", "engines", "results"}`. See [Web search](#web-search). |
 | `review` | see below | `/review` and `/calibrate` settings. See [code review](code-review.md#settings). |
-| `worktree` | | `{"directory", "start"}`. See [worktrees](sessions.md#worktrees). |
+| `worktree` | | `{"directory", "start"}`. `directory` is the folder new worktrees go in: absolute, or relative to the main checkout (default `.worktrees`, inside it, kept out of git by `.git/info/exclude`; `~` is not expanded). `start` is a setup command run in each new one. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
 | `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Your own config, so a folder can't silence the warning about itself; your home folder and `/` are asked about regardless. |

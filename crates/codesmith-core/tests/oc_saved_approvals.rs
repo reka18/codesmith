@@ -20,6 +20,7 @@ fn read(resources: &[&str], save: &[&str]) -> Request {
         resources: resources.iter().map(|r| r.to_string()).collect(),
         save: save.iter().map(|r| r.to_string()).collect(),
         title: String::new(),
+        access: None,
     }
 }
 

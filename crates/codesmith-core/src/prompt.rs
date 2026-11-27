@@ -9,6 +9,28 @@ const ASTRA: &str = include_str!("prompt/gpt-astra.txt");
 const KIMI: &str = include_str!("prompt/kimi.txt");
 const TRINITY: &str = include_str!("prompt/trinity.txt");
 const META: &str = include_str!("prompt/meta.txt");
+const WORKTREES: &str = include_str!("prompt/worktrees.txt");
+
+/// Guidance on separate checkouts (nested git worktrees), for every agent
+/// that has the shell, its own prompt or not.
+pub fn checkouts(tools: &[&str]) -> Option<&'static str> {
+    tools.contains(&"shell").then(|| WORKTREES.trim_end())
+}
+
+/// An agent's own system prompt, followed by the guidance every agent
+/// gets for `tools` (see [`checkouts`]): its prompt replaces the base one,
+/// not that.
+pub fn own(system: &str, tools: &[&str]) -> String {
+    with_guidance(system.to_string(), tools)
+}
+
+/// `base` followed by the guidance for `tools` that every agent gets.
+fn with_guidance(base: String, tools: &[&str]) -> String {
+    match checkouts(tools) {
+        Some(g) => format!("{}\n\n{g}", base.trim_end()),
+        None => base,
+    }
+}
 
 /// Fill `${TOOL_GUIDANCE}` with advice for the tools actually available.
 pub fn render(template: &str, tools: &[&str]) -> String {
@@ -39,6 +61,10 @@ pub fn base(model_id: &str, tools: &[&str]) -> String {
 /// models get the default plus a short appendix, and everything else gets
 /// the default. An agent's own prompt replaces all of these.
 pub fn base_named(id: &str, name: &str, tools: &[&str]) -> String {
+    with_guidance(lab_prompt(id, name, tools), tools)
+}
+
+fn lab_prompt(id: &str, name: &str, tools: &[&str]) -> String {
     let id = id.to_lowercase();
     if id.contains("gpt") {
         return render(if id.contains("astra") { ASTRA } else { GPT }, tools);
@@ -174,7 +200,7 @@ pub fn assemble(
     instructions: &str,
 ) -> String {
     let mut parts = vec![match agent_system {
-        Some(s) => s.to_string(),
+        Some(s) => own(s, tools),
         None => base(model_id, tools),
     }];
     parts.push(env.to_string());
@@ -211,8 +237,23 @@ mod tests {
     }
 
     #[test]
+    fn an_agents_own_prompt_gets_the_checkout_guidance_too() {
+        let p = own("Custom agent prompt", &["shell", "read"]);
+        assert!(
+            p.starts_with("Custom agent prompt\n\n# Separate checkouts"),
+            "{p}"
+        );
+        assert_eq!(own("Custom", &["read"]), "Custom");
+        let a = assemble(Some("Mine"), "gpt-5", &["shell"], "ENV", "");
+        assert!(
+            a.starts_with("Mine\n\n# Separate checkouts") && a.ends_with("ENV"),
+            "{a}"
+        );
+    }
+
+    #[test]
     fn no_upstream_branding() {
-        for p in [SYSTEM, GPT, ANTHROPIC] {
+        for p in [SYSTEM, GPT, ANTHROPIC, WORKTREES] {
             assert!(!p.to_lowercase().contains("opencode"));
         }
     }
@@ -237,6 +278,52 @@ mod tests {
         assert_eq!(s, "You only search.\n\nENV");
         let s = assemble(None, "m", &[], "ENV", "INSTR");
         assert!(s.ends_with("ENV\n\nINSTR"));
+    }
+
+    #[test]
+    fn every_base_prompt_with_the_shell_says_where_worktrees_go() {
+        let ids = [
+            "gpt-5",
+            "gpt-5-astra",
+            "kimi-k2",
+            "trinity",
+            "muse-spark",
+            "claude-sonnet-4",
+            "llama-3.3",
+        ];
+        for id in ids {
+            let p = base_named(id, id, &["shell", "edit"]);
+            assert!(p.contains("# Separate checkouts"), "{id}");
+            assert!(
+                p.contains("git worktree add <repo>/.worktrees/<name> <ref>"),
+                "{id}"
+            );
+            assert!(
+                p.contains(".git/info/exclude") && p.contains("not `.gitignore`"),
+                "{id}"
+            );
+            assert!(
+                p.contains("Never `cd` or `git -C` into folders outside the project"),
+                "{id}"
+            );
+            assert!(
+                p.contains("git worktree remove <path>") && p.contains("git worktree prune"),
+                "{id}"
+            );
+            assert!(p.contains("worktree_create"), "{id}");
+            assert_eq!(p.matches("# Separate checkouts").count(), 1, "{id}");
+            // Without the shell there is nothing to run it with.
+            assert!(
+                !base_named(id, id, &["read"]).contains("Separate checkouts"),
+                "{id}"
+            );
+        }
+        assert!(checkouts(&["shell"]).is_some() && checkouts(&[]).is_none());
+        // An agent's own prompt replaces the base, but not the guidance.
+        let s = assemble(Some("You only search."), "gpt-5", &["shell"], "ENV", "");
+        assert_eq!(s.matches("# Separate checkouts").count(), 1);
+        assert!(!assemble(Some("x"), "m", &["read"], "ENV", "").contains("Separate checkouts"));
+        assert!(assemble(None, "m", &["shell"], "ENV", "").contains("Separate checkouts"));
     }
 
     #[test]

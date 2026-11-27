@@ -3314,6 +3314,7 @@ mod tests {
             resources: vec!["rm x".into()],
             save: vec!["rm *".into()],
             title: "$ rm x".into(),
+            access: None,
         }
     }
 
@@ -3372,6 +3373,7 @@ mod tests {
                 resources: vec!["x.rs".into()],
                 save: vec![],
                 title: "Edit x.rs".into(),
+                access: None,
             },
             tx,
         ));

@@ -181,13 +181,13 @@ pub(crate) fn run_with(ctx: &Ctx, input: &Value, files: &dyn Files) -> Outcome {
     let mut targets: Vec<(Target, Option<Target>)> = Vec::with_capacity(hunks.len());
     for hunk in &hunks {
         let target = ctx.resolve(hunk.path());
-        ctx.authorize_external(&target, false)?;
+        ctx.authorize_external(&target, false, super::Access::Write)?;
         let move_target = match hunk {
             Hunk::Update {
                 move_path: Some(m), ..
             } => {
                 let dest = ctx.resolve(m);
-                ctx.authorize_external(&dest, false)?;
+                ctx.authorize_external(&dest, false, super::Access::Write)?;
                 Some(dest).filter(|d| d.absolute != target.absolute)
             }
             _ => None,
@@ -224,6 +224,7 @@ pub(crate) fn run_with(ctx: &Ctx, input: &Value, files: &dyn Files) -> Outcome {
         resources,
         save: vec!["*".into()],
         title: format!("Patch {}", shown.join(", ")),
+        access: None,
     };
     let early = every().any(|t| ctx.read_effect(&t.resources) != Effect::Allow);
     if early {

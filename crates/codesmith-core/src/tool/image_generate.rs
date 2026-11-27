@@ -327,14 +327,16 @@ async fn start(ctx: &Ctx<'_>, env: Env<'_>, input: &Value) -> Result<String, Str
         resources: vec![reference.clone()],
         save: vec!["*".into()],
         title: format!("Generate an image with {reference}"),
+        access: None,
     })?;
     if let Some(t) = &target {
-        ctx.authorize_external(t, false)?;
+        ctx.authorize_external(t, false, super::Access::Write)?;
         ctx.ask(Request {
             action: "edit".into(),
             resources: t.resources.clone(),
             save: vec!["*".into()],
             title: format!("Write {}", t.resource),
+            access: None,
         })?;
     }
     let mut images = Vec::new();
@@ -460,13 +462,15 @@ impl Job {
                 }
             }
             Some(_) => {
-                ctx.authorize_external(&t, false).map_err(failed)?;
+                ctx.authorize_external(&t, false, super::Access::Write)
+                    .map_err(failed)?;
                 if file.exists() {
                     ctx.ask(Request {
                         action: "edit".into(),
                         resources: t.resources.clone(),
                         save: vec!["*".into()],
                         title: format!("Write {}", t.resource),
+                        access: None,
                     })
                     .map_err(failed)?;
                 } else {

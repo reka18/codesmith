@@ -169,8 +169,60 @@ impl Snapshots {
         }
     }
 
+    /// Folders inside the work tree that hold other checkouts: the
+    /// `.worktrees` folder and every linked worktree of the project's
+    /// repository under the work tree. Snapshots leave them out (a nested
+    /// worktree is its own project, with its own snapshots), so undo never
+    /// touches their files.
+    fn nested(&self) -> Vec<String> {
+        let root = self
+            .work_tree
+            .canonicalize()
+            .unwrap_or_else(|_| self.work_tree.clone());
+        let mut out: Vec<String> = Vec::new();
+        if root.join(crate::worktree::NESTED).is_dir() {
+            out.push(crate::worktree::NESTED.to_string());
+        }
+        let listed = crate::git::command(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output();
+        if let Some(o) = listed.ok().filter(|o| o.status.success()) {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let Some(p) = line.strip_prefix("worktree ") else {
+                    continue;
+                };
+                let p = Path::new(p);
+                let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                let Ok(rel) = p.strip_prefix(&root) else {
+                    continue;
+                };
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                let covered = out
+                    .iter()
+                    .any(|o| rel == *o || rel.starts_with(&format!("{o}/")));
+                if !rel.is_empty() && !covered {
+                    out.push(rel);
+                }
+            }
+        }
+        out
+    }
+
     fn capture_into(&self, index: &Path) -> Result<String> {
-        self.git_with(&["add", "--all", "--", "."], Some(index))?;
+        let nested = self.nested();
+        let mut add: Vec<String> = ["add", "--all", "--", "."].map(String::from).to_vec();
+        if !nested.is_empty() {
+            // Out of the index too: an older capture may hold one.
+            let mut rm: Vec<String> = ["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"]
+                .map(String::from)
+                .to_vec();
+            rm.extend(nested.iter().map(|n| format!(":(literal){n}")));
+            let rm: Vec<&str> = rm.iter().map(String::as_str).collect();
+            self.git_with(&rm, Some(index))?;
+            add.extend(nested.iter().map(|n| format!(":(exclude,literal){n}")));
+        }
+        let add: Vec<&str> = add.iter().map(String::as_str).collect();
+        self.git_with(&add, Some(index))?;
         Ok(self
             .git_with(&["write-tree"], Some(index))?
             .trim()
@@ -178,21 +230,35 @@ impl Snapshots {
     }
 
     /// Paths that differ between two trees.
+    ///
+    /// Another checkout inside the work tree (a gitlink an older capture
+    /// recorded, or a path under a nested worktree) is never a change:
+    /// undo leaves nested worktrees alone.
     pub fn changes(&self, from: &str, to: &str) -> Result<Vec<Change>> {
         let out = self.git(&[
             "diff",
             "--no-ext-diff",
             "--no-renames",
-            "--name-status",
+            "--raw",
             "-z",
             from,
             to,
         ])?;
+        let nested = self.nested();
         let mut parts = out.split('\0').filter(|s| !s.is_empty());
         let mut changes = Vec::new();
-        while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+        // `:old-mode new-mode old new status`, then the path.
+        while let (Some(meta), Some(path)) = (parts.next(), parts.next()) {
+            let fields: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
+            let gitlink = fields.iter().take(2).any(|m| *m == "160000");
+            let inside = nested
+                .iter()
+                .any(|n| path == n || path.starts_with(&format!("{n}/")));
+            if gitlink || inside {
+                continue;
+            }
             changes.push(Change {
-                status: status.chars().next().unwrap_or('M'),
+                status: fields.get(4).and_then(|s| s.chars().next()).unwrap_or('M'),
                 path: path.to_string(),
             });
         }
@@ -436,5 +502,167 @@ mod tests {
         }
         assert_eq!(stable_hash("/a"), stable_hash("/a"));
         assert_ne!(stable_hash("/a"), stable_hash("/b"));
+    }
+
+    fn fixture_git(dir: &Path, args: &[&str]) {
+        let out = crate::git::fixture()
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A project that is a repository with a nested worktree at
+    /// `.worktrees/w` (made as CodeSmith makes it) and one in a folder of
+    /// another name.
+    fn with_nested() -> (tempfile::TempDir, PathBuf, Snapshots, PathBuf, PathBuf) {
+        let (d, root, s) = setup();
+        fixture_git(&root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "main\n").unwrap();
+        fixture_git(&root, &["add", "a.txt"]);
+        fixture_git(&root, &["commit", "-q", "-m", "a"]);
+        let (wt, _) = crate::worktree::create(
+            &crate::worktree::WorktreeConfig::default(),
+            &root,
+            &crate::worktree::Create {
+                name: Some("w".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let other = root.join("trees/other");
+        fixture_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &other.display().to_string(),
+            ],
+        );
+        (d, root, s, wt, other)
+    }
+
+    #[test]
+    fn nested_worktrees_are_never_captured_or_restored() {
+        if !git_available() {
+            return;
+        }
+        let (_d, root, s, wt, other) = with_nested();
+        assert_eq!(
+            s.nested(),
+            vec![".worktrees".to_string(), "trees/other".to_string()]
+        );
+        let before = s.capture().unwrap();
+        let listed = s.git(&["ls-tree", "-r", "--name-only", &before]).unwrap();
+        assert_eq!(
+            listed.trim(),
+            "a.txt",
+            "only the main checkout's files: {listed}"
+        );
+        // A turn changes files in the main checkout and in both worktrees,
+        // and commits in one (which moves what a gitlink would record).
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(wt.join("a.txt"), "worktree work\n").unwrap();
+        std::fs::write(wt.join("new.txt"), "new in worktree\n").unwrap();
+        std::fs::write(other.join("a.txt"), "other work\n").unwrap();
+        fixture_git(&wt, &["commit", "-q", "-am", "wt"]);
+        let after = s.capture().unwrap();
+        let ch = s.changes(&before, &after).unwrap();
+        assert_eq!(
+            ch,
+            vec![Change {
+                status: 'M',
+                path: "a.txt".into()
+            }]
+        );
+        // Undo restores the main checkout's file and nothing nested.
+        let restored = s.restore(&before).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "main\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("a.txt")).unwrap(),
+            "worktree work\n"
+        );
+        assert!(wt.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(other.join("a.txt")).unwrap(),
+            "other work\n"
+        );
+        // Undoing everything since the worktree existed leaves it alone too.
+        s.restore_only(
+            &before,
+            Some(&[".worktrees/w".into(), ".worktrees/w/new.txt".into()]),
+        )
+        .unwrap();
+        assert!(wt.join("new.txt").exists());
+    }
+
+    #[test]
+    fn a_gitlink_an_older_capture_recorded_is_dropped_and_never_restored() {
+        if !git_available() {
+            return;
+        }
+        let (_d, root, s, wt, _other) = with_nested();
+        // What captures did before: `add --all` records each nested
+        // worktree as a gitlink.
+        s.ensure().unwrap();
+        let mut c = s.command();
+        c.args(["add", "--all", "--", "."]);
+        assert!(c.output().unwrap().status.success());
+        let old = s.git(&["write-tree"]).unwrap().trim().to_string();
+        let tree = s.git(&["ls-tree", "-r", &old]).unwrap();
+        assert!(tree.contains("160000"), "{tree}");
+        fixture_git(
+            &wt,
+            &["commit", "-q", "--allow-empty", "-m", "moves the gitlink"],
+        );
+        let now = s.capture().unwrap();
+        assert!(!s.git(&["ls-tree", "-r", &now]).unwrap().contains("160000"));
+        assert!(s.changes(&old, &now).unwrap().is_empty());
+        s.restore(&old).unwrap();
+        let head = crate::git::fixture()
+            .arg("-C")
+            .arg(&wt)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            "moves the gitlink"
+        );
+        let _ = root;
+    }
+
+    #[test]
+    fn a_session_in_a_nested_worktree_snapshots_that_worktree() {
+        if !git_available() {
+            return;
+        }
+        let (d, _root, _s, wt, _other) = with_nested();
+        let s = Snapshots::new(&wt, &d.path().join("wt-snaps")).unwrap();
+        assert!(s.nested().is_empty(), "the main checkout is not inside it");
+        let before = s.capture().unwrap();
+        std::fs::write(wt.join("a.txt"), "edited\n").unwrap();
+        s.restore(&before).unwrap();
+        assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "main\n");
     }
 }

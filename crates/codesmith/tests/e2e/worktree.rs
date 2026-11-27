@@ -58,8 +58,11 @@ async fn run_in_a_worktree_writes_only_there() {
             .trim_end_matches("\x1b[0m")
             .trim(),
     );
-    assert!(wt.starts_with(e.data.join("codesmith/worktree")), "{wt:?}");
-    assert!(wt.ends_with("bump"), "{wt:?}");
+    // Inside the main checkout, kept out of it by `.git/info/exclude`.
+    assert_eq!(wt, e.project.join(".worktrees/bump"), "{wt:?}");
+    let exclude = std::fs::read_to_string(e.path(".git/info/exclude")).unwrap();
+    assert!(exclude.lines().any(|l| l == ".worktrees/"), "{exclude}");
+    assert!(!e.path(".gitignore").exists());
 
     // The worktree has the changes; the main checkout does not.
     assert_eq!(std::fs::read_to_string(wt.join("app.txt")).unwrap(), "v2\n");
@@ -100,7 +103,58 @@ async fn run_in_a_worktree_writes_only_there() {
         "uncommitted changes keep it: {}",
         rm.both()
     );
+    assert!(rm.stderr.contains("uncommitted changes"), "{}", rm.both());
     e.run(&["worktree", "remove", "bump", "--force"]).await.ok();
     assert!(!wt.exists());
     m.assert_done();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worktree_commands_create_list_and_remove_nested_worktrees() {
+    need_git!();
+    let e = Env::new();
+    let made = e.run(&["worktree", "create", "side"]).await;
+    made.ok();
+    let wt = PathBuf::from(made.stdout.trim());
+    assert_eq!(wt, e.project.join(".worktrees/side"), "{}", made.both());
+    // Made again from inside the first: beside it, not inside it.
+    let again = e.run_in(&wt, &["worktree", "create", "other"]).await;
+    again.ok();
+    assert_eq!(
+        PathBuf::from(again.stdout.trim()),
+        e.project.join(".worktrees/other")
+    );
+    let exclude = std::fs::read_to_string(e.path(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches(".worktrees/").count(), 1, "{exclude}");
+    assert_eq!(
+        e.git(&["status", "--porcelain", "--untracked-files=all"]),
+        ""
+    );
+
+    // Each worktree is its own line; the main checkout's is its folder.
+    let list = e.run_in(&wt, &["worktree", "list"]).await;
+    list.ok();
+    let lines: Vec<&str> = list.stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{}", list.both());
+    assert!(lines[0].contains("(main)") && !lines[0].contains(".worktrees"));
+    assert!(lines[1..]
+        .iter()
+        .all(|l| l.contains(".worktrees/") && !l.contains("(main)")));
+
+    // A commit on no remote branch keeps it, and the error says so.
+    std::fs::write(wt.join("work.txt"), "work\n").unwrap();
+    e.git_in(&wt, &["add", "work.txt"]);
+    e.git_in(&wt, &["commit", "-q", "--no-gpg-sign", "-m", "work"]);
+    let rm = e.run(&["worktree", "remove", "side"]).await;
+    assert_eq!(rm.code, Some(1), "{}", rm.both());
+    assert!(
+        rm.stderr.contains("1 commit not on any remote branch"),
+        "{}",
+        rm.both()
+    );
+    assert!(wt.exists());
+    e.run(&["worktree", "remove", "side", "--force"]).await.ok();
+    assert!(!wt.exists());
+    e.run(&["worktree", "remove", "other"]).await.ok();
+    assert!(!e.project.join(".worktrees/other").exists());
 }

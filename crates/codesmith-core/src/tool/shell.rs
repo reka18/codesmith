@@ -21,7 +21,7 @@
 use super::shell_proc::{Proc, StopReason};
 use super::{opt_bool, opt_str, opt_u64, shell_scan, str_arg, Ctx, Outcome, Output};
 use crate::config::ToolOutputConfig;
-use crate::permission::{Denied, Effect, Reply, Request, Rule};
+use crate::permission::{Access, Denied, Effect, Reply, Request, Rule};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -1358,17 +1358,19 @@ fn background_text(job: &Job, timed_out: Option<u64>) -> String {
     lines.join("\n")
 }
 
-/// Files the command's redirects write to, resolved against the working
-/// directory and every `cd` target (a relative path may be written after a
-/// `cd`), and the first target that is only known at run time.
+/// Files the command's redirects write to: a relative one from the folder
+/// a `&&` chain of `cd`s before it led to when the scan knows it (see
+/// [`shell_scan::Write::cwd`]), otherwise from the working directory and
+/// every `cd` target. And the first target that is only known at run time.
 fn write_targets(
     ctx: &Ctx<'_>,
     dirs: &[PathBuf],
-    analysis: &shell_scan::Analysis,
+    writes: &[shell_scan::Write],
+    unknown_cwd: bool,
 ) -> (Vec<super::Target>, Option<String>) {
     let mut targets: Vec<super::Target> = Vec::new();
     let mut unknown = None;
-    for w in &analysis.writes {
+    for w in writes {
         let Some(path) = &w.path else {
             unknown.get_or_insert_with(|| w.raw.clone());
             continue;
@@ -1385,16 +1387,19 @@ fn write_targets(
             continue;
         }
         let p = Path::new(path);
-        if !p.is_absolute() && analysis.unknown_cwd {
+        if !p.is_absolute() && unknown_cwd {
             // After a `cd` the scan cannot follow, a relative path could be
             // anywhere.
             unknown.get_or_insert_with(|| w.raw.clone());
             continue;
         }
-        let bases: Vec<&PathBuf> = if p.is_absolute() {
-            dirs.iter().take(1).collect()
-        } else {
-            dirs.iter().collect()
+        // From the folder the `cd`s before it led to, when the scan knows
+        // it; otherwise from every folder the command may be in.
+        let chained = w.cwd.as_ref().map(|c| resolve_dir(&dirs[0], c));
+        let bases: Vec<&PathBuf> = match &chained {
+            _ if p.is_absolute() => dirs.iter().take(1).collect(),
+            Some(c) => vec![c],
+            None => dirs.iter().collect(),
         };
         for base in bases {
             let t = ctx.resolve(&physical(&base.join(p)).display().to_string());
@@ -1404,6 +1409,21 @@ fn write_targets(
         }
     }
     (targets, unknown)
+}
+
+/// Whether a command line only reads in the folders outside the project it
+/// reaches: every command is one known to only read (`ls`, `git log`...),
+/// it writes no file it names, and nothing in it runs unseen.
+fn line_access(analysis: &shell_scan::Analysis, unknown_write: bool) -> Access {
+    if analysis.mutating
+        || analysis.dynamic.is_some()
+        || unknown_write
+        || !analysis.writes.is_empty()
+    {
+        Access::Write
+    } else {
+        Access::Read
+    }
 }
 
 /// How the rules settle `action` for a resource nothing is known about:
@@ -1456,6 +1476,7 @@ fn authorize_unknown(
     actions: &[&str],
     command: &str,
     title: &str,
+    access: Option<Access>,
 ) -> Result<(), String> {
     let saved = ctx.gate.saved();
     let mut ask = None;
@@ -1488,6 +1509,7 @@ fn authorize_unknown(
         resources: vec![command.to_string()],
         save: Vec::new(),
         title: title.to_string(),
+        access: access.filter(|_| action == "external_directory"),
     };
     let asker = ctx.gate.asker();
     let by = ctx.gate.origin();
@@ -1693,6 +1715,7 @@ fn authorize_secret_reads(
         resources,
         save: Vec::new(),
         title: format!("$ {command} (reads {})", shown.join(", ")),
+        access: None,
     })
 }
 
@@ -1714,8 +1737,26 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
     let dir = dir.to_path_buf();
     let analysis = shell_scan::analyze(command, &dir)?;
     let mut dirs = vec![dir.clone()];
-    dirs.extend(analysis.directories.iter().map(|d| resolve_dir(&dir, d)));
-    ctx.authorize_external_dirs(&dirs)?;
+    // Each folder as written from the working directory, and from the one
+    // before it: `cd .. && cd ../x` goes two levels up.
+    let mut previous = dir.clone();
+    for d in &analysis.directories {
+        let here = resolve_dir(&dir, d);
+        let after = resolve_dir(&previous, d);
+        for p in [here, after.clone()] {
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        }
+        previous = after;
+    }
+    let (targets, unknown_write) =
+        write_targets(ctx, &dirs, &analysis.writes, analysis.unknown_cwd);
+    let access = line_access(
+        &analysis,
+        unknown_write.is_some() || analysis.unknown_target.is_some(),
+    );
+    ctx.authorize_external_dirs(&dirs, access)?;
     if analysis.unknown_cwd {
         authorize_unknown(
             ctx,
@@ -1725,11 +1766,28 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
                 "$ {} (changes to a directory only known when it runs)",
                 command
             ),
+            Some(access),
         )?;
     }
-    let (targets, unknown_write) = write_targets(ctx, &dirs, &analysis);
+    if let Some(raw) = &analysis.unknown_target {
+        // Checked like a `cd` to a computed folder: it may be outside.
+        authorize_unknown(
+            ctx,
+            &["external_directory"],
+            command,
+            &format!(
+                "$ {} (names {raw}, which is only known when it runs)",
+                command
+            ),
+            Some(Access::Write),
+        )?;
+    }
+    let (reached, _) = write_targets(ctx, &dirs, &analysis.reached, analysis.unknown_cwd);
+    for t in &reached {
+        ctx.authorize_external(t, false, access)?;
+    }
     for t in &targets {
-        ctx.authorize_external(t, false)?;
+        ctx.authorize_external(t, false, Access::Write)?;
     }
     let (mut resources, mut save): (Vec<String>, Vec<String>) =
         analysis.commands.iter().cloned().unzip();
@@ -1774,6 +1832,7 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
             resources,
             save,
             title: format!("$ {}", command),
+            access: None,
         })?;
     }
     authorize_secret_reads(ctx, &dir, &analysis, command)?;
@@ -1786,6 +1845,7 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
                 "$ {} (cannot be checked command by command: {reason})",
                 command
             ),
+            None,
         )?;
     }
     if let Some(raw) = &unknown_write {
@@ -1797,6 +1857,7 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
                 "$ {} (writes to {raw}, which is only known when it runs)",
                 command
             ),
+            Some(Access::Write),
         )?;
     }
     if !targets.is_empty() {
@@ -1814,6 +1875,7 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
             resources: names,
             save: vec!["*".into()],
             title: format!("$ {} (writes {})", command, shown.join(", ")),
+            access: None,
         })?;
     }
     Ok(())
@@ -2381,6 +2443,10 @@ pub(super) async fn stop_child(
     let _ = child.kill().await;
     child.wait().await.ok().map(ending_of)
 }
+
+#[cfg(test)]
+#[path = "shell_outside_tests.rs"]
+mod outside_tests;
 
 #[cfg(test)]
 mod tests {

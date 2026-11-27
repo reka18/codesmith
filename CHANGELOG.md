@@ -49,6 +49,54 @@ All notable changes to CodeSmith are listed here. Versions follow
   second clone or a worktree starts with none; a symlink to the folder
   shares them. Approvals saved under a first commit stay in the database
   but no longer apply.
+- **Security: shell commands that reach a folder outside the project now
+  need `external_directory` approval, like `cd`.** Before, a command
+  could point git, env, make or others at a folder outside the project,
+  or write files there by name, without it: `git -C ../other commit`,
+  `GIT_DIR=../other/.git git reset --hard`, `env -C ../other rm f`, `make
+  -C ../other`, `rm ../other/f`, `cp a ../other/b`, `perl -i -pe ...
+  ../other/f`, `curl -o ../other/f` and the like ran with the default
+  rules, in a headless run too, where `cd ../other` was refused. Now
+  every option that runs a program in another folder or points it at a
+  repository or work tree elsewhere is checked like a `cd` target, and
+  every file a known program writes, moves or deletes by name like a
+  redirect target (`external_directory`, then `edit`). A path only known
+  at run time (`rm "$f"`, `ls | xargs rm`, `patch -p1 < x.diff`) asks,
+  and is refused when nobody can answer. See [shell
+  commands](docs/permissions.md#shell-commands) for the full list.
+- Under the `plan` agent, `rm`, `cp`, `mv` and the other programs that
+  write files by name are refused inside the project too, as redirects
+  already were.
+- A relative `cd` after another one is checked from where the first one
+  went: `cd .. && cd ../x` from a subfolder goes outside the project.
+- In one `&&` list, a relative write is checked from where the `cd`s
+  before it led, not also from the working directory: `cd sub/deep &&
+  echo x > ../y` no longer asks about a folder outside the project.
+- `for f in *.txt; do rm "$f"; done`, a quoted loop variable over plain
+  globs inside the project, is checked as a write to those globs, so it
+  runs under the `edit` rules without the `external_directory` question.
+- An `external_directory` request now says whether the command only reads
+  there or may write (`access`), for rules that will use it. A declined
+  one names the folder, so a model in a headless run sees why.
+- Quoted paths in inline code (`python3 -c "open('../x/f', 'w')"`) are
+  checked for `external_directory`.
+- **New worktrees go inside the repository**, at `<repo>/.worktrees/<name>`
+  (`codesmith -w`, `codesmith worktree create`, `/worktrees`, the
+  `codesmith` tool), instead of the data folder, so the agent never needs
+  to write outside the project. The main checkout is found through git's
+  common directory, also from inside another worktree. `.worktrees/` is
+  added to `.git/info/exclude` (never `.gitignore`) before the first one.
+  `worktree.directory` still overrides. Worktrees made by earlier
+  versions stay where they are and keep working.
+- `worktree remove` refuses a worktree with uncommitted changes, or with
+  commits that are on no remote branch and not on its base, unless
+  `--force`, and says which.
+- Undo snapshots leave nested worktrees out, so undoing a turn in the main
+  checkout never changes files inside one.
+- The agent's system prompt says to make separate checkouts with `git
+  worktree add <repo>/.worktrees/<name>` (or the `codesmith` tool), never
+  as a folder beside the repository. Every agent with the shell gets it, also one with its own
+  `system` prompt.
 - **`codesmith run --output final`** prints only the final answer on
   stdout, when the run ends, without the narration ("Let me look…") of
   the steps before it. Tool activity still goes to stderr. `--output all`,

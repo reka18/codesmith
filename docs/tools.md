@@ -328,10 +328,13 @@ CodeSmith up and manage worktrees. `action` picks what it does:
   and status.
 - `worktree_list` lists the project's git worktrees.
 - `worktree_create` creates a named worktree under `worktree.directory`
-  (default `<data>/worktree/<project>`) and returns its directory.
+  (default `<repo>/.worktrees`, inside the main checkout and kept out of
+  git by `.git/info/exclude`; see [worktrees](sessions.md#worktrees)) and
+  returns its directory.
 - `worktree_remove` removes a linked worktree (a path relative to the
   working directory, or absolute). A worktree with modified or untracked
-  files is kept unless `force` is set; the main checkout is never removed.
+  files, or with commits on no remote branch and not on its base, is kept
+  unless `force` is set; the main checkout is never removed.
 
 Listing never asks. Creating or removing a worktree needs the approval
 editing files there needs: an `edit` request on the worktree's directory

@@ -227,6 +227,7 @@ fn read_req(p: &str) -> Request {
         resources: vec![p.into()],
         save: vec!["*".into()],
         title: format!("Read {p}"),
+        access: None,
     }
 }
 

@@ -504,6 +504,7 @@ pub(crate) async fn assert_live(input: AssertPermission) -> Result<(), Permissio
             action: input.action,
             resources: input.resources,
             save: input.save,
+            access: None,
         };
         let r = tokio::task::spawn_blocking(move || gate.assert(&req))
             .await

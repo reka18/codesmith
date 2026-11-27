@@ -182,12 +182,13 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     }
     let path = opt_str(input, "path");
     let target = ctx.resolve(path.unwrap_or("."));
-    ctx.authorize_external(&target, target.absolute.is_dir())?;
+    ctx.authorize_external(&target, target.absolute.is_dir(), super::Access::Read)?;
     ctx.ask(Request {
         action: "grep".into(),
         resources: vec![pattern.to_string()],
         save: vec!["*".into()],
         title: format!("Search for {pattern}"),
+        access: None,
     })?;
     // Grep shows file contents, so the read rules apply: a file named by
     // `path` is approved like a read, and a directory a rule denies is not
@@ -199,6 +200,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
                 resources: target.resources.clone(),
                 save: vec!["*".into()],
                 title: format!("Read {}", target.resource),
+                access: None,
             })?;
         } else {
             ctx.check_not_denied("read", &target.resources)?;

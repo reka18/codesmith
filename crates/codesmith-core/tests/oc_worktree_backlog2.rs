@@ -89,13 +89,14 @@ fn oc_worktree_creates_lists_and_removes_a_worktree() {
 /// "defaults to the TUI worktree directory and suffixes duplicate names",
 /// "adds a numeric suffix when a worktree directory already exists" and
 /// "fails after ten worktree directory conflicts". Adapted: the default
-/// folder is `<data>/worktree/<project>`.
+/// folder is `<repo>/.worktrees`, kept out of the repository by its
+/// `.git/info/exclude`.
 #[test]
 fn oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten() {
     let Some((_t, repo, _)) = repo() else { return };
     let default = WorktreeConfig::default();
     let parent = worktree::base_dir(&default, &repo);
-    assert!(parent.starts_with(codesmith_core::paths::data_dir().join("worktree")));
+    assert_eq!(parent, repo.join(".worktrees"));
     let (first, _) = worktree::create(&default, &repo, &named("task")).unwrap();
     let (second, _) = worktree::create(&default, &repo, &named("task")).unwrap();
     assert_eq!(first.file_name().unwrap(), "task");
@@ -108,6 +109,9 @@ fn oc_worktree_suffixes_duplicate_names_and_gives_up_after_ten() {
     assert!(e.to_string().contains("already exists"), "{e}");
     worktree::remove(&default, &repo, "task", false).unwrap();
     worktree::remove(&default, &repo, "task-2", false).unwrap();
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert_eq!(exclude.matches(".worktrees/").count(), 1, "{exclude}");
+    assert_eq!(git(&repo, &["status", "--porcelain"]), "");
     let _ = std::fs::remove_dir_all(&parent);
 }
 

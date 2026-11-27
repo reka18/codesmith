@@ -188,6 +188,7 @@ pub(crate) fn authorize(ctx: &Ctx<'_>, raw: &str) -> Result<reqwest::Url, String
         resources: vec![url.to_string()],
         save: save_patterns(&url),
         title: format!("Fetch {url}"),
+        access: None,
     })?;
     Ok(url)
 }

@@ -577,6 +577,7 @@ async fn a_wildcard_host_is_refused_and_never_saved() {
             resources: vec![raw.to_string()],
             save: webfetch::save_patterns(&url),
             title: format!("Fetch {raw}"),
+            access: None,
         };
         g.assert(&req).unwrap();
         assert!(g.saved().is_empty(), "{:?}", g.saved());

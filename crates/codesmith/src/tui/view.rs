@@ -2804,6 +2804,7 @@ mod tests {
                 resources: vec!["sh src/add.sh 1 2".into()],
                 save: vec![],
                 title: "$ sh src/add.sh 1 2".into(),
+                access: None,
             },
             tx,
         ));
@@ -2832,6 +2833,7 @@ mod tests {
                 resources: vec!["ls".into()],
                 save: vec![],
                 title: "$ ls".into(),
+                access: None,
             },
             tx,
         ));
@@ -2857,6 +2859,7 @@ mod tests {
                 resources: vec!["a.rs".into()],
                 save: vec![],
                 title: "Edit a.rs".into(),
+                access: None,
             },
             tx,
         ));
@@ -3000,6 +3003,7 @@ mod tests {
                 resources: vec!["a.rs".into()],
                 save: vec![],
                 title: "Edit a.rs (-1 +1 lines)".into(),
+                access: None,
             },
             reply: None,
             feedback: String::new(),
@@ -3022,6 +3026,7 @@ mod tests {
                 resources: vec![title.into()],
                 save: vec![],
                 title: format!("$ {title}"),
+                access: None,
             },
             reply: None,
             feedback: String::new(),

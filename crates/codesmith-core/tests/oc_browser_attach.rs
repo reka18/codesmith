@@ -372,6 +372,7 @@ fn a_grant_source_cannot_grant_other_actions_lift_a_guard_or_smuggle_a_deny_mark
             resources: vec!["/w/.env".into()],
             save: vec![],
             title: String::new(),
+            access: None,
         };
         assert!(g.assert(&req).is_err());
     }

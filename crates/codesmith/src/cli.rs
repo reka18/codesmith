@@ -1797,7 +1797,7 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
                 &codesmith_core::instruction_state::render_initial(&list, &o.current)?,
             );
             let base = match &a.system {
-                Some(s) => s.clone(),
+                Some(s) => prompt::own(s, &tools),
                 None => {
                     prompt::base_named(&mid, &prompt::model_name(&loaded.config, &model_id), &tools)
                 }
@@ -4714,6 +4714,7 @@ mod tests {
             resources: vec![title.into()],
             save: vec![],
             title: title.into(),
+            access: None,
         }
     }
 

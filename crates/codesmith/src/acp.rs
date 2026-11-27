@@ -3328,6 +3328,22 @@ mod tests {
         );
     }
 
+    // The race the gate in `launch` removes: a command that finishes at
+    // once would otherwise be reported inside the turn that started it
+    // ("startedwoke: …"), as `sleep 0.5` was on a slow CI runner. Gated,
+    // the turn ends with "started" alone and a resumed turn reports it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_instant_background_command_is_reported_after_its_turn() {
+        let (_d, cwd, base) = tmp().await;
+        let mut c = start(&cwd, &base);
+        let sid = c.new_session(&cwd).await;
+        launch(&mut c, &sid, "echo done-instant").await;
+        let (m, _) = c
+            .wait(|m| chunk_text(m).is_some_and(|t| t.contains("done-instant")))
+            .await;
+        assert!(chunk_text(&m).unwrap().contains("woke"), "{m}");
+    }
+
     pub(super) async fn settle_pause(sid: &str) {
         if PAUSED.lock().unwrap().iter().any(|s| s == sid) {
             std::future::pending::<()>().await;
@@ -3335,7 +3351,8 @@ mod tests {
     }
     /// The background command notices the model answered, by marker.
     static WOKE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    const MARKERS: [&str; 12] = [
+    const MARKERS: [&str; 13] = [
+        "done-instant",
         "done-fast",
         "done-fail",
         "done-held",
@@ -3558,6 +3575,9 @@ mod tests {
         w: tokio::io::DuplexStream,
         r: tokio::io::Lines<BufReader<tokio::io::DuplexStream>>,
         next: u64,
+        /// The folder of the latest session made, where `launch` opens its
+        /// gates.
+        cwd: Option<PathBuf>,
     }
 
     impl Client {
@@ -3620,6 +3640,7 @@ mod tests {
             self.until(id, |_| None).await.0
         }
         async fn new_session(&mut self, cwd: &Path) -> String {
+            self.cwd = Some(cwd.to_path_buf());
             let r = self
                 .request("session/new", json!({"cwd": cwd, "mcpServers": []}))
                 .await;
@@ -3670,6 +3691,7 @@ mod tests {
             w: client_w,
             r: BufReader::new(client_r).lines(),
             next: 0,
+            cwd: None,
         }
     }
 
@@ -6217,17 +6239,28 @@ mod tests {
     }
 
     /// Start `command` in the background and end the turn while it runs.
+    /// The command waits for a gate that opens only once the turn has
+    /// ended, so it can never finish (and be reported) inside the turn
+    /// that started it, however slow the machine.
     async fn launch(c: &mut Client, sid: &str, command: &str) -> Vec<Value> {
+        static GATES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let gate = format!(
+            ".launch-gate-{}",
+            GATES.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let held = format!("while [ ! -e {gate} ]; do sleep 0.02; done; {command}");
         let id = c
             .call(
                 "session/prompt",
-                json!({"sessionId": sid, "prompt": [{"type": "text", "text": format!("background {command}")}]}),
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": format!("background {held}")}]}),
             )
             .await;
         let (done, seen) = c.until(id, allow_once).await;
-        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done} {seen:?}");
         let text: String = seen.iter().filter_map(chunk_text).collect();
         assert_eq!(text, "started");
+        let cwd = c.cwd.clone().expect("a session");
+        std::fs::write(cwd.join(gate), "").unwrap();
         seen
     }
 
@@ -6787,6 +6820,7 @@ mod tests {
             w: client_w,
             r: BufReader::new(client_r).lines(),
             next: 0,
+            cwd: None,
         };
         let init = c
             .request(

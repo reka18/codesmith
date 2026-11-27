@@ -697,7 +697,7 @@ impl Session {
             date: String::new(),
         });
         let base_system = match &agent.system {
-            Some(s) => s.clone(),
+            Some(s) => prompt::own(s, &names),
             None => {
                 // Chosen by the model's id in config or the catalog, as
                 // OpenCode's model-lab prompts are.
@@ -3117,6 +3117,7 @@ impl Session {
             resources,
             save,
             title,
+            access: None,
         };
         tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
     }
@@ -3866,6 +3867,7 @@ impl Session {
                 resources: vec![resource.into()],
                 save: vec![],
                 title,
+                access: None,
             };
             let gate = Gate::new(vec![], self.gate.asker());
             tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
