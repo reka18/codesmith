@@ -1136,13 +1136,13 @@ async fn bifrost_model(
     let listed = match (
         key,
         cfg.provider(pid)
-            .and_then(|p| bifrost::root(&p.settings, &process_env())),
+            .and_then(|p| bifrost::urls(&p.settings, &process_env()).ok().flatten()),
     ) {
-        (Some(key), Some(root)) => {
+        (Some(key), Some(urls)) => {
             let mut m = cfg.resolve_model(&format!("{pid}/_"))?;
             m.provider.api_key = Some(key.clone());
             let client = reqwest::Client::new();
-            match bifrost::fetch(&client, &m.provider, &root).await {
+            match bifrost::fetch(&client, &m.provider, &urls).await {
                 Ok(data) => {
                     let catalog = cfg.models_dev.as_ref().map(|c| c.catalog());
                     bifrost::derive(&bifrost::normalize(&data), catalog.as_deref())

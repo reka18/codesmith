@@ -104,6 +104,28 @@ pub struct Settings {
     /// Bifrost: whether `codesmith run --usage-log` reads the virtual key's
     /// budget before and after the run for a billed total (default on).
     pub quota: Option<bool>,
+    /// Bifrost: which of the gateway's OpenAI-shaped routes non-Anthropic
+    /// models use, `unified` (`<baseURL>/v1`, the default) or `openai`
+    /// (`<baseURL>/openai/v1`, Bifrost's OpenAI integration).
+    pub api: Option<String>,
+    /// Bifrost: the OpenAI-shaped inference root, in place of what `api`
+    /// picks.
+    #[serde(alias = "openaiBaseURL", alias = "openaiBaseUrl")]
+    pub openai_base_url: Option<String>,
+    /// Bifrost: the Anthropic Messages root (default
+    /// `<baseURL>/anthropic/v1`).
+    #[serde(alias = "anthropicBaseURL", alias = "anthropicBaseUrl")]
+    pub anthropic_base_url: Option<String>,
+    /// Bifrost: the Gemini root (default `<baseURL>/genai/v1beta`).
+    #[serde(alias = "geminiBaseURL", alias = "geminiBaseUrl")]
+    pub gemini_base_url: Option<String>,
+    /// Bifrost: the model list's full URL (default `<baseURL>/v1/models`).
+    #[serde(alias = "modelsURL", alias = "modelsUrl")]
+    pub models_url: Option<String>,
+    /// Bifrost: the quota's full URL (default
+    /// `<baseURL>/api/governance/virtual-keys/quota`).
+    #[serde(alias = "quotaURL", alias = "quotaUrl")]
+    pub quota_url: Option<String>,
 }
 
 /// What a provider plugin is given.
@@ -117,6 +139,8 @@ pub struct Input<'a> {
     pub configured_protocol: Option<Protocol>,
     /// The model's own configured protocol (`models.<id>.protocol`).
     pub model_protocol: Option<Protocol>,
+    /// The model's own configured Bifrost route (`models.<id>.api`).
+    pub model_api: Option<&'a str>,
     /// The model's catalog package and (unexpanded) catalog base URL.
     pub package: Option<&'a str>,
     pub catalog_url: Option<&'a str>,

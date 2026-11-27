@@ -1,7 +1,10 @@
 //! A fake Bifrost gateway for tests: its model list per virtual key (in
-//! pages), both inference surfaces streaming, the routing and request-id
-//! response headers, and the virtual key's quota. Every request is kept.
-//! Shared by codesmith-core's and the CLI's tests.
+//! pages), every inference surface streaming (the unified `/v1`, the
+//! `/openai`, `/anthropic` and `/genai` integrations, or any mount ending
+//! in the same paths), the routing and request-id response headers, and
+//! the virtual key's quota. It can refuse routes, as a gateway that serves
+//! only Bifrost's integration routes does. Every request is kept. Shared
+//! by codesmith-core's and the CLI's tests.
 #![allow(dead_code)]
 
 use serde_json::{json, Value};
@@ -55,6 +58,14 @@ pub struct State {
     pub datasheet: Option<String>,
     /// Answer with this tool call (name, JSON arguments) instead of text.
     pub tool_call: Option<(String, Value)>,
+    /// Paths answered with this status and body, whatever the method
+    /// (a route the gateway doesn't serve).
+    pub refused: Vec<(String, u16, String)>,
+    /// Where the model list is served (default `/v1/models`).
+    pub models_path: Option<String>,
+    /// Where the quota is served (default
+    /// `/api/governance/virtual-keys/quota`).
+    pub quota_path: Option<String>,
     pub seen: Vec<Seen>,
     pub quota_calls: usize,
 }
@@ -111,6 +122,23 @@ impl Gateway {
 
     pub fn with<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
         f(&mut self.state.lock().unwrap())
+    }
+}
+
+/// What a hostname that serves inference only through Bifrost's
+/// integration routes answers on the unified ones.
+pub const INFERENCE_ONLY: &str = r#"{"error":"This hostname serves inference only. Use the admin hostname for administration."}"#;
+
+impl State {
+    /// A gateway serving inference only on Bifrost's integration routes:
+    /// the unified `/v1/chat/completions` and `/v1/responses` answer 403,
+    /// while `/v1/models`, the quota, `/openai/v1/…`, `/anthropic/v1/messages`
+    /// and `/genai/…` answer.
+    pub fn integration_only(mut self) -> State {
+        for p in ["/v1/chat/completions", "/v1/responses"] {
+            self.refused.push((p.into(), 403, INFERENCE_ONLY.into()));
+        }
+        self
     }
 }
 
@@ -200,8 +228,25 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
     let req = read_request(&mut s).await?;
     st.lock().unwrap().seen.push(req.clone());
     let key = req.header("x-bf-vk").unwrap_or("").to_string();
+    let (refused, models_path, quota_path) = {
+        let g = st.lock().unwrap();
+        (
+            g.refused
+                .iter()
+                .find(|(p, _, _)| *p == req.path)
+                .map(|(_, c, b)| (*c, b.clone())),
+            g.models_path.clone().unwrap_or_else(|| "/v1/models".into()),
+            g.quota_path
+                .clone()
+                .unwrap_or_else(|| "/api/governance/virtual-keys/quota".into()),
+        )
+    };
+    if let Some((code, body)) = refused {
+        respond(&mut s, code, "application/json", &[], &body).await;
+        return Some(());
+    }
     match (req.method.as_str(), req.path.as_str()) {
-        ("GET", "/v1/models") => {
+        ("GET", p) if p == models_path => {
             let (status, body) = {
                 let g = st.lock().unwrap();
                 if let Some(code) = g.list_status {
@@ -232,7 +277,7 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
         // Gemini's own model list, for a real gateway's upstream.
-        ("GET", p) if p.ends_with("/models") && p != "/v1/models" => {
+        ("GET", p) if p.ends_with("/models") => {
             let models = st
                 .lock()
                 .unwrap()
@@ -259,7 +304,7 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
                 None => respond(&mut s, 404, "application/json", &[], "{}").await,
             }
         }
-        ("GET", "/api/governance/virtual-keys/quota") => {
+        ("GET", p) if p == quota_path => {
             let answer = {
                 let mut g = st.lock().unwrap();
                 let i = g.quota_calls.min(g.quota.len().saturating_sub(1));
@@ -269,13 +314,14 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             let (status, body) = answer.unwrap_or((404, json!({"error": "no"})));
             respond(&mut s, status, "application/json", &[], &body.to_string()).await;
         }
-        // `/v1/messages` is Anthropic's own path, and `/v1beta/models/…`
-        // Gemini's, for a real gateway's upstream.
+        // Any mount of the four APIs: Bifrost's unified `/v1/…`, its
+        // `/openai`, `/anthropic` and `/genai` integrations, a gateway that
+        // mounts them elsewhere, and (for a real gateway's upstream)
+        // Anthropic's and Gemini's own paths.
         ("POST", p)
-            if p == "/v1/chat/completions"
-                || p == "/anthropic/v1/messages"
-                || p == "/v1/messages"
-                || p == "/v1/responses"
+            if p.ends_with("/chat/completions")
+                || p.ends_with("/v1/messages")
+                || p.ends_with("/responses")
                 || p.ends_with(":streamGenerateContent") =>
         {
             let (fail, headers, cost, tokens, tool) = {
@@ -310,9 +356,15 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
                 return Some(());
             }
             let tool = tool.as_ref();
+            // Bifrost's OpenAI integration writes `usage.cost` as the bare
+            // total, as OpenAI's SDKs expect; its unified API, as an object.
+            let cost = match cost {
+                Some(c) if req.path.contains("/openai/") => Some(c["total_cost"].clone()),
+                c => c,
+            };
             let body = match req.path.as_str() {
-                "/v1/chat/completions" => chat_stream(&tokens, cost.as_ref(), tool),
-                "/v1/responses" => responses_stream(&tokens, cost.as_ref(), tool),
+                p if p.ends_with("/chat/completions") => chat_stream(&tokens, cost.as_ref(), tool),
+                p if p.ends_with("/responses") => responses_stream(&tokens, cost.as_ref(), tool),
                 p if p.ends_with(":streamGenerateContent") => gemini_stream(&tokens, tool),
                 _ => anthropic_stream(&tokens, tool),
             };

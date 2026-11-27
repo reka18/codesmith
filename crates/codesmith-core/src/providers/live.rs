@@ -127,13 +127,13 @@ pub async fn refresh(
     match provider_id {
         super::bifrost::ID => Some(
             async {
-                let root = super::bifrost::root(settings, &super::process_env()).ok_or_else(|| {
+                let urls = super::bifrost::urls(settings, &super::process_env())?.ok_or_else(|| {
                     anyhow::anyhow!(
                         "Bifrost needs the gateway's URL: set {} or settings.baseURL on the bifrost provider",
                         super::bifrost::URL_VAR
                     )
                 })?;
-                super::bifrost::refresh(client, &file(), p, &root).await
+                super::bifrost::refresh(client, &file(), p, &urls).await
             }
             .await,
         ),

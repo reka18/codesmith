@@ -36,7 +36,8 @@
 //! - `bridge`: signing in for a tailbus bridge (`auth login --home` and
 //!   `--to-file`) and `bridge init` in a pseudo-terminal.
 //! - `bifrost`: `run` on a fake Bifrost gateway: its model list per key,
-//!   request ids, and the usage log's costs and run total.
+//!   request ids, the usage log's costs and run total, and a gateway that
+//!   serves only Bifrost's integration routes.
 //! - `worktree`: `run -w`.
 //! - `tui`: the interactive UI in a pseudo-terminal.
 //! - `catalog`: the models.dev catalog: listing, resolution, background

@@ -3,7 +3,9 @@
 //! (fetched as a session starts, kept by a hash of the key, the saved one
 //! only when the gateway is down), effort levels like the same model's
 //! reached directly, streaming on both APIs with the gateway's request id
-//! and routed model, the estimated cost's sources, and the quota's arithmetic.
+//! and routed model, the estimated cost's sources, the quota's arithmetic,
+//! and which route each surface takes (`api`, the per-surface URLs, their
+//! variables) with a clear error for a route the gateway doesn't serve.
 //!
 //! Every test runs in a temporary home and holds [`LOCK`]: the kept model
 //! lists are one file per home.
@@ -11,7 +13,7 @@
 mod bifrost_gateway;
 mod support;
 
-use bifrost_gateway::{model, Gateway, State};
+use bifrost_gateway::{model, Gateway, State, INFERENCE_ONLY};
 use codesmith_ai::{Event, Message, Request, Served, Usage};
 use codesmith_core::catalog::{Json, ModelsDev};
 use codesmith_core::config::Config;
@@ -488,7 +490,13 @@ async fn a_rejected_key_keeps_the_saved_list_and_never_shows_the_key() {
     let unknown = "sk-bf-not-a-known-key-9999";
     let m = config(&g.url, unknown).resolve_model("bifrost/_").unwrap();
     g.with(|s| s.list_status = None);
-    let e = bifrost::refresh(&reqwest::Client::new(), &live::file(), &m.provider, &g.url)
+    let urls = bifrost::urls_at(
+        &g.url,
+        &c.provider("bifrost").unwrap().settings,
+        &codesmith_core::providers::process_env(),
+    )
+    .unwrap();
+    let e = bifrost::refresh(&reqwest::Client::new(), &live::file(), &m.provider, &urls)
         .await
         .unwrap_err();
     assert!(e.to_string().contains("401"), "{e}");
@@ -850,20 +858,18 @@ async fn a_quota_read_that_fails_or_has_no_budget_says_nothing() {
     let m = c.resolve_model("bifrost/_").unwrap();
     let client = reqwest::Client::new();
     // No quota route (404): no reading.
-    assert_eq!(bifrost::quota(&client, &m.provider, &g.url).await, None);
+    let q = format!("{}/api/governance/virtual-keys/quota", g.url);
+    assert_eq!(bifrost::quota(&client, &m.provider, &q).await, None);
     g.with(|s| s.quota = vec![(200, json!({"budgets": []}))]);
-    assert_eq!(
-        bifrost::quota(&client, &m.provider, &g.url).await,
-        Some(vec![])
-    );
+    assert_eq!(bifrost::quota(&client, &m.provider, &q).await, Some(vec![]));
     let seen = g.seen();
-    let q = seen.iter().rfind(|s| s.path.ends_with("/quota")).unwrap();
-    assert_eq!(q.header("x-bf-vk"), Some(KEY_A));
+    let read = seen.iter().rfind(|s| s.path.ends_with("/quota")).unwrap();
+    assert_eq!(read.header("x-bf-vk"), Some(KEY_A));
     // A gateway that's gone: no reading, quickly.
     g.stop();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let t = std::time::Instant::now();
-    assert_eq!(bifrost::quota(&client, &m.provider, &g.url).await, None);
+    assert_eq!(bifrost::quota(&client, &m.provider, &q).await, None);
     assert!(t.elapsed() < bifrost::QUOTA_TIMEOUT + std::time::Duration::from_millis(500));
 }
 
@@ -1186,5 +1192,814 @@ async fn gemini_budget_and_none_levels_are_spelled_for_gemini() {
     assert_eq!(
         body["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0,
         "{body}"
+    );
+}
+
+// ------------------------------------------------------------ routes
+
+/// A gateway that serves inference only on Bifrost's integration routes,
+/// with every kind of model listed.
+async fn integration_gateway() -> Gateway {
+    let g = Gateway::start(
+        State {
+            tokens: (100, 20, 30, 0),
+            routed: Some(("openai".into(), "gpt-test-7-mini".into())),
+            cost: Some(json!({"input_cost": 0.001, "output_cost": 0.002, "total_cost": 0.003})),
+            ..Default::default()
+        }
+        .integration_only(),
+    )
+    .await;
+    g.set_models(
+        KEY_A,
+        [
+            "openai/gpt-test-7",
+            "openai/plain-test-1",
+            "anthropic/claude-test-9-1",
+            "gemini/gemini-test-3",
+            "groq/chat-model",
+        ]
+        .iter()
+        .map(|m| model(m))
+        .collect(),
+    );
+    g
+}
+
+/// Bifrost on `url` with `settings` beside the URL and key, the Responses
+/// API for `openai/gpt-test-7` and Gemini's for `gemini/gemini-test-3`.
+fn routed(url: &str, settings: Value) -> Config {
+    let mut s = json!({"baseURL": url, "apiKey": KEY_A});
+    for (k, v) in settings.as_object().unwrap() {
+        s[k] = v.clone();
+    }
+    config_with(json!({"providers": {"bifrost": {"settings": s, "models": {
+        "openai/gpt-test-7": {"protocol": "openai-responses"},
+        "gemini/gemini-test-3": {"protocol": "google-gemini"}
+    }}}}))
+}
+
+fn posts(g: &Gateway) -> Vec<String> {
+    g.seen()
+        .iter()
+        .filter(|s| s.method == "POST")
+        .map(|s| s.path.clone())
+        .collect()
+}
+
+async fn stream_err(c: &Config, spec: &str) -> codesmith_ai::Error {
+    let m = c.resolve_model(spec).unwrap();
+    match m
+        .provider
+        .stream(&reqwest::Client::new(), &request(&m.model_id))
+        .await
+    {
+        Ok(_) => panic!("{spec} streamed"),
+        Err(e) => e,
+    }
+}
+
+#[tokio::test]
+async fn with_api_openai_every_surface_streams_on_an_integration_only_gateway() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = integration_gateway().await;
+    let c = routed(&g.url, json!({"api": "openai"}));
+    assert_eq!(fetch(&c).await, bifrost::Outcome::Fresh(5));
+    for (spec, text, path, cost) in [
+        (
+            "bifrost/groq/chat-model",
+            "Hello there.",
+            "/openai/v1/chat/completions",
+            Some(0.003),
+        ),
+        (
+            "bifrost/openai/gpt-test-7",
+            "Hello there.",
+            "/openai/v1/responses",
+            Some(0.003),
+        ),
+        (
+            "bifrost/anthropic/claude-test-9-1",
+            "Hello from Claude.",
+            "/anthropic/v1/messages",
+            None,
+        ),
+        (
+            "bifrost/gemini/gemini-test-3",
+            "Hello from Gemini.",
+            "/genai/v1beta/models/gemini/gemini-test-3:streamGenerateContent",
+            None,
+        ),
+    ] {
+        let before = g.seen().len();
+        let (events, got) = stream(&c, spec).await;
+        assert_eq!(got, text, "{spec}");
+        let seen = g.seen();
+        let req = &seen[before..]
+            .iter()
+            .find(|s| s.method == "POST")
+            .unwrap_or_else(|| panic!("{spec}: {seen:?}"));
+        assert_eq!(req.path, path, "{spec}");
+        assert_eq!(req.header("x-bf-vk"), Some(KEY_A), "{spec}");
+        assert_eq!(
+            req.header("x-bf-agent-correlation-id"),
+            Some("ses_test1"),
+            "{spec}"
+        );
+        // Gemini streams by its path (`:streamGenerateContent`).
+        if !spec.contains("gemini") {
+            assert_eq!(req.body["stream"], true, "{spec}");
+        }
+        let s = served(&events);
+        let sent = req.header("x-request-id").unwrap();
+        assert_eq!(s.request_id, Some(format!("bf-{sent}")), "{spec}");
+        assert_eq!(s.provider.as_deref(), Some("openai"), "{spec}");
+        assert_eq!(s.model.as_deref(), Some("gpt-test-7-mini"), "{spec}");
+        let u = usage(&events);
+        assert_eq!((u.input, u.output, u.cache_read), (100, 20, 30), "{spec}");
+        // The OpenAI integration's bare `usage.cost` is billed as the
+        // unified API's `{"total_cost"}` is.
+        assert_eq!(u.cost, cost, "{spec}");
+    }
+    assert!(
+        !posts(&g).iter().any(|p| p.starts_with("/v1/")),
+        "{:?}",
+        posts(&g)
+    );
+}
+
+#[tokio::test]
+async fn on_the_openai_route_effort_usage_and_ids_go_as_on_the_unified_one() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = integration_gateway().await;
+    let unified = routed(&g.url, json!({}));
+    let openai = routed(&g.url, json!({"api": "openai"}));
+    fetch(&openai).await;
+    for (spec, chat) in [
+        ("bifrost/groq/chat-model#high", true),
+        ("bifrost/openai/gpt-test-7#high", false),
+    ] {
+        let (u_url, u_h, u_body) = prepared(&unified, spec);
+        let (o_url, o_h, o_body) = prepared(&openai, spec);
+        let tail = if chat {
+            "chat/completions"
+        } else {
+            "responses"
+        };
+        assert_eq!(u_url, format!("{}/v1/{tail}", g.url));
+        assert_eq!(o_url, format!("{}/openai/v1/{tail}", g.url));
+        // The same body: Bifrost's OpenAI integration reads the same
+        // `ChatParameters` and `ResponsesParameters` as its unified API.
+        assert_eq!(u_body, o_body, "{spec}");
+        assert_eq!(o_body["reasoning"]["effort"], "high", "{o_body}");
+        assert!(o_body.get("reasoning_effort").is_none(), "{o_body}");
+        if chat {
+            assert_eq!(o_body["stream_options"]["include_usage"], true, "{o_body}");
+        }
+        assert_eq!(o_h.get("x-bf-vk").unwrap(), KEY_A);
+        assert!(o_h.get("authorization").is_none());
+        assert_eq!(u_h.get("x-bf-vk"), o_h.get("x-bf-vk"));
+    }
+    // Ids keep Bifrost's `<upstream>/<model>` form there too.
+    let (_, _, body) = prepared(&openai, "bifrost/openai/plain-test-1");
+    assert_eq!(body["model"], "openai/plain-test-1");
+}
+
+#[tokio::test]
+async fn tool_calls_come_through_every_surface_with_api_openai() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = integration_gateway().await;
+    let args = json!({"path": "src/main.rs"});
+    g.with(|s| s.tool_call = Some(("read".into(), args.clone())));
+    let c = routed(&g.url, json!({"api": "openai"}));
+    fetch(&c).await;
+    for spec in [
+        "bifrost/groq/chat-model",
+        "bifrost/openai/gpt-test-7",
+        "bifrost/anthropic/claude-test-9-1",
+        "bifrost/gemini/gemini-test-3",
+    ] {
+        let (events, _) = stream(&c, spec).await;
+        assert_eq!(
+            tool_calls(&events),
+            [("read".to_string(), args.clone())],
+            "{spec}"
+        );
+    }
+    assert_eq!(
+        posts(&g),
+        [
+            "/openai/v1/chat/completions",
+            "/openai/v1/responses",
+            "/anthropic/v1/messages",
+            "/genai/v1beta/models/gemini/gemini-test-3:streamGenerateContent"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_unified_default_on_an_integration_only_gateway_fails_clearly_and_tries_nothing_else() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = integration_gateway().await;
+    let c = routed(&g.url, json!({}));
+    fetch(&c).await;
+    for (spec, path) in [
+        ("bifrost/groq/chat-model", "/v1/chat/completions"),
+        ("bifrost/openai/gpt-test-7", "/v1/responses"),
+    ] {
+        let before = posts(&g).len();
+        let e = stream_err(&c, spec).await;
+        let msg = e.to_string();
+        for part in [
+            format!("{}{path} answered HTTP 403", g.url),
+            "This hostname serves inference only. Use the admin hostname for administration."
+                .to_string(),
+            "the gateway doesn't serve this route".to_string(),
+            "Nothing else was tried".to_string(),
+            "providers.bifrost.settings.api".to_string(),
+            "set providers.bifrost.settings.api to \"openai\"".to_string(),
+            "integration routes".to_string(),
+        ] {
+            assert!(msg.contains(&part), "{part}:\n{msg}");
+        }
+        assert!(!msg.contains(KEY_A));
+        assert!(!msg.to_lowercase().contains("access"), "{msg}");
+        // Never retried, never sent to another route.
+        assert!(!e.retryable());
+        assert_eq!(&posts(&g)[before..], [path], "{spec}");
+        // As the session explains it: no word of the key's access.
+        let class = codesmith_core::retry::classify(&e);
+        assert_ne!(class, codesmith_core::retry::Class::Authentication);
+        let m = c.resolve_model(spec).unwrap();
+        let shown =
+            codesmith_core::retry::explain(&e, &codesmith_core::retry::Target::of(&m, Some(&c)));
+        assert!(!shown.contains("may not have access"), "{shown}");
+        assert!(shown.contains("api"), "{shown}");
+    }
+    // The model list and Anthropic still work there, as in 0.6.0.
+    let (_, text) = stream(&c, "bifrost/anthropic/claude-test-9-1").await;
+    assert_eq!(text, "Hello from Claude.");
+}
+
+#[tokio::test]
+async fn a_refused_openai_route_points_back_at_unified_and_other_surfaces_at_their_setting() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[
+        "groq/chat-model",
+        "anthropic/claude-test-9-1",
+        "gemini/gemini-test-3",
+    ])
+    .await;
+    g.with(|s| {
+        s.refused = vec![
+            (
+                "/openai/v1/chat/completions".into(),
+                404,
+                "404 page not found".into(),
+            ),
+            (
+                "/anthropic/v1/messages".into(),
+                404,
+                json!({"is_bifrost_error": false, "status_code": 404,
+                       "error": {"message": "Route not found: /anthropic/v1/messages"}})
+                .to_string(),
+            ),
+            (
+                "/genai/v1beta/models/gemini/gemini-test-3:streamGenerateContent".into(),
+                405,
+                "Method Not Allowed".into(),
+            ),
+        ]
+    });
+    let c = routed(&g.url, json!({"api": "openai"}));
+    fetch(&c).await;
+    let e = stream_err(&c, "bifrost/groq/chat-model").await.to_string();
+    assert!(
+        e.contains(&format!(
+            "{}/openai/v1/chat/completions answered HTTP 404 (404 page not found)",
+            g.url
+        )),
+        "{e}"
+    );
+    assert!(
+        e.contains("set api to \"unified\"") && e.contains("openaiBaseURL"),
+        "{e}"
+    );
+    let e = stream_err(&c, "bifrost/anthropic/claude-test-9-1")
+        .await
+        .to_string();
+    assert!(
+        e.contains("Route not found: /anthropic/v1/messages")
+            && e.contains("anthropicBaseURL")
+            && e.contains("BIFROST_ANTHROPIC_BASE_URL"),
+        "{e}"
+    );
+    let e = stream_err(&c, "bifrost/gemini/gemini-test-3")
+        .await
+        .to_string();
+    assert!(e.contains("HTTP 405") && e.contains("geminiBaseURL"), "{e}");
+    // The URL shown never carries the query (`?alt=sse` here).
+    assert!(!e.contains("alt=sse"), "{e}");
+}
+
+#[tokio::test]
+async fn a_403_about_the_key_or_model_stays_an_access_error() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["groq/chat-model"]).await;
+    // Bifrost's governance refusal: an API error, naming the key.
+    let body = json!({"is_bifrost_error": false, "status_code": 403,
+        "error": {"type": "policy_model_blocked",
+                  "message": format!("model blocked for virtual key {KEY_A}")}})
+    .to_string();
+    g.with(|s| s.refused = vec![("/v1/chat/completions".into(), 403, body)]);
+    let c = config(&g.url, KEY_A);
+    fetch(&c).await;
+    let e = stream_err(&c, "bifrost/groq/chat-model").await;
+    assert!(
+        matches!(e, codesmith_ai::Error::Status { status: 403, .. }),
+        "{e:?}"
+    );
+    let msg = e.to_string();
+    assert!(
+        msg.contains("model blocked") && !msg.contains(KEY_A),
+        "{msg}"
+    );
+    assert!(!msg.contains("doesn't serve this route"), "{msg}");
+    assert_eq!(
+        codesmith_core::retry::classify(&e),
+        codesmith_core::retry::Class::Authentication
+    );
+}
+
+#[tokio::test]
+async fn the_key_is_never_in_a_route_error_even_when_the_gateway_echoes_it() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["groq/chat-model"]).await;
+    g.with(|s| {
+        s.refused = vec![(
+            "/v1/chat/completions".into(),
+            403,
+            json!({"error": format!("hostname refuses key {KEY_A} at http://x.example/p?vk={KEY_A}")})
+                .to_string(),
+        )]
+    });
+    let c = config(&g.url, KEY_A);
+    fetch(&c).await;
+    let e = stream_err(&c, "bifrost/groq/chat-model").await;
+    for shown in [e.to_string(), format!("{e:?}")] {
+        assert!(!shown.contains(KEY_A), "{shown}");
+        assert!(shown.contains("[redacted]"), "{shown}");
+    }
+    // In the URL's user info too.
+    let url = g.url.replacen("http://", &format!("http://u:{KEY_A}@"), 1);
+    let c = config(&url, KEY_A);
+    let m = c.resolve_model("bifrost/groq/chat-model").unwrap();
+    let e = m
+        .provider
+        .stream(&reqwest::Client::new(), &request(&m.model_id))
+        .await
+        .err()
+        .unwrap();
+    assert!(!format!("{e} {e:?}").contains(KEY_A), "{e}");
+}
+
+#[tokio::test]
+async fn each_surface_can_be_mounted_elsewhere_by_its_setting() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[]).await;
+    g.set_models(
+        KEY_A,
+        [
+            "groq/chat-model",
+            "openai/gpt-test-7",
+            "anthropic/claude-test-9-1",
+            "gemini/gemini-test-3",
+        ]
+        .iter()
+        .map(|m| model(m))
+        .collect(),
+    );
+    g.with(|s| {
+        s.models_path = Some("/gw/list/models".into());
+        s.quota_path = Some("/gw/budget".into());
+        s.quota = vec![(200, json!({"budgets": []}))];
+        // Nothing at the usual places.
+        s.refused = [
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/anthropic/v1/messages",
+        ]
+        .iter()
+        .map(|p| (p.to_string(), 404, "nope".to_string()))
+        .collect();
+    });
+    let c = routed(
+        &g.url,
+        json!({
+            "api": "openai",
+            "openaiBaseURL": format!("{}/gw/oai/v1/", g.url),
+            "anthropicBaseURL": format!("{}/gw/claude/v1", g.url),
+            "geminiBaseURL": format!("{}/gw/gem/v1beta", g.url),
+            "modelsURL": format!("{}/gw/list/models", g.url),
+            "quotaURL": format!("{}/gw/budget", g.url),
+        }),
+    );
+    assert_eq!(fetch(&c).await, bifrost::Outcome::Fresh(4));
+    for spec in [
+        "bifrost/groq/chat-model",
+        "bifrost/openai/gpt-test-7",
+        "bifrost/anthropic/claude-test-9-1",
+        "bifrost/gemini/gemini-test-3",
+    ] {
+        stream(&c, spec).await;
+    }
+    assert_eq!(
+        posts(&g),
+        [
+            "/gw/oai/v1/chat/completions",
+            "/gw/oai/v1/responses",
+            "/gw/claude/v1/messages",
+            "/gw/gem/v1beta/models/gemini/gemini-test-3:streamGenerateContent"
+        ]
+    );
+    let urls = bifrost::urls(
+        &c.provider("bifrost").unwrap().settings,
+        &codesmith_core::providers::process_env(),
+    )
+    .unwrap()
+    .unwrap();
+    let m = c.resolve_model("bifrost/_").unwrap();
+    assert_eq!(
+        bifrost::quota(&reqwest::Client::new(), &m.provider, &urls.quota.url).await,
+        Some(vec![])
+    );
+    let seen = g.seen();
+    assert!(seen
+        .iter()
+        .any(|s| s.path == "/gw/budget" && s.header("x-bf-vk") == Some(KEY_A)));
+    assert!(seen
+        .iter()
+        .any(|s| s.path == "/gw/list/models" && s.query == "page_size=1000"));
+    // `debug model` names each surface and where it came from.
+    let lines = urls.describe().join("\n");
+    for part in [
+        format!("{}/gw/oai/v1/chat/completions", g.url),
+        "providers.bifrost.settings.openaiBaseURL".to_string(),
+        format!("{}/gw/claude/v1/messages", g.url),
+        "providers.bifrost.settings.quotaURL".to_string(),
+        "providers.bifrost.settings.modelsURL".to_string(),
+    ] {
+        assert!(lines.contains(&part), "{part}:\n{lines}");
+    }
+}
+
+#[tokio::test]
+async fn each_route_setting_has_an_environment_variable() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[]).await;
+    g.set_models(
+        KEY_A,
+        [
+            "groq/chat-model",
+            "anthropic/claude-test-9-1",
+            "gemini/gemini-test-3",
+        ]
+        .iter()
+        .map(|m| model(m))
+        .collect(),
+    );
+    g.with(|s| {
+        s.models_path = Some("/e/models".into());
+        s.quota_path = Some("/e/quota".into());
+    });
+    let vars = [
+        (bifrost::OPENAI_URL_VAR, format!("{}/e/oai/v1", g.url)),
+        (bifrost::ANTHROPIC_URL_VAR, format!("{}/e/claude/v1", g.url)),
+        (bifrost::GEMINI_URL_VAR, format!("{}/e/gem/v1beta", g.url)),
+        (bifrost::MODELS_URL_VAR, format!("{}/e/models", g.url)),
+        (bifrost::QUOTA_URL_VAR, format!("{}/e/quota", g.url)),
+    ];
+    for (k, v) in &vars {
+        std::env::set_var(k, v);
+    }
+    let c = routed(&g.url, json!({}));
+    let outcome = fetch(&c).await;
+    let mut paths = vec![];
+    for spec in [
+        "bifrost/groq/chat-model",
+        "bifrost/anthropic/claude-test-9-1",
+        "bifrost/gemini/gemini-test-3",
+    ] {
+        let m = c.resolve_model(spec).unwrap();
+        paths.push(m.provider.base_url.clone());
+    }
+    let urls = bifrost::urls(
+        &c.provider("bifrost").unwrap().settings,
+        &codesmith_core::providers::process_env(),
+    );
+    // BIFROST_API too, and a setting beats its variable.
+    std::env::set_var(bifrost::API_VAR, "openai");
+    std::env::remove_var(bifrost::OPENAI_URL_VAR);
+    let by_var = c
+        .resolve_model("bifrost/groq/chat-model")
+        .map(|m| m.provider.base_url);
+    let by_setting = routed(&g.url, json!({"api": "unified"}))
+        .resolve_model("bifrost/groq/chat-model")
+        .map(|m| m.provider.base_url);
+    std::env::set_var(bifrost::API_VAR, "sideways");
+    let bad = c
+        .resolve_model("bifrost/groq/chat-model")
+        .err()
+        .map(|e| e.to_string());
+    std::env::remove_var(bifrost::API_VAR);
+    for (k, _) in &vars {
+        std::env::remove_var(k);
+    }
+    assert_eq!(outcome, bifrost::Outcome::Fresh(3));
+    assert_eq!(
+        paths,
+        [
+            format!("{}/e/oai/v1", g.url),
+            format!("{}/e/claude/v1", g.url),
+            format!("{}/e/gem/v1beta", g.url)
+        ]
+    );
+    let urls = urls.unwrap().unwrap();
+    assert_eq!(urls.quota.url, format!("{}/e/quota", g.url));
+    assert_eq!(urls.quota.from, bifrost::QUOTA_URL_VAR);
+    assert_eq!(urls.openai(None).from, bifrost::OPENAI_URL_VAR);
+    assert!(g.seen().iter().any(|s| s.path == "/e/models"));
+    assert_eq!(by_var.unwrap(), format!("{}/openai/v1", g.url));
+    assert_eq!(by_setting.unwrap(), format!("{}/v1", g.url));
+    let bad = bad.expect("a bad BIFROST_API is refused");
+    assert!(
+        bad.contains("BIFROST_API must be \"unified\" or \"openai\""),
+        "{bad}"
+    );
+}
+
+#[test]
+fn a_models_api_overrides_the_providers_and_the_openai_base_url() {
+    let _ = support::isolate();
+    let url = "http://127.0.0.1:9";
+    let c = |settings: Value, api: Option<&str>| {
+        let mut m = json!({});
+        if let Some(a) = api {
+            m["api"] = json!(a);
+        }
+        let mut s = json!({"baseURL": url, "apiKey": KEY_A});
+        for (k, v) in settings.as_object().unwrap() {
+            s[k] = v.clone();
+        }
+        config_with(json!({"providers": {"bifrost": {"settings": s, "models": {
+            "groq/m": m, "openai/r": {"protocol": "openai-responses", "api": api},
+            "anthropic/c": {"api": api}, "gemini/g": {"protocol": "google-gemini", "api": api}
+        }}}}))
+    };
+    let base = |c: &Config, id: &str| {
+        c.resolve_model(&format!("bifrost/{id}"))
+            .unwrap()
+            .provider
+            .base_url
+    };
+    let unified = format!("{url}/v1");
+    let openai = format!("{url}/openai/v1");
+    let custom = "http://127.0.0.1:9/elsewhere/v1".to_string();
+    for (settings, api, want) in [
+        (json!({}), None, &unified),
+        (json!({}), Some("openai"), &openai),
+        (json!({"api": "openai"}), None, &openai),
+        (json!({"api": "openai"}), Some("unified"), &unified),
+        (json!({"api": "OpenAI"}), None, &openai),
+        (json!({"openaiBaseURL": custom}), None, &custom),
+        (
+            json!({"openaiBaseURL": custom, "api": "openai"}),
+            None,
+            &custom,
+        ),
+        (json!({"openaiBaseURL": custom}), Some("openai"), &openai),
+        (json!({"openaiBaseURL": custom}), Some("unified"), &unified),
+    ] {
+        let c = c(settings.clone(), api);
+        assert_eq!(&base(&c, "groq/m"), want, "{settings} {api:?}");
+        assert_eq!(&base(&c, "openai/r"), want, "{settings} {api:?}");
+        // `api` is only about the OpenAI-shaped routes.
+        assert_eq!(base(&c, "anthropic/c"), format!("{url}/anthropic/v1"));
+        assert_eq!(base(&c, "gemini/g"), format!("{url}/genai/v1beta"));
+    }
+    // Another model keeps the provider's choice.
+    let c2 = config_with(json!({"providers": {"bifrost": {
+        "settings": {"baseURL": url, "apiKey": KEY_A, "api": "unified"},
+        "models": {"groq/a": {"api": "openai"}, "groq/b": {}}}}}));
+    assert_eq!(base(&c2, "groq/a"), openai);
+    assert_eq!(base(&c2, "groq/b"), unified);
+}
+
+#[test]
+fn bad_route_settings_are_refused_with_the_setting_named() {
+    let _ = support::isolate();
+    let url = "http://127.0.0.1:9";
+    for (settings, model_api, want) in [
+        (
+            json!({"api": "both"}),
+            None,
+            "providers.bifrost.settings.api must be \"unified\" or \"openai\", not \"both\"",
+        ),
+        (
+            json!({}),
+            Some("v2"),
+            "providers.bifrost.models.groq/m.api must be \"unified\" or \"openai\"",
+        ),
+        (
+            json!({"openaiBaseURL": "gw/openai/v1"}),
+            None,
+            "providers.bifrost.settings.openaiBaseURL must be an http:// or https:// URL",
+        ),
+        (
+            json!({"anthropicBaseURL": "ftp://x/anthropic"}),
+            None,
+            "anthropicBaseURL must be an http:// or https:// URL",
+        ),
+        (
+            json!({"geminiBaseURL": "https://"}),
+            None,
+            "geminiBaseURL must be",
+        ),
+        (
+            json!({"modelsURL": "/v1/models"}),
+            None,
+            "modelsURL must be",
+        ),
+        (json!({"quotaURL": "quota"}), None, "quotaURL must be"),
+    ] {
+        let mut s = json!({"baseURL": url, "apiKey": KEY_A});
+        for (k, v) in settings.as_object().unwrap() {
+            s[k] = v.clone();
+        }
+        let c = config_with(json!({"providers": {"bifrost": {"settings": s,
+            "models": {"groq/m": {"api": model_api}}}}}));
+        let e = c.resolve_model("bifrost/groq/m").unwrap_err().to_string();
+        assert!(e.contains(want), "{want}:\n{e}");
+        assert!(!e.contains(KEY_A));
+    }
+    // Empty values are unset.
+    let c = config_with(json!({"providers": {"bifrost": {"settings": {
+        "baseURL": url, "apiKey": KEY_A, "api": " ", "openaiBaseURL": "", "quotaURL": ""}}}}));
+    assert_eq!(
+        c.resolve_model("bifrost/groq/m").unwrap().provider.base_url,
+        format!("{url}/v1")
+    );
+}
+
+#[test]
+fn the_default_routes_are_0_6_0s() {
+    let settings = codesmith_core::config::ProviderSettings::default();
+    let none: codesmith_core::providers::Env = std::sync::Arc::new(|_: &str| None);
+    let u = bifrost::urls_at("http://gw.example", &settings, &none).unwrap();
+    assert_eq!(u.api, bifrost::Api::Unified);
+    assert_eq!(u.openai(None).url, "http://gw.example/v1");
+    assert_eq!(u.anthropic.url, "http://gw.example/anthropic/v1");
+    assert_eq!(u.gemini.url, "http://gw.example/genai/v1beta");
+    assert_eq!(u.models.url, "http://gw.example/v1/models");
+    assert_eq!(
+        u.quota.url,
+        "http://gw.example/api/governance/virtual-keys/quota"
+    );
+    assert!(u.openai_override.is_none());
+    for p in [
+        codesmith_ai::Protocol::OpenaiChat,
+        codesmith_ai::Protocol::OpenaiResponses,
+        codesmith_ai::Protocol::AnthropicMessages,
+        codesmith_ai::Protocol::GoogleGemini,
+    ] {
+        assert_eq!(
+            u.base(p, None).url,
+            bifrost::surface("http://gw.example", p)
+        );
+    }
+}
+
+#[test]
+fn every_combination_of_route_settings_resolves_by_one_rule() {
+    use codesmith_ai::Protocol::*;
+    let root = "https://gw.example/base";
+    let none: codesmith_core::providers::Env = std::sync::Arc::new(|_: &str| None);
+    let apis = [None, Some("unified"), Some("openai"), Some(" OPENAI ")];
+    let overrides = [None, Some("https://other.example/oai/v1/")];
+    let mut n = 0;
+    for provider_api in apis {
+        for model_api in apis {
+            for ov in overrides {
+                for protocol in [OpenaiChat, OpenaiResponses, AnthropicMessages, GoogleGemini] {
+                    let mut settings = codesmith_core::config::ProviderSettings::default();
+                    settings.plugin.api = provider_api.map(str::to_string);
+                    settings.plugin.openai_base_url = ov.map(str::to_string);
+                    let u = bifrost::urls_at(root, &settings, &none).unwrap();
+                    let m =
+                        model_api.map(|a| (bifrost::Api::parse(a).unwrap(), "model".to_string()));
+                    let got = u.base(protocol, m).url;
+                    let want = match protocol {
+                        AnthropicMessages => format!("{root}/anthropic/v1"),
+                        GoogleGemini => format!("{root}/genai/v1beta"),
+                        _ => match (model_api, ov, provider_api) {
+                            (Some(a), _, _) => bifrost::Api::parse(a).unwrap().root(root),
+                            (None, Some(o), _) => o.trim_end_matches('/').to_string(),
+                            (None, None, Some(a)) => bifrost::Api::parse(a).unwrap().root(root),
+                            _ => format!("{root}/v1"),
+                        },
+                    };
+                    assert_eq!(
+                        got, want,
+                        "{provider_api:?} {model_api:?} {ov:?} {protocol:?}"
+                    );
+                    assert!(!got.ends_with('/'));
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, 4 * 4 * 2 * 4);
+}
+
+#[tokio::test]
+async fn a_model_list_route_the_gateway_doesnt_serve_names_the_url_and_setting() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["groq/chat-model"]).await;
+    g.with(|s| {
+        s.refused = vec![("/v1/models".into(), 403, INFERENCE_ONLY.into())];
+        s.quota = vec![(200, json!({"budgets": []}))];
+    });
+    let c = config(&g.url, KEY_A);
+    let o = fetch(&c).await;
+    let bifrost::Outcome::Missing { error } = &o else {
+        panic!("{o:?}");
+    };
+    for part in [
+        format!("{}/v1/models answered HTTP 403", g.url),
+        "This hostname serves inference only".to_string(),
+        "providers.bifrost.settings.modelsURL (BIFROST_MODELS_URL)".to_string(),
+    ] {
+        assert!(error.contains(&part), "{part}:\n{error}");
+    }
+    assert!(
+        !error.contains(KEY_A) && !error.contains("page_size"),
+        "{error}"
+    );
+    // A refused quota URL stays silent: no reading.
+    g.with(|s| {
+        s.refused = vec![(
+            "/api/governance/virtual-keys/quota".into(),
+            403,
+            INFERENCE_ONLY.into(),
+        )]
+    });
+    let m = c.resolve_model("bifrost/_").unwrap();
+    let q = format!("{}/api/governance/virtual-keys/quota", g.url);
+    assert_eq!(
+        bifrost::quota(&reqwest::Client::new(), &m.provider, &q).await,
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_models_url_with_a_query_keeps_it_and_pages_after_it() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = Gateway::start(State {
+        page: 2,
+        ..Default::default()
+    })
+    .await;
+    g.set_models(
+        KEY_A,
+        (0..3).map(|i| model(&format!("groq/m-{i}"))).collect(),
+    );
+    let c = routed(
+        &g.url,
+        json!({"modelsURL": format!("{}/v1/models?scope=chat", g.url)}),
+    );
+    assert_eq!(fetch(&c).await, bifrost::Outcome::Fresh(3));
+    let qs: Vec<String> = g
+        .seen()
+        .iter()
+        .filter(|s| s.path == "/v1/models")
+        .map(|s| s.query.clone())
+        .collect();
+    assert_eq!(
+        qs,
+        [
+            "scope=chat&page_size=1000",
+            "scope=chat&page_size=1000&page_token=2"
+        ]
     );
 }

@@ -2,7 +2,9 @@
 //! the environment: the key's model list fetched as the run starts, a
 //! model outside it refused, the saved list when the gateway can't list,
 //! a fresh request id per call (retries too), and the usage log's billed
-//! and estimated cost, request id, routed model and run total.
+//! and estimated cost, request id, routed model and run total; and a
+//! gateway that serves inference only on Bifrost's integration routes,
+//! reached with `api: "openai"` and refused clearly without it.
 
 #[path = "../../../codesmith-core/tests/bifrost_gateway/mod.rs"]
 mod gateway;
@@ -365,8 +367,9 @@ async fn a_gateway_down_with_no_saved_list_refuses_the_model() {
 
 /// Against a real Bifrost built from source (`CODESMITH_BIFROST_BIN`),
 /// with the fake gateway as its OpenAI and Anthropic upstream: the key's
-/// filtered list, both APIs, the request id and routed model, and the
-/// quota. Not run by default: `cargo test -p codesmith --test e2e
+/// filtered list, both APIs, the request id and routed model, the quota,
+/// Chat and Responses on Bifrost's OpenAI integration routes
+/// (`BIFROST_API=openai`), and the error for a route it doesn't serve. Not run by default: `cargo test -p codesmith --test e2e
 /// bifrost::real -- --ignored`. `CODESMITH_BIFROST_DATASHEET` names a
 /// copy of Bifrost's pricing datasheet to serve it locally, as a gateway
 /// won't start without one.
@@ -619,6 +622,78 @@ async fn real_bifrost_end_to_end() {
             "{spec} reached the upstream"
         );
     }
+    // Bifrost's OpenAI integration routes, Chat and Responses, with
+    // `BIFROST_API=openai`: the same answer, ids and routed model.
+    for spec in ["bifrost/openai/test-gpt-1", "bifrost/openai/test-gpt-3"] {
+        let log = e.path("integration.jsonl");
+        let _ = std::fs::remove_file(&log);
+        let debug = {
+            let mut c = e.command(&["debug", "model", spec]);
+            c.env("BIFROST_BASE_URL", &base)
+                .env("BIFROST_API_KEY", ALPHA)
+                .env("BIFROST_API", "openai");
+            finish(c.spawn().unwrap()).await
+        };
+        debug.ok();
+        assert!(
+            debug
+                .stdout
+                .contains(&format!("url:      {base}/openai/v1")),
+            "{}",
+            debug.both()
+        );
+        let mut c = e.command(&[
+            "run",
+            "-m",
+            spec,
+            "--format",
+            "json",
+            "--usage-log",
+            log.to_str().unwrap(),
+            "hello",
+        ]);
+        c.env("BIFROST_BASE_URL", &base)
+            .env("BIFROST_API_KEY", ALPHA)
+            .env("BIFROST_API", "openai");
+        let out = finish(c.spawn().unwrap()).await;
+        eprintln!("{spec} on /openai: {}", out.both());
+        out.ok();
+        assert_eq!(out.text(), "Hello there.", "{spec}");
+        let step = log_lines(&log)
+            .into_iter()
+            .find(|l| l["type"] == "step")
+            .unwrap();
+        eprintln!("{spec} /openai step: {step}");
+        assert!(
+            step["request_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "{step}"
+        );
+        assert_eq!(
+            step["served_model"],
+            spec.strip_prefix("bifrost/").unwrap(),
+            "{step}"
+        );
+        assert!(!out.both().contains(ALPHA));
+    }
+    // A route the gateway doesn't serve (Bifrost answers an unknown POST
+    // path with 405), named with the URL and the setting.
+    let mut c = e.command(&["run", "-m", "bifrost/openai/test-gpt-1", "hello"]);
+    c.env("BIFROST_BASE_URL", &base)
+        .env("BIFROST_API_KEY", ALPHA)
+        .env("BIFROST_OPENAI_BASE_URL", format!("{base}/nowhere/v1"));
+    let out = finish(c.spawn().unwrap()).await;
+    eprintln!("unserved route: {}", out.both());
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    for part in [
+        format!("{base}/nowhere/v1/chat/completions answered HTTP 405"),
+        "the gateway doesn't serve this route".to_string(),
+        "providers.bifrost.settings.openaiBaseURL (BIFROST_OPENAI_BASE_URL) when that is set"
+            .to_string(),
+    ] {
+        assert!(out.stderr.contains(&part), "{part}:\n{}", out.both());
+    }
+    assert!(!out.both().contains(ALPHA));
+
     // A model this key may not use.
     let out = run_with(
         BRAVO,
@@ -632,4 +707,186 @@ async fn real_bifrost_end_to_end() {
     .await;
     assert_ne!(out.code, Some(0), "{}", out.both());
     let _ = gw.kill().await;
+}
+
+/// `run` with extra environment variables.
+async fn run_env(e: &Env, g: &Gateway, vars: &[(&str, &str)], args: &[&str]) -> Out {
+    let mut c = e.command(args);
+    c.env("BIFROST_BASE_URL", format!("{}/v1", g.url))
+        .env("BIFROST_API_KEY", KEY);
+    for (k, v) in vars {
+        c.env(k, v);
+    }
+    finish(c.spawn().unwrap()).await
+}
+
+/// A gateway serving inference only on Bifrost's integration routes.
+async fn integration_only(models: Vec<Value>) -> Gateway {
+    let g = Gateway::start(
+        State {
+            tokens: (100, 20, 0, 0),
+            ..Default::default()
+        }
+        .integration_only(),
+    )
+    .await;
+    g.set_models(KEY, models);
+    g
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_run_on_an_integration_only_gateway_with_api_openai() {
+    let g = integration_only(vec![
+        priced("openai/test-gpt-1"),
+        priced("openai/test-gpt-1-mini"),
+    ])
+    .await;
+    g.with(|s| {
+        s.routed = Some(("openai".into(), "test-gpt-1-mini".into()));
+        s.cost = Some(json!({"input_cost": 0.001, "output_cost": 0.003, "total_cost": 0.004}));
+        s.quota = vec![
+            budget(1.0, "2026-11-01T00:00:00Z"),
+            budget(1.25, "2026-11-01T00:00:00Z"),
+        ];
+    });
+    // Chat with `BIFROST_API`, then Responses with the setting.
+    let chat = world("bifrost/openai/test-gpt-1");
+    let responses = Env::new();
+    std::fs::write(
+        responses.config_dir.join("codesmith.json"),
+        json!({"model": "bifrost/openai/test-gpt-1", "permissions": [],
+               "providers": {"bifrost": {"settings": {"api": "openai"},
+                   "models": {"openai/test-gpt-1": {"protocol": "openai-responses"}}}}})
+        .to_string(),
+    )
+    .unwrap();
+    for (e, vars, path) in [
+        (
+            &chat,
+            vec![("BIFROST_API", "openai")],
+            "/openai/v1/chat/completions",
+        ),
+        (&responses, vec![], "/openai/v1/responses"),
+    ] {
+        let before = g.seen().len();
+        let log = e.path("usage.jsonl");
+        let out = run_env(
+            e,
+            &g,
+            &vars,
+            &[
+                "run",
+                "--format",
+                "json",
+                "--usage-log",
+                log.to_str().unwrap(),
+                "hi",
+            ],
+        )
+        .await;
+        out.ok();
+        assert_eq!(out.text(), "Hello there.", "{path}");
+        let seen = g.seen()[before..].to_vec();
+        let sent: Vec<String> = seen
+            .iter()
+            .filter(|s| s.method == "POST")
+            .map(|s| {
+                assert_eq!(s.path, path, "{seen:?}");
+                assert_eq!(s.header("x-bf-vk"), Some(KEY));
+                assert_eq!(s.body["model"], "openai/test-gpt-1");
+                format!("bf-{}", s.header("x-request-id").unwrap())
+            })
+            .collect();
+        assert!(!sent.is_empty(), "{path}");
+        assert!(
+            seen.iter().any(|s| s.path == "/v1/models"),
+            "listed: {seen:?}"
+        );
+        let lines = log_lines(&log);
+        let step = lines.iter().find(|l| l["type"] == "step").unwrap();
+        // The OpenAI integration's bare `usage.cost`.
+        assert_eq!(step["usd"], 0.004, "{path}: {step}");
+        let est = step["usd_estimated"].as_f64().unwrap();
+        assert!((est - 0.0004).abs() < 1e-12, "{path}: {step}");
+        assert!(
+            sent.iter().any(|id| step["request_id"] == id.as_str()),
+            "{path}: {step} {sent:?}"
+        );
+        assert_eq!(step["served_model"], "openai/test-gpt-1-mini", "{path}");
+        let total = lines
+            .iter()
+            .find(|l| l["type"] == "run")
+            .unwrap_or_else(|| panic!("{path}: a run line in {lines:?}"));
+        assert!(
+            (total["usd_quota"].as_f64().unwrap() - 0.25).abs() < 1e-12,
+            "{total}"
+        );
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(!out.both().contains(KEY) && !text.contains(KEY));
+        g.with(|s| s.quota_calls = 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_unified_default_on_an_integration_only_gateway_fails_with_the_url_and_the_setting() {
+    let g = integration_only(vec![priced("openai/test-gpt-1")]).await;
+    let e = world("bifrost/openai/test-gpt-1");
+    let out = run(&e, &g, &["run", "hi"]).await;
+    assert_ne!(out.code, Some(0), "{}", out.both());
+    for part in [
+        format!("{}/v1/chat/completions answered HTTP 403", g.url),
+        "This hostname serves inference only. Use the admin hostname for administration."
+            .to_string(),
+        "doesn't serve this route".to_string(),
+        r#"set providers.bifrost.settings.api to "openai""#.to_string(),
+    ] {
+        assert!(out.stderr.contains(&part), "{part}:\n{}", out.both());
+    }
+    assert!(
+        !out.both().contains("may not have access"),
+        "{}",
+        out.both()
+    );
+    assert!(!out.both().contains(KEY));
+    // Only the unified route was tried, never another.
+    let posts: Vec<String> = g
+        .seen()
+        .iter()
+        .filter(|s| s.method == "POST")
+        .map(|s| s.path.clone())
+        .collect();
+    assert!(!posts.is_empty());
+    assert!(
+        posts.iter().all(|p| p == "/v1/chat/completions"),
+        "{posts:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_model_shows_the_url_of_every_bifrost_surface() {
+    let g = integration_only(vec![priced("openai/test-gpt-1")]).await;
+    let e = world("bifrost/openai/test-gpt-1");
+    let quota = format!("{}/q", g.url);
+    let out = run_env(
+        &e,
+        &g,
+        &[("BIFROST_API", "openai"), ("BIFROST_QUOTA_URL", &quota)],
+        &["debug", "model", "bifrost/openai/test-gpt-1"],
+    )
+    .await;
+    out.ok();
+    for part in [
+        format!("url:      {}/openai/v1", g.url),
+        format!(
+            "openai:    {0}/openai/v1/chat/completions, {0}/openai/v1/responses (from api \"openai\" (BIFROST_API))",
+            g.url
+        ),
+        format!("anthropic: {}/anthropic/v1/messages", g.url),
+        format!("gemini:    {}/genai/v1beta/models/<id>:streamGenerateContent", g.url),
+        format!("models:    {}/v1/models", g.url),
+        format!("quota:     {quota} (from BIFROST_QUOTA_URL)"),
+    ] {
+        assert!(out.stdout.contains(&part), "{part}:\n{}", out.both());
+    }
+    assert!(!out.both().contains(KEY));
 }

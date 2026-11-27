@@ -495,6 +495,9 @@ pub struct ModelConfig {
     /// provider whose models don't all speak the same one. On Bifrost it
     /// also picks the gateway surface (see [`crate::providers::bifrost`]).
     pub protocol: Option<Protocol>,
+    /// Bifrost only: which OpenAI-shaped route this model uses, `unified`
+    /// or `openai`, in place of the provider's `settings.api`.
+    pub api: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2114,6 +2117,7 @@ impl Config {
             catalog_url: cm.and_then(|cm| cm.settings.as_ref()?.base_url.as_deref()),
             model_id: &model_id,
             model_protocol: m.protocol,
+            model_api: m.api.as_deref(),
         })?;
         // The model's own protocol wins over its provider's (Bifrost's route
         // took it into account already, as it picks the URL too).
@@ -2597,6 +2601,7 @@ struct PluginRoute<'a> {
     catalog_url: Option<&'a str>,
     model_id: &'a str,
     model_protocol: Option<Protocol>,
+    model_api: Option<&'a str>,
 }
 
 impl Config {
@@ -2608,6 +2613,7 @@ impl Config {
             configured_url: r.configured_url,
             configured_protocol: r.user.and_then(|u| u.protocol),
             model_protocol: r.model_protocol,
+            model_api: r.model_api,
             package: r.package,
             catalog_url: r.catalog_url,
             model_id: r.model_id,
