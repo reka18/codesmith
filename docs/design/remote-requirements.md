@@ -80,6 +80,20 @@ phone or other client. The **gateway** is `codesmith __remoted`.
 | S15 | **(app)** `prompt_resolved.id` is the same id as the `permission` or `question` event it resolves. |
 | S16 | **(app)** `GET /v1/machine` includes `features`, a list of what this machine supports, such as `session_reply`, `terminal` and `push`. The phones hide what isn't listed. |
 
+### Reconnecting mid-turn
+
+Agreed with the app team on 2026-11-27; it needs Ray's approval. These
+rules let a phone that reconnects during a turn rebuild it exactly.
+
+| Id | Requirement |
+|---|---|
+| S17 | **(app)** `seq` rises per session across turns, and `session` is set on every event, including the session's own. |
+| S18 | **(app)** `GET /v1/sessions/{id}` returns `epoch`, `events_seq` (the last seq whose effect is in the response) and `turn: {id, start_seq} \| null` for the running turn. The owner builds the response and reads `events_seq` under the same lock that appends events, so no event is both in the snapshot and after `events_seq`, or in neither. Stored history covers finished turns, so a running turn's events all come after `events_seq`. |
+| S19 | **(app)** The buffer always keeps every event from the running turn's `turn_start` on, up to **8 MiB** per session. Finished turns keep the S5 limit. To stay under the cap, consecutive `text`, `reasoning` and `tool_output` deltas of one block are merged into one event. It keeps the last seq and says `"merged_from": <first seq>`. Nothing else is ever merged or dropped. A resume seq always falls on an event boundary. |
+| S20 | **(app)** A running turn over 8 MiB after merging: a resume gets `reset` with `"reason": "turn_too_large"`. `GET` then also returns `turn.partial` (the turn so far, in serve's message format) and `turn.partial_seq`, to subscribe from. A reconnect therefore never loops on `reset`. |
+| S21 | **(app)** A replayed event has the same seq as the original, so a client that skips seqs it has already applied never applies `done` twice. `session_status {busy: false}` (C10) carries a seq too. |
+| S22 | The tests check that a client which GETs mid-turn and subscribes from `events_seq` (or `partial_seq`) rebuilds the same transcript as one that watched live. They cut it before `turn_start`, before the first text, mid-text, mid-tool, during a permission prompt, and just before and after `done`. They also cover a turn longer than the S5 ring, an oversized turn, a new epoch, and `done` never applied twice. |
+
 ## E. Errors
 
 | Id | Requirement |
