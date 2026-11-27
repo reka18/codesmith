@@ -271,9 +271,12 @@ pub async fn serve(opts: Options) -> io::Result<()> {
         }
     }
     // Leave: our files only, so a broker that replaced us keeps its own.
+    // The socket goes first, so a registration that's gone means the
+    // broker is gone entirely; one left without its socket reads as a
+    // dead broker's, which members already handle.
     if read_registration(&opts.dir).is_ok_and(|r| r.token == token) {
-        let _ = std::fs::remove_file(opts.dir.join(super::REGISTRATION));
         let _ = std::fs::remove_file(&socket);
+        let _ = std::fs::remove_file(opts.dir.join(super::REGISTRATION));
     }
     {
         let st = state.lock().unwrap();

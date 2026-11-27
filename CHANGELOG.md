@@ -97,6 +97,11 @@ All notable changes to CodeSmith are listed here. Versions follow
   worktree add <repo>/.worktrees/<name>` (or the `codesmith` tool), never
   as a folder beside the repository. Every agent with the shell gets it, also one with its own
   `system` prompt.
+- **`codesmith run --output final`** prints only the final answer on
+  stdout, when the run ends, without the narration ("Let me look…") of
+  the steps before it. Tool activity still goes to stderr. `--output all`,
+  every step's text as it streams, stays the default. A tailbus bridge
+  wants `--output final`, so its reply is the answer alone.
 
 ## 0.6.1 — 2026-11-26
 

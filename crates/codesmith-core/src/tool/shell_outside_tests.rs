@@ -15,31 +15,98 @@ async fn sh(ctx: &Ctx<'_>, command: &str) -> Outcome {
     run(ctx, &serde_json::json!({ "command": command })).await
 }
 
+/// The fixtures' git: no signing, a fixed identity, and (with `quiet`) no
+/// automatic maintenance. Newer gits start `git maintenance run --auto
+/// --detach` in the background after a commit; its lock file in `.git`
+/// shows up in a before-and-after snapshot of the sibling as a change no
+/// command made.
+fn git_command(dir: &Path, quiet: bool) -> std::process::Command {
+    let mut c = crate::git::command(dir);
+    c.args([
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "init.defaultBranch=main",
+    ]);
+    if quiet {
+        c.args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"]);
+    }
+    c.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT");
+    c
+}
+
 fn git(dir: &Path, args: &[&str]) {
-    let out = crate::git::command(dir)
-        .args([
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "init.defaultBranch=main",
-            // No automatic maintenance: newer gits start it in the
-            // background after a commit, and its lock file in `.git` would
-            // show up as a change to the sibling.
-            "-c",
-            "maintenance.auto=false",
-            "-c",
-            "gc.auto=0",
-        ])
-        .args(args)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env_remove("GIT_CONFIG_COUNT")
+    let out = git_command(dir, true).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+/// Whether a commit of a new file in `dir` starts git's automatic
+/// housekeeping, as `GIT_TRACE` shows: `maintenance run --auto` on newer
+/// gits (in the background), `gc --auto` on older ones. `command` makes the
+/// git.
+fn commit_starts_maintenance(dir: &Path, command: std::process::Command) -> bool {
+    let mut command = command;
+    let n = std::fs::read_dir(dir).unwrap().count();
+    std::fs::write(dir.join(format!("g{n}")), "x\n").unwrap();
+    git(dir, &["add", "-A"]);
+    let out = command
+        .args(["commit", "-qm", "more"])
+        .env("GIT_TRACE", "1")
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {out:?}");
+    assert!(out.status.success(), "{out:?}");
+    let trace = String::from_utf8_lossy(&out.stderr);
+    trace.contains("maintenance run --auto") || trace.contains("gc --auto")
+}
+
+// The cause of the sibling's phantom changes on CI: a commit without the
+// fixture's settings starts git's automatic housekeeping, which newer gits
+// run in the background while the test compares the sibling.
+#[test]
+fn a_plain_commit_starts_background_maintenance_on_newer_gits() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join("f"), "a\n").unwrap();
+    git_command(d.path(), false)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    git(d.path(), &["add", "f"]);
+    git(d.path(), &["commit", "-qm", "first"]);
+    assert!(commit_starts_maintenance(
+        d.path(),
+        git_command(d.path(), false)
+    ));
+}
+
+// The fix: a fixture repository never starts it, from the fixture's own
+// git or from a plain git command run in it later (as the tests' shell
+// commands are).
+#[test]
+fn a_fixture_repository_never_starts_background_maintenance() {
+    let d = tempfile::tempdir().unwrap();
+    repo(d.path());
+    assert!(!commit_starts_maintenance(
+        d.path(),
+        git_command(d.path(), true)
+    ));
+    let mut plain = crate::git::command(d.path());
+    plain.args([
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "commit.gpgsign=false",
+    ]);
+    plain
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env_remove("GIT_CONFIG_COUNT");
+    assert!(!commit_starts_maintenance(d.path(), plain));
 }
 
 /// A repository with a committed file `f`, an archive and a patch.

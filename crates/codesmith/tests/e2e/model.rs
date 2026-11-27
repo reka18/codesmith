@@ -166,7 +166,8 @@ pub enum Reply {
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 
 impl Reply {
-    fn empty() -> Reply {
+    /// A reply with nothing in it yet that finishes with `stop`.
+    pub fn empty() -> Reply {
         Reply::Stream {
             chunks: vec![],
             end: End::Finish("stop".into()),

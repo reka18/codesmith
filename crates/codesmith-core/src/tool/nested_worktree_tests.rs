@@ -131,45 +131,84 @@ async fn a_nested_worktree_is_inside_the_project_for_every_file_tool() {
     );
 }
 
+/// The shells the tests run under, where they exist: `/bin/sh` (bash on
+/// macOS, dash on Debian and Ubuntu), dash itself, bash and zsh.
+fn shells() -> Vec<&'static str> {
+    ["/bin/sh", "/bin/dash", "/bin/bash", "/bin/zsh"]
+        .into_iter()
+        .filter(|s| std::path::Path::new(s).exists())
+        .collect()
+}
+
+// Why the nested-worktree test used to fail on Linux CI: there `sh` is
+// dash, which has no `pushd`, so `pushd … && …` ran nothing after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn dash_has_no_pushd() {
+    if !std::path::Path::new("/bin/dash").exists() {
+        eprintln!("skipped: no /bin/dash");
+        return;
+    }
+    let (env, _) = Env::recording(rules());
+    std::fs::create_dir_all(env.root().join("d")).unwrap();
+    let mut ctx = env.ctx();
+    ctx.shell = "/bin/dash".into();
+    let _ = Tool::Shell
+        .run(
+            &ctx,
+            &json!({"command": "pushd d >/dev/null && echo x > p.txt"}),
+        )
+        .await;
+    assert!(!env.root().join("d/p.txt").exists(), "dash ran pushd");
+    let r = Tool::Shell
+        .run(&ctx, &json!({"command": "cd d && echo x > p.txt"}))
+        .await;
+    assert!(r.is_ok(), "{r:?}");
+    assert!(env.root().join("d/p.txt").exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_shell_can_cd_and_write_into_a_nested_worktree_without_asking() {
     if !have_git() {
         return;
     }
-    let (env, rec) = Env::recording(rules());
-    let wt = nested(&env);
-    let ctx = env.ctx();
-    for command in [
-        "cd .worktrees/w && echo one > from-cd.txt",
-        "echo two > .worktrees/w/redirected.txt",
-        "cd .worktrees/w/src && cat lib.txt > copied.txt",
-        // `cd`, not `pushd`: `sh` is dash on Linux, which has no `pushd`.
-        "cd .worktrees/w && git status --short > status.txt",
-    ] {
-        let r = Tool::Shell.run(&ctx, &json!({"command": command})).await;
-        assert!(r.is_ok(), "{command}: {r:?}");
+    // Under every shell there is, so a dash-only failure shows up on a Mac
+    // too.
+    for shell in shells() {
+        let (env, rec) = Env::recording(rules());
+        let wt = nested(&env);
+        let mut ctx = env.ctx();
+        ctx.shell = shell.into();
+        for command in [
+            "cd .worktrees/w && echo one > from-cd.txt",
+            "echo two > .worktrees/w/redirected.txt",
+            "cd .worktrees/w/src && cat lib.txt > copied.txt",
+            "cd .worktrees/w && git status --short > status.txt",
+        ] {
+            let r = Tool::Shell.run(&ctx, &json!({"command": command})).await;
+            assert!(r.is_ok(), "{shell}: {command}: {r:?}");
+        }
+        let r = Tool::Shell
+            .run(
+                &ctx,
+                &json!({"command": "echo three > ok.txt", "workdir": ".worktrees/w"}),
+            )
+            .await;
+        assert!(r.is_ok(), "{shell}: {r:?}");
+        for f in [
+            "from-cd.txt",
+            "redirected.txt",
+            "src/copied.txt",
+            "status.txt",
+            "ok.txt",
+        ] {
+            assert!(wt.join(f).exists(), "{shell}: {f}");
+        }
+        assert!(
+            !rec.actions().iter().any(|a| a == "external_directory"),
+            "{shell}: {:?}",
+            rec.requests()
+        );
     }
-    let r = Tool::Shell
-        .run(
-            &ctx,
-            &json!({"command": "echo three > ok.txt", "workdir": ".worktrees/w"}),
-        )
-        .await;
-    assert!(r.is_ok(), "{r:?}");
-    for f in [
-        "from-cd.txt",
-        "redirected.txt",
-        "src/copied.txt",
-        "status.txt",
-        "ok.txt",
-    ] {
-        assert!(wt.join(f).exists(), "{f}");
-    }
-    assert!(
-        !rec.actions().iter().any(|a| a == "external_directory"),
-        "{:?}",
-        rec.requests()
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
