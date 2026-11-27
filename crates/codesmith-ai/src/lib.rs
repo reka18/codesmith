@@ -1297,6 +1297,9 @@ pub struct Provider {
     /// Hooks around the requests this provider sends (plugins' HTTP and
     /// WebSocket hooks); `None` costs nothing.
     pub hooks: Option<Hooks>,
+    /// On a Bifrost gateway: the setting that chose `base_url`, and the
+    /// change to try when the gateway doesn't serve that route.
+    pub bifrost_route: Option<bifrost::RouteOrigin>,
 }
 
 impl std::fmt::Debug for Provider {
@@ -1315,6 +1318,7 @@ impl std::fmt::Debug for Provider {
             .field("encoding", &self.encoding)
             .field("compat", &self.compat)
             .field("hooks", &self.hooks)
+            .field("bifrost_route", &self.bifrost_route)
             .finish()
     }
 }

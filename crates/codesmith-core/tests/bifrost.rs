@@ -353,7 +353,10 @@ async fn each_key_gets_its_own_list_and_a_model_outside_it_is_refused() {
     // The kept file holds hashes of the keys, never the keys.
     let text = std::fs::read_to_string(live::file()).unwrap();
     assert!(!text.contains(KEY_A) && !text.contains(KEY_B));
-    assert!(text.contains(&bifrost::account(&g.url, Some(KEY_B))));
+    assert!(text.contains(&bifrost::account(
+        &format!("{}/v1/models", g.url),
+        Some(KEY_B)
+    )));
 }
 
 #[tokio::test]
@@ -1421,7 +1424,11 @@ async fn the_unified_default_on_an_integration_only_gateway_fails_clearly_and_tr
             "the gateway doesn't serve this route".to_string(),
             "Nothing else was tried".to_string(),
             "providers.bifrost.settings.api".to_string(),
-            "set providers.bifrost.settings.api to \"openai\"".to_string(),
+            format!(
+                r#"The route was chosen by the default (providers.bifrost.settings.api unset), which is "unified" ({}/v1)."#,
+                g.url
+            ),
+            "to fix it, set providers.bifrost.settings.api to \"openai\"".to_string(),
             "integration routes".to_string(),
         ] {
             assert!(msg.contains(&part), "{part}:\n{msg}");
@@ -1487,7 +1494,8 @@ async fn a_refused_openai_route_points_back_at_unified_and_other_surfaces_at_the
         "{e}"
     );
     assert!(
-        e.contains("set api to \"unified\"") && e.contains("openaiBaseURL"),
+        e.contains(r#"chosen by providers.bifrost.settings.api ("openai")"#)
+            && e.contains(r#"to fix it, set providers.bifrost.settings.api to "unified""#),
         "{e}"
     );
     let e = stream_err(&c, "bifrost/anthropic/claude-test-9-1")
@@ -1495,14 +1503,18 @@ async fn a_refused_openai_route_points_back_at_unified_and_other_surfaces_at_the
         .to_string();
     assert!(
         e.contains("Route not found: /anthropic/v1/messages")
-            && e.contains("anthropicBaseURL")
-            && e.contains("BIFROST_ANTHROPIC_BASE_URL"),
+            && e.contains("providers.bifrost.settings.anthropicBaseURL is unset")
+            && e.contains("to fix it, set providers.bifrost.settings.anthropicBaseURL to where"),
         "{e}"
     );
     let e = stream_err(&c, "bifrost/gemini/gemini-test-3")
         .await
         .to_string();
-    assert!(e.contains("HTTP 405") && e.contains("geminiBaseURL"), "{e}");
+    assert!(
+        e.contains("HTTP 405")
+            && e.contains("to fix it, set providers.bifrost.settings.geminiBaseURL to where"),
+        "{e}"
+    );
     // The URL shown never carries the query (`?alt=sse` here).
     assert!(!e.contains("alt=sse"), "{e}");
 }
@@ -2001,5 +2013,273 @@ async fn a_models_url_with_a_query_keeps_it_and_pages_after_it() {
             "scope=chat&page_size=1000",
             "scope=chat&page_size=1000&page_token=2"
         ]
+    );
+}
+
+#[tokio::test]
+async fn a_refused_route_names_exactly_the_setting_that_chose_it_and_one_fix() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&[]).await;
+    g.set_models(
+        KEY_A,
+        [
+            "groq/m",
+            "openai/r",
+            "anthropic/claude-test-9-1",
+            "gemini/gemini-test-3",
+        ]
+        .iter()
+        .map(|m| model(m))
+        .collect(),
+    );
+    g.with(|s| s.refuse_posts = Some((403, INFERENCE_ONLY.into())));
+    let u = g.url.clone();
+    let s = "providers.bifrost.settings";
+    // (settings, variables, the model's own api, model, chosen by, fix)
+    type Case<'a> = (
+        Value,
+        Vec<(&'a str, String)>,
+        Option<&'a str>,
+        &'a str,
+        String,
+        String,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            json!({}),
+            vec![],
+            None,
+            "groq/m",
+            format!(r#"the default ({s}.api unset), which is "unified" ({u}/v1)"#),
+            format!(r#"set {s}.api to "openai" (or BIFROST_API=openai) (this gateway may serve only Bifrost's integration routes)"#),
+        ),
+        (
+            json!({"api": "openai"}),
+            vec![],
+            None,
+            "groq/m",
+            format!(r#"{s}.api ("openai")"#),
+            format!(r#"set {s}.api to "unified" (this gateway may serve only Bifrost's unified API)"#),
+        ),
+        (
+            json!({"api": "unified"}),
+            vec![("BIFROST_API", "openai".into())],
+            None,
+            "openai/r",
+            format!(r#"{s}.api ("unified")"#),
+            format!(r#"set {s}.api to "openai""#),
+        ),
+        (
+            json!({}),
+            vec![("BIFROST_API", "openai".into())],
+            None,
+            "openai/r",
+            r#"BIFROST_API ("openai")"#.into(),
+            r#"set BIFROST_API to "unified""#.into(),
+        ),
+        (
+            json!({"api": "unified", "openaiBaseURL": format!("{u}/x/v1")}),
+            vec![],
+            Some("openai"),
+            "groq/m",
+            r#"providers.bifrost.models.groq/m.api ("openai")"#.into(),
+            r#"set providers.bifrost.models.groq/m.api to "unified""#.into(),
+        ),
+        (
+            json!({"api": "openai", "openaiBaseURL": format!("{u}/x/v1")}),
+            vec![(bifrost::OPENAI_URL_VAR, format!("{u}/y/v1"))],
+            None,
+            "groq/m",
+            format!("{s}.openaiBaseURL ({u}/x/v1)"),
+            format!("set {s}.openaiBaseURL to where this gateway serves the OpenAI API, or remove it so {s}.api picks the route"),
+        ),
+        (
+            json!({"api": "openai"}),
+            vec![(bifrost::OPENAI_URL_VAR, format!("{u}/y/v1"))],
+            None,
+            "openai/r",
+            format!("BIFROST_OPENAI_BASE_URL ({u}/y/v1)"),
+            format!("set BIFROST_OPENAI_BASE_URL to where this gateway serves the OpenAI API, or unset it so {s}.api picks the route"),
+        ),
+        (
+            json!({"api": "openai"}),
+            vec![],
+            Some("openai"),
+            "anthropic/claude-test-9-1",
+            format!("the default, from {s}.baseURL ({u}/anthropic/v1; {s}.anthropicBaseURL is unset)"),
+            format!("set {s}.anthropicBaseURL to where this gateway serves Bifrost's Anthropic API"),
+        ),
+        (
+            json!({"anthropicBaseURL": format!("{u}/c/v1")}),
+            vec![],
+            None,
+            "anthropic/claude-test-9-1",
+            format!("{s}.anthropicBaseURL ({u}/c/v1)"),
+            format!("set {s}.anthropicBaseURL to where this gateway serves Bifrost's Anthropic API"),
+        ),
+        (
+            json!({}),
+            vec![(bifrost::GEMINI_URL_VAR, format!("{u}/g/v1beta"))],
+            None,
+            "gemini/gemini-test-3",
+            format!("BIFROST_GEMINI_BASE_URL ({u}/g/v1beta)"),
+            "set BIFROST_GEMINI_BASE_URL to where this gateway serves Bifrost's Gemini API".into(),
+        ),
+        (
+            json!({}),
+            vec![],
+            None,
+            "gemini/gemini-test-3",
+            format!("the default, from {s}.baseURL ({u}/genai/v1beta; {s}.geminiBaseURL is unset)"),
+            format!("set {s}.geminiBaseURL to where this gateway serves Bifrost's Gemini API"),
+        ),
+    ];
+    for (settings, vars, model_api, id, chosen, fix) in cases {
+        for (k, v) in &vars {
+            std::env::set_var(k, v);
+        }
+        let mut st = json!({"baseURL": u, "apiKey": KEY_A});
+        for (k, v) in settings.as_object().unwrap() {
+            st[k] = v.clone();
+        }
+        let mut models = json!({
+            "openai/r": {"protocol": "openai-responses"},
+            "gemini/gemini-test-3": {"protocol": "google-gemini"},
+        });
+        if let Some(a) = model_api {
+            models[id]["api"] = json!(a);
+        }
+        let c = config_with(json!({"providers": {"bifrost": {"settings": st, "models": models}}}));
+        let m = c.resolve_model(&format!("bifrost/{id}"));
+        let e = match m {
+            Ok(m) => m
+                .provider
+                .stream(&reqwest::Client::new(), &request(&m.model_id))
+                .await
+                .err(),
+            Err(e) => panic!("{id}: {e}"),
+        };
+        for (k, _) in &vars {
+            std::env::remove_var(k);
+        }
+        let e = e.unwrap_or_else(|| panic!("{id} streamed")).to_string();
+        assert!(
+            e.contains(&format!(
+                "The route was chosen by {chosen}. Nothing else was tried"
+            )),
+            "{id} {settings} {vars:?}: wanted chosen by {chosen}\n{e}"
+        );
+        assert!(
+            e.contains(&format!("to fix it, {fix}")),
+            "{id} {settings} {vars:?}: wanted fix {fix}\n{e}"
+        );
+        assert_eq!(e.matches("to fix it").count(), 1, "one change: {e}");
+        assert!(!e.contains(KEY_A));
+    }
+}
+
+#[tokio::test]
+async fn the_kept_list_is_keyed_by_the_model_list_url_and_key() {
+    let _g = LOCK.lock().await;
+    clear();
+    let g = gateway_with(&["groq/m"]).await;
+    let default = config(&g.url, KEY_A);
+    assert_eq!(fetch(&default).await, bifrost::Outcome::Fresh(1));
+    let kept = live::load("bifrost").unwrap();
+    let list = format!("{}/v1/models", g.url);
+    assert_eq!(kept["account"], bifrost::account(&list, Some(KEY_A)));
+    assert_ne!(
+        bifrost::account(&list, Some(KEY_A)),
+        bifrost::legacy_account(&g.url, Some(KEY_A))
+    );
+    assert_ne!(
+        bifrost::account(&list, Some(KEY_A)),
+        bifrost::account(&format!("{list}?x=1"), Some(KEY_A))
+    );
+    // Another model list URL is another list: the kept one isn't used.
+    g.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let other = config_with(json!({"providers": {"bifrost": {"settings": {
+        "baseURL": g.url, "apiKey": KEY_A, "modelsURL": format!("{list}?scope=other")}}}}));
+    assert!(other.list_models("bifrost", &["chat"]).is_empty());
+    assert!(matches!(
+        fetch(&other).await,
+        bifrost::Outcome::Missing { .. }
+    ));
+    // The default's still is.
+    assert!(matches!(
+        fetch(&default).await,
+        bifrost::Outcome::Saved { .. }
+    ));
+    assert_eq!(default.list_models("bifrost", &["chat"]), ["groq/m"]);
+}
+
+#[tokio::test]
+async fn a_list_0_6_0_kept_stands_in_with_the_default_model_list_url() {
+    let _g = LOCK.lock().await;
+    let fetched = 1_767_225_600_000u64;
+    // 0.6.0's file: the list under a hash of the root and key.
+    let keep_legacy = |root: &str| {
+        clear();
+        let file = live::file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let v = json!({"bifrost": {
+            "account": bifrost::legacy_account(root, Some(KEY_A)),
+            "baseURL": root, "fetched": fetched,
+            "models": bifrost::normalize(&[model("groq/kept-in-0-6-0")])}});
+        std::fs::write(&file, v.to_string()).unwrap();
+    };
+    let g = gateway_with(&[]).await;
+    let url = g.url.clone();
+    g.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // The default model list URL: adopted as this key's, its age kept.
+    keep_legacy(&url);
+    let c = config(&url, KEY_A);
+    let o = fetch(&c).await;
+    assert_eq!(
+        o,
+        bifrost::Outcome::Saved {
+            error: match &o {
+                bifrost::Outcome::Saved { error, .. } => error.clone(),
+                _ => String::new(),
+            },
+            saved: fetched
+        }
+    );
+    assert_eq!(c.list_models("bifrost", &["chat"]), ["groq/kept-in-0-6-0"]);
+    assert!(c.resolve_model("bifrost/groq/kept-in-0-6-0").is_ok());
+    assert!(c.resolve_model("bifrost/groq/not-kept").is_err());
+    let kept = live::load("bifrost").unwrap();
+    assert_eq!(
+        kept["account"],
+        bifrost::account(&format!("{url}/v1/models"), Some(KEY_A))
+    );
+    assert_eq!(kept["fetched"], fetched);
+    assert!(!std::fs::read_to_string(live::file())
+        .unwrap()
+        .contains(KEY_A));
+
+    // Another key's 0.6.0 list is never adopted.
+    keep_legacy(&url);
+    let b = config(&url, KEY_B);
+    assert!(matches!(fetch(&b).await, bifrost::Outcome::Missing { .. }));
+    assert_eq!(
+        live::load("bifrost").unwrap()["account"],
+        bifrost::legacy_account(&url, Some(KEY_A))
+    );
+
+    // A configured model list URL: 0.6.0's list wasn't read from it, so
+    // there is no saved list.
+    keep_legacy(&url);
+    let c = config_with(json!({"providers": {"bifrost": {"settings": {
+        "baseURL": url, "apiKey": KEY_A, "modelsURL": format!("{url}/elsewhere/models")}}}}));
+    assert!(matches!(fetch(&c).await, bifrost::Outcome::Missing { .. }));
+    assert!(c.list_models("bifrost", &["chat"]).is_empty());
+    assert_eq!(
+        live::load("bifrost").unwrap()["account"],
+        bifrost::legacy_account(&url, Some(KEY_A))
     );
 }

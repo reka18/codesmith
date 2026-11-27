@@ -217,6 +217,7 @@ fn media_provider(
         encoding: codesmith_ai::Encoding::None,
         compat: Default::default(),
         hooks: None,
+        bifrost_route: None,
     })
 }
 
