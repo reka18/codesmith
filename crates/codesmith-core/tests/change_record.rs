@@ -93,6 +93,7 @@ fn session(dir: &std::path::Path, base: &str, permissions: Value, asker: Answer)
         config,
         files: vec![],
         root: dir.to_path_buf(),
+        ..Default::default()
     };
     Session::new(
         &loaded,

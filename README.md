@@ -11,7 +11,7 @@ machine to.
   keys and logs stay on your machine.
 - **Careful by default.** Every shell command is checked, secret files
   ask, your keys are kept from the commands it runs, and a repository's
-  config can't use your secrets until you trust it. See [Safety](#safety).
+  own config is never read. See [Safety](#safety).
 - **Any model.** Use Anthropic, OpenAI, Gemini or another hosted provider,
   or a model on your own hardware through Ollama, LM Studio, llama.cpp,
   vLLM, oMLX or any OpenAI-compatible server. Reasoning effort, thinking
@@ -35,7 +35,8 @@ CodeSmith is built for that:
   and CPU, with no garbage-collection pauses, and keeps working without a
   package ecosystem shifting under it.
 - **Safety where an agent touches your machine.** Permissions, secret-file
-  guards, credential-free child environments and project trust are enforced
+  guards, credential-free child environments and per-repo config kept out of
+  the repository are enforced
   by a type-checked core with an explicit, layered policy model; see
   [Safety](#safety).
 - **Behaviour you can trust.** Providers are tested against recorded real
@@ -162,11 +163,12 @@ enforced in the core and covered by tests, including attack-style ones.
 - **Commands don't inherit your keys.** The shell, MCP servers, language
   servers and formatters get your environment with API keys, tokens and
   passwords removed. [More](docs/configuration.md#what-commands-see-of-your-environment)
-- **A repository can't quietly use your secrets.** If a project's
-  `codesmith.json` asks to read an environment variable or a file, send
-  requests to its own URL, or run a program, CodeSmith asks you first,
-  once per project. Until you trust it, those parts are ignored.
-  [More](docs/configuration.md#trusting-a-projects-config)
+- **A repository can't configure CodeSmith.** A repository's
+  `codesmith.json` and `.codesmith/` agents and settings are never read, so
+  a clone can't add permission rules, point a provider at its own URL, read
+  your secrets or run a program. Settings for one repository live in your
+  own config folder, matched by its path.
+  [More](docs/configuration.md#per-repo-config)
 - **The project is a boundary.** Reading, writing or `cd`-ing outside the
   repository asks first. Starting outside any repository warns you, and
   your home folder or `/` asks every time (and is refused when nobody is
@@ -196,11 +198,10 @@ files and the network. Its checks are a careful policy layer, not an OS
 jail; a program you let it run can do whatever you can. The shell check
 is best effort for paths a command computes at run time.
 
-> **Read a repository's rules before you trust it.** A project's
-> `codesmith.json` can add permission rules, and they come after yours, so
-> they win, trusted or not. In a repository you don't trust, read its
-> `codesmith.json[c]` and `.codesmith/` first, or run with
-> `CODESMITH_DISABLE_PROJECT_CONFIG=1`. [More](docs/permissions.md#where-rules-come-from)
+> **What a repository still brings.** Its `AGENTS.md`, skills and commands
+> reach the model as text, and a command's `` !`cmd` `` asks permission like
+> any shell command. Read them in a repository you don't trust, or run with
+> `CODESMITH_DISABLE_PROJECT_CONFIG=1` to leave them out. [More](docs/configuration.md#files-and-precedence)
 
 ## License and attribution
 

@@ -24,8 +24,9 @@ exact title and body.
   user names.
 - Shell: `$SHELL`.
 - Configuration: `codesmith debug config` (redact keys and private URLs),
-  and which config files exist: `codesmith.json` or `codesmith.jsonc` in the
-  project or its `.codesmith/` folder, and `~/.config/codesmith/codesmith.json`.
+  and which config files exist: `~/.config/codesmith/codesmith.json[c]` and
+  the per-repo files in `~/.config/codesmith/projects/` that match the
+  project (`codesmith debug config` lists them).
 - Model: the provider and model in use.
 
 If a diagnostic command fails, write `Unavailable` with the reason instead

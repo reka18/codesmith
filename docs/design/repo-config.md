@@ -1,7 +1,8 @@
 # Design: a repo's config lives in CodeSmith's global folder
 
-Status: **plan; Ray's decisions of 2026-11-26 recorded, building not yet
-approved.** Nothing here is built yet.
+Status: **built.** Ray's decisions of 2026-11-26, with the follow-up that
+there is no import. The user-facing description is in
+[configuration.md](../configuration.md#per-repo-config).
 
 ## Why
 
@@ -25,9 +26,11 @@ config is defined in CodeSmith's global folder, never inside the repo.**
    language servers, formatters, the shell, and the rest.
 2. **Matched by folder path.** A per-repo file names the folder (or glob) it
    applies to. A clone in another folder doesn't pick it up by accident.
-3. **Repo files are ignored, with an offer to import.** A config file found
-   in a repo is never applied. CodeSmith says so once and offers
-   `codesmith config import`.
+3. **Repo files are ignored, with no import.** A config file found in a
+   repo is never applied, and CodeSmith says nothing about it. Nobody uses
+   repo config yet, so there is no import command, no migration and no
+   notice: an offer to import would only be another way for a repo to put
+   its settings in front of you.
 4. **Instructions still load from the repo.** `AGENTS.md`, `CLAUDE.md`, and
    the repo's skills and commands are the project's own docs, read as text
    the model sees, not settings. Permissions still guard what the agent
@@ -61,7 +64,8 @@ config does):
   - **Never by remote:** a git remote never matches, because a repo can
     set its own.
 - **Agent, command and theme files for one repo** go in
-  `~/.config/codesmith/projects/<name>/agents/`, `commands/` and `themes/`.
+  `~/.config/codesmith/projects/<name>/agents/`, `modes/`, `commands/` and
+  `themes/`.
   `<name>` is the file's own name without `.json[c]`, and the folder
   applies wherever its file matches.
 - **Load order, later winning:**
@@ -72,6 +76,18 @@ config does):
 
   `permissions` and `instructions` still append, so a per-repo file's rules
   come after the global ones.
+- **Specificity.** An exact path beats any glob; between globs, the longer
+  literal start (the text before the first `*`, `?`, `[` or `{`) wins. A
+  file listing several paths counts its most specific match. In a glob,
+  `*` stays within one folder name and `**` crosses folders.
+- **Global-only settings stay global-only.** A provider's `swap`,
+  `claude_agent`, `shell.env.pass` and `update` are ignored in a per-repo
+  file, with a warning in `codesmith debug config`.
+- **Worktrees.** A worktree is its own folder and doesn't match its main
+  checkout's per-repo file. Following a worktree's `.git` file back to the
+  main repository would let a repo (whose `.git` can be a file naming any
+  folder) claim your per-repo settings for another repository, so it isn't
+  done; add the worktree folder or a glob to `path`.
 - **No trust prompt.** These files are yours, in your own folder, so
   nothing in them is asked about. A per-repo file that others can write
   (group or world write, or another owner) is refused with an error, as
@@ -81,45 +97,33 @@ config does):
 
 | From the repo | Loads? |
 |---|---|
-| `codesmith.json[c]`, `.codesmith/codesmith.json[c]` | **no** (offered for import) |
-| `.codesmith/agents/`, `.codesmith/modes/` | **no**: agents carry permissions and models, so they're config (offered for import) |
-| `.codesmith/themes/` | **no** (offered for import) |
+| `codesmith.json[c]`, `.codesmith/codesmith.json[c]` | **no** |
+| `.codesmith/agents/`, `.codesmith/modes/` | **no**: agents carry permissions and models, so they're config |
+| `.codesmith/themes/` | **no** |
 | `AGENTS.md`, `CLAUDE.md` and the other instructions files | yes, as now |
 | skills (`.codesmith/skills/`, `.agents/skills/`, `.claude/skills/`) | yes, as now |
-| commands (`.codesmith/commands/`, `.claude/commands/`) | yes, as now. A command's own `model` or `agent` choice is honoured only if that agent exists in your config, and any shell it expands still goes through permissions. |
-| `.codesmith/review.json` (CodeSmith writes this for code review) | yes: it's CodeSmith's own state file, not settings. Check it holds nothing that changes permissions or where requests go. |
+| commands (`.codesmith/commands/`, `.claude/commands/`) | yes, with the frontmatter rule below. |
+| `.codesmith/review.json` (CodeSmith writes this for code review) | yes: it's CodeSmith's own state file, not settings. It holds review dimensions (names, focus text, checks, path globs) and nothing that changes permissions, providers or where requests go. |
 
-## The import
+**A repo command's frontmatter.** Its `model` is honoured: it can only name
+a model your own providers serve. Its `agent` is honoured only when that
+agent is in your config (built in, global or per-repo); otherwise the
+command runs on the session's agent, with a one-line notice. Any
+`` !`cmd` `` it expands is checked against your permission rules as the
+`shell` tool's commands are, and nothing in the template runs unless every
+command is allowed. (Before, a command's shell ran without a check.)
 
-The first time a session starts in a repo that has one of the ignored
-files, CodeSmith shows a one-line notice:
-
-> This repo has CodeSmith config in `./codesmith.json` and
-> `.codesmith/agents/`. It isn't used; `codesmith config import` can copy
-> it into your own config after showing it.
-
-`codesmith config import [DIR]`:
-- shows each file's contents, and highlights what reaches out: URLs,
-  `{env:}` and `{file:}`, programs and allow rules;
-- asks once;
-- on a yes, writes `~/.config/codesmith/projects/<repo folder name>.jsonc`
-  with `path` set to that repo, and copies agent and theme files into its
-  folder;
-- never overwrites an existing per-repo file without a second yes, and
-  never writes outside the global folder.
-
-The notice is shown once per repo and file set, kept with the per-repo
-answers in the data folder. `codesmith config import --dismiss` stops it
-for that repo.
+A skill's header is read for its `name` and `description` alone, so fields
+such as `allowed-tools`, `model` or `mcp` do nothing.
 
 ## What goes away
 
 - **The project trust prompt** and `codesmith trust` go away, because
-  nothing the repo writes is ever settings.
-  - `trust.json` is read once more, at upgrade: for each project trusted
-    there, the notice above is shown with the import offer.
-  - Then the file is left in place, unused. `codesmith trust` prints that
-    it's gone and points to `codesmith config import`.
+  nothing the repo writes is ever settings. The capability audit that
+  decided what to ask about goes with them.
+  - `trust.json` is never read again. An existing file is left in place,
+    unused.
+  - `codesmith trust` is an unknown command.
 - **`$CODESMITH_DISABLE_PROJECT_CONFIG`** now only turns off the repo's
   instructions, skills and commands, the parts still read. Per-repo files
   in the global folder are your config and keep loading.
@@ -128,45 +132,37 @@ for that repo.
 
 This changes what a repo with its own `codesmith.json` gets.
 - **Before:** its model, agents and rules applied.
-- **After:** they don't, until imported.
+- **After:** they don't. Settings for it go in a per-repo file.
 
-The release notes say so first, with the import command. Teams that check
-in a shared config get the same notice and import it once per machine.
+The release notes say so first.
 
 ## Tests
 
-- **Never read:** a repo's `codesmith.json`, `.codesmith/codesmith.json`,
-  agents, modes and themes, each with an `allow` rule, a provider URL, an
-  MCP server and `{env:}`. None of it applies, the key isn't sent there,
-  and the notice names each file.
+- **Never read:** a repo's `codesmith.json[c]`, `.codesmith/codesmith.json[c]`
+  (at the root and in a subfolder), agents, modes and themes, each with an
+  allow rule, a provider URL and key, an MCP server, `{env:}` and
+  `{file:}`, a language server and a shell. None of it applies, no request
+  reaches the URL, no program runs, nothing is read, and nothing is asked:
+  in the UI, `codesmith run`, `serve`, ACP and automations.
 - **Still loaded:** a repo's `AGENTS.md`, skills and commands. A command
-  naming an agent that exists only in the repo falls back to the
-  session's agent.
-- **Matching:**
-  - an exact path, a glob, a list;
-  - the more specific path winning;
-  - equal paths in name order, with a warning;
-  - `~` expansion, and a symlinked repo matched by its target;
-  - a clone in another folder not matching;
-  - a git remote never matching.
+  naming an agent you don't have falls back with a notice; its model is
+  kept; its shell asks permission.
+- **Matching:** an exact path, a glob, a list, `~`, a symlinked repo, the
+  more specific path winning, equal paths with a warning, a clone in
+  another folder not matching, a subfolder cwd matching its repo root, no
+  match, and a git remote never matching.
 - **Order:** global, then per-repo, then `$CODESMITH_CONFIG` and the
-  content variable, with permissions appending.
-- **Ownership:** a per-repo file writable by others is refused, with an
-  error naming it.
-- **Import:**
-  - shows everything;
-  - highlights what reaches out;
-  - a no writes nothing;
-  - a yes writes the file with `path` and the agent files;
-  - an existing file needs a second yes;
-  - `--dismiss` stops the notice.
-- **Upgrade:** a project trusted in `trust.json` gets the notice once.
-  `codesmith trust` prints the pointer.
+  content variable, with permissions appending; per-repo agent, command and
+  theme folders.
+- **Ownership:** a per-repo file or folder writable by others, or owned by
+  another user, is refused with an error naming it.
+- **Global-only settings** are refused from per-repo files.
+- **`$CODESMITH_DISABLE_PROJECT_CONFIG`** turns off the repo's
+  instructions, skills and commands, but not per-repo files.
+- **`codesmith trust`** is an unknown command, and `trust.json` is never
+  read.
 
 ## Open questions
 
-1. Should a repo's commands still be allowed to pick a model? As drafted,
-   a command's `model` is honoured, and its `agent` only if that agent is
-   in your config.
-2. Is `codesmith config import` the right name, or should it live under
-   `codesmith trust` for familiarity during the change?
+None left from the plan: a repo command's `model` is honoured and its
+`agent` only when it's yours, and there is no import command.

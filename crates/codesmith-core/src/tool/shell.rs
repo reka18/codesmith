@@ -1706,25 +1706,13 @@ fn resolve_dir(workdir: &Path, dir: &str) -> PathBuf {
     })
 }
 
-pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
-    let command = str_arg(input, "command")?;
-    let background = opt_bool(input, "background").unwrap_or(false);
-    let timeout = opt_u64(input, "timeout");
-    let requested = match opt_str(input, "workdir") {
-        Some(w) => ctx.resolve(w).absolute,
-        None => ctx.cwd.clone(),
-    };
-    // Plugins may rewrite the command or move it; everything below checks
-    // what will actually run.
-    let mut sc = crate::plugin::ShellCommand {
-        session_id: ctx.session_id.clone(),
-        cwd: requested,
-        command: command.to_string(),
-        env: Default::default(),
-    };
-    crate::plugin::active().shell_before(&mut sc);
-    let dir = sc.cwd.clone();
-    let analysis = shell_scan::analyze(&sc.command, &dir)?;
+/// Ask permission to run `command` in `dir`, as the `shell` tool does
+/// before it runs anything: the commands it runs, the folders it reaches,
+/// what it writes and the secrets it reads. A command template's
+/// `` !`cmd` `` goes through this too (see [`crate::command`]).
+pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String> {
+    let dir = dir.to_path_buf();
+    let analysis = shell_scan::analyze(command, &dir)?;
     let mut dirs = vec![dir.clone()];
     dirs.extend(analysis.directories.iter().map(|d| resolve_dir(&dir, d)));
     ctx.authorize_external_dirs(&dirs)?;
@@ -1732,10 +1720,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         authorize_unknown(
             ctx,
             &["external_directory"],
-            &sc.command,
+            command,
             &format!(
                 "$ {} (changes to a directory only known when it runs)",
-                sc.command
+                command
             ),
         )?;
     }
@@ -1785,18 +1773,18 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             action: "shell".into(),
             resources,
             save,
-            title: format!("$ {}", sc.command),
+            title: format!("$ {}", command),
         })?;
     }
-    authorize_secret_reads(ctx, &dir, &analysis, &sc.command)?;
+    authorize_secret_reads(ctx, &dir, &analysis, command)?;
     if let Some(reason) = &analysis.dynamic {
         authorize_unknown(
             ctx,
             &["shell"],
-            &sc.command,
+            command,
             &format!(
                 "$ {} (cannot be checked command by command: {reason})",
-                sc.command
+                command
             ),
         )?;
     }
@@ -1804,10 +1792,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         authorize_unknown(
             ctx,
             &["external_directory", "edit"],
-            &sc.command,
+            command,
             &format!(
                 "$ {} (writes to {raw}, which is only known when it runs)",
-                sc.command
+                command
             ),
         )?;
     }
@@ -1825,9 +1813,31 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             action: "edit".into(),
             resources: names,
             save: vec!["*".into()],
-            title: format!("$ {} (writes {})", sc.command, shown.join(", ")),
+            title: format!("$ {} (writes {})", command, shown.join(", ")),
         })?;
     }
+    Ok(())
+}
+
+pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
+    let command = str_arg(input, "command")?;
+    let background = opt_bool(input, "background").unwrap_or(false);
+    let timeout = opt_u64(input, "timeout");
+    let requested = match opt_str(input, "workdir") {
+        Some(w) => ctx.resolve(w).absolute,
+        None => ctx.cwd.clone(),
+    };
+    // Plugins may rewrite the command or move it; everything below checks
+    // what will actually run.
+    let mut sc = crate::plugin::ShellCommand {
+        session_id: ctx.session_id.clone(),
+        cwd: requested,
+        command: command.to_string(),
+        env: Default::default(),
+    };
+    crate::plugin::active().shell_before(&mut sc);
+    let dir = sc.cwd.clone();
+    authorize(ctx, &sc.command, &dir)?;
     // Approval can outlive the directory, so check it just before spawning.
     match std::fs::metadata(&dir) {
         Err(_) => {
@@ -3868,29 +3878,37 @@ mod tests {
     // A project config cannot pass a credential through: only the global
     // config file's `shell.env.pass` counts, end to end.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_project_config_cannot_pass_a_credential_through() {
+    async fn a_per_repo_config_cannot_pass_a_credential_through() {
         let t = tempfile::tempdir().unwrap();
-        let global = t.path().join("global");
-        let project = t.path().join("project");
-        std::fs::create_dir_all(&global).unwrap();
+        let base = t.path().canonicalize().unwrap();
+        let global = base.join("global");
+        let project = base.join("project");
+        std::fs::create_dir_all(global.join("projects")).unwrap();
         std::fs::create_dir_all(project.join(".git")).unwrap();
         std::fs::write(
             global.join("codesmith.json"),
             r#"{"shell": {"env": {"pass": ["GITHUB_TOKEN"]}}}"#,
         )
         .unwrap();
+        let repo = global.join("projects/p.json");
         std::fs::write(
-            project.join("codesmith.json"),
-            r#"{"shell": {"path": "/bin/sh", "env": {"pass": ["OPENAI_API_KEY", "SOME_SERVICE_TOKEN"], "remove": ["FOO"]}},
-                "providers": {"p": {"env": ["MY_PROVIDER_CRED"]}}}"#,
+            &repo,
+            serde_json::json!({"path": project,
+                "shell": {"path": "/bin/sh", "env": {"pass": ["OPENAI_API_KEY", "SOME_SERVICE_TOKEN"], "remove": ["FOO"]}},
+                "providers": {"p": {"env": ["MY_PROVIDER_CRED"]}}})
+            .to_string(),
         )
         .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&repo, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let sources = crate::config::Sources {
             global_dir: global.clone(),
             file: None,
             content: Some(r#"{"shell": {"env": {"pass": ["ANTHROPIC_API_KEY"]}}}"#.into()),
             project: true,
-            trust: crate::trust::Mode::All,
+            per_repo: true,
         };
         let l = crate::config::load_from(&project, &sources).unwrap();
         assert_eq!(l.config.shell.as_deref(), Some("/bin/sh"));

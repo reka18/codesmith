@@ -94,6 +94,7 @@ fn session(dir: &std::path::Path, base: &str, model: Value, resume: Option<Strin
         config,
         files: vec![],
         root: dir.to_path_buf(),
+        ..Default::default()
     };
     Session::new(
         &loaded,
@@ -232,6 +233,7 @@ async fn mcp_tool_images_reach_the_model() {
         config,
         files: vec![],
         root: dir.path().to_path_buf(),
+        ..Default::default()
     };
     let mcp = codesmith_core::mcp::Mcp::connect(&loaded.config.mcp, &loaded.root).await;
     let mut s = Session::new(
@@ -338,6 +340,7 @@ async fn generated_images_are_kept_and_sent_back() {
             config,
             files: vec![],
             root: dir.path().to_path_buf(),
+            ..Default::default()
         };
         Session::new(
             &loaded,

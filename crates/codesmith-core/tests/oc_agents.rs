@@ -34,7 +34,7 @@ fn load_dir(dir: &Path) -> Config {
         file: None,
         content: None,
         project: false,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     };
     config::load_from(dir, &sources).unwrap().config
 }
@@ -326,8 +326,11 @@ fn oc_agent_maps_configured_agent_fields_and_merges_request_maps() {
         }}})
         .to_string(),
     );
+    // The second layer: `$CODESMITH_CONFIG` (a repository's own file is
+    // never read).
+    let second = d.path().join("second.json");
     write(
-        &project.join("codesmith.json"),
+        &second,
         &json!({"agents": {"reviewer": {"request": {
             "headers": {"shared": "last", "second": "two"},
             "body": {"retries": 2, "effort": "high"}
@@ -336,10 +339,10 @@ fn oc_agent_maps_configured_agent_fields_and_merges_request_maps() {
     );
     let sources = Sources {
         global_dir: global,
-        file: None,
+        file: Some(second),
         content: None,
         project: true,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     };
     let c = config::load_from(&project, &sources).unwrap().config;
     let r = agent::resolve(&c, "reviewer").unwrap();

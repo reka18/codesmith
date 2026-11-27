@@ -267,6 +267,7 @@ async fn start(setup: Setup) -> T {
         config: config_with(&base, setup.protocol, setup.models, setup.extra),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let data = tempfile::tempdir().unwrap();
     let store = setup
@@ -1048,6 +1049,7 @@ async fn oc_session_durably_fails_local_tools_left_running_by_a_prior_process_be
         config: config(&base, json!({})),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,
@@ -1405,6 +1407,7 @@ async fn spending_of_mixed_billed_and_unbilled_steps_survives_a_reload() {
         config: config("http://127.0.0.1:9/v1", json!({})),
         files: vec![],
         root: t.dir.path().canonicalize().unwrap(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,

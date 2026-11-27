@@ -558,7 +558,7 @@ dropped.
 | `tui/test/theme` | terminalMode derives mode from refreshed background | after a fix | oc_terminal_mode_derives_mode_from_refreshed_background |
 | `tui/test/theme` | terminalMode does not derive mode from ANSI slot zero | after a fix | oc_terminal_mode_does_not_derive_mode_from_ansi_slot_zero |
 | `tui/test/theme` | custom theme precedence follows directory order | after a fix | oc_custom_theme_precedence_follows_directory_order |
-| `tui/test/theme` | theme directories include global config before project directories | after a fix | oc_theme_directories_include_global_config_before_project_directories |
+| `tui/test/theme` | theme directories include global config before project directories | deliberate: a repository's `.codesmith/themes/` is never read; per-repo folders come after the global one | theme_directories_are_the_global_folder_then_per_repo_folders_never_the_repository |
 | `tui/test/cli/tui/theme-mode` | uses an available mode while retaining the pinned preference | after a fix | oc_uses_an_available_mode_while_retaining_the_pinned_preference |
 | `tui/test/cli/tui/theme-mode` | falls back to OpenCode when configured V2 theme %s is invalid (3 cases) | after a fix | oc_falls_back_to_opencode_when_configured_v2_theme_*_is_invalid |
 | `tui/test/cli/tui/theme-mode` | dialog surfaces are absolute and can be inherited through the theme context | after a fix | oc_dialog_surfaces_are_absolute_and_can_be_inherited_through_the_theme_context |

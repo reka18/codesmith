@@ -200,15 +200,21 @@ pub fn create(cfg: &WorktreeConfig, cwd: &Path, opts: &Create) -> Result<(PathBu
     Ok((dir, sub))
 }
 
-/// Whether a repo-relative path is CodeSmith configuration.
+/// Whether a repo-relative path is one of the CodeSmith files still read
+/// from a repository: its `.codesmith/` commands and skills, and the
+/// `/calibrate` state in `.codesmith/review.json`. (A repository's
+/// `codesmith.json[c]`, agents, modes and themes are never read, so they are
+/// not copied.)
 fn is_config(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    crate::config::NAMES.contains(&name) || path.split('/').any(|c| c == ".codesmith")
+    let parts: Vec<&str> = path.split('/').collect();
+    parts.windows(2).any(|w| {
+        w[0] == ".codesmith" && matches!(w[1], "commands" | "command" | "skills" | "review.json")
+    })
 }
 
-/// Copy CodeSmith config that git does not track (an uncommitted
-/// `codesmith.json`, `.codesmith/` contents) into a new worktree, which is
-/// otherwise a clean checkout. Returns the files copied.
+/// Copy the CodeSmith files git does not track (see [`is_config`]: an
+/// uncommitted command or skill, the review calibration) into a new
+/// worktree, which is otherwise a clean checkout. Returns the files copied.
 pub fn copy_local_config(from: &Path, to: &Path) -> Result<Vec<String>> {
     let mut copied = Vec::new();
     let untracked = git(from, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
@@ -426,6 +432,12 @@ mod tests {
         std::fs::write(r.join("codesmith.json"), "{}").unwrap();
         std::fs::create_dir_all(r.join(".codesmith/commands")).unwrap();
         std::fs::write(r.join(".codesmith/commands/x.md"), "x").unwrap();
+        std::fs::create_dir_all(r.join(".codesmith/skills/s")).unwrap();
+        std::fs::write(r.join(".codesmith/skills/s/SKILL.md"), "s").unwrap();
+        std::fs::write(r.join(".codesmith/review.json"), "{}").unwrap();
+        std::fs::create_dir_all(r.join(".codesmith/agents")).unwrap();
+        std::fs::write(r.join(".codesmith/agents/a.md"), "a").unwrap();
+        std::fs::write(r.join(".codesmith/codesmith.json"), "{}").unwrap();
         std::fs::write(r.join("pkg/codesmith.jsonc"), "{}").unwrap();
         std::fs::write(r.join("notes.txt"), "not config").unwrap();
         let base = tempfile::tempdir().unwrap();
@@ -435,14 +447,20 @@ mod tests {
         };
         let (wt, _) = create(&cfg, r, &Create::default()).unwrap();
         assert!(
-            wt.join("codesmith.json").exists()
-                && wt.join(".codesmith/commands/x.md").exists()
-                && wt.join("pkg/codesmith.jsonc").exists()
+            wt.join(".codesmith/commands/x.md").exists()
+                && wt.join(".codesmith/skills/s/SKILL.md").exists()
+                && wt.join(".codesmith/review.json").exists()
         );
-        assert!(
-            !wt.join("notes.txt").exists(),
-            "only CodeSmith config is copied"
-        );
+        // Repo config is never read, so it isn't carried along either.
+        for gone in [
+            "codesmith.json",
+            "pkg/codesmith.jsonc",
+            ".codesmith/codesmith.json",
+            ".codesmith/agents/a.md",
+            "notes.txt",
+        ] {
+            assert!(!wt.join(gone).exists(), "{gone} was copied");
+        }
     }
 
     #[test]

@@ -193,6 +193,7 @@ fn session(v: Value) -> anyhow::Result<Session> {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     Session::new(
         &loaded,

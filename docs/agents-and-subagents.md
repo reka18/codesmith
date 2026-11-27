@@ -79,8 +79,9 @@ disabled.
 
 An agent can also be a Markdown file: the body is its system prompt and
 the header holds the same fields as config. CodeSmith reads them from the
-global config folder (`~/.config/codesmith/`) and from each `.codesmith/`
-folder from the project root down to the working directory:
+global config folder (`~/.config/codesmith/`) and, for one repository, from
+the folder of each [per-repo file](configuration.md#per-repo-config) that
+matches it (`~/.config/codesmith/projects/<name>/`):
 
 - `agents/**/*.md` (or `agent/`): the agent's id is its path below the
   folder without `.md`, so `agents/team/helper.md` is `team/helper`.
@@ -102,10 +103,13 @@ permissions:
 You review code. Report problems with file and line; never edit.
 ```
 
+A repository's own `.codesmith/agents/` and `.codesmith/modes/` are never
+read: an agent carries permissions and a model, so it is config, and a
+repository is someone else's input.
+
 Each folder is a config layer: it sits right after the config file next
-to it (the global `codesmith.json`, or that folder's
-`.codesmith/codesmith.json`), so a later layer still overrides it field by
-field. Empty files, and files whose header does not parse or has a field of
+to it (the global `codesmith.json`, or its per-repo file), so a later
+layer still overrides it field by field. Empty files, and files whose header does not parse or has a field of
 the wrong type, are skipped.
 
 OpenCode's older agent format is read too: a file with fields such as

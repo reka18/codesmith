@@ -171,6 +171,7 @@ impl H {
             config,
             files: vec![],
             root: root.clone(),
+            ..Default::default()
         };
         let db = outside.path().join("s.db");
         let mcp = match extra.get("mcp") {

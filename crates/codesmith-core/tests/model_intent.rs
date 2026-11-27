@@ -292,6 +292,7 @@ fn open_child(v: Value, model: Option<&str>, parent: Option<&str>) -> anyhow::Re
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     Session::new(
         &loaded,

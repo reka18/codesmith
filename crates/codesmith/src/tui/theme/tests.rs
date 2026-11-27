@@ -912,24 +912,39 @@ fn oc_custom_theme_precedence_follows_directory_order() {
 }
 
 #[test]
-fn oc_theme_directories_include_global_config_before_project_directories() {
+fn theme_directories_are_the_global_folder_then_per_repo_folders_never_the_repository() {
     let tmp = tempfile::tempdir().unwrap();
     let global = tmp.path().join("global");
-    let project = tmp.path().join("repo/package");
+    let per_repo = global.join("projects/app");
+    let repo = tmp.path().join("repo");
     std::fs::create_dir_all(global.join("themes")).unwrap();
-    std::fs::create_dir_all(project.join(".codesmith/themes")).unwrap();
+    std::fs::create_dir_all(per_repo.join("themes")).unwrap();
+    std::fs::create_dir_all(repo.join(".codesmith/themes")).unwrap();
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::write(global.join("themes/global.json"), r#"{"source":"global"}"#).unwrap();
+    std::fs::write(global.join("themes/both.json"), r#"{"source":"global"}"#).unwrap();
     std::fs::write(
-        project.join(".codesmith/themes/project.json"),
-        r#"{"source":"project"}"#,
+        per_repo.join("themes/both.json"),
+        r#"{"source":"per-repo"}"#,
     )
     .unwrap();
-    std::fs::create_dir_all(tmp.path().join("repo/.git")).unwrap();
-    let dirs = theme_dirs(&global, &project, &tmp.path().join("repo"));
-    assert_eq!(dirs[0], global);
+    std::fs::write(
+        repo.join(".codesmith/themes/evil.json"),
+        r#"{"source":"repo"}"#,
+    )
+    .unwrap();
+    let dirs = theme_dirs(&global, std::slice::from_ref(&per_repo));
+    assert_eq!(dirs, [global.clone(), per_repo.clone()]);
     let (found, _) = discover(&dirs);
     assert_eq!(found["global"], json!({ "source": "global" }));
-    assert_eq!(found["project"], json!({ "source": "project" }));
+    assert_eq!(
+        found["both"],
+        json!({ "source": "per-repo" }),
+        "per-repo wins"
+    );
+    assert!(!found.contains_key("evil"), "a repository's theme was read");
+    // The same folder twice is read once.
+    assert_eq!(theme_dirs(&global, std::slice::from_ref(&global)), [global]);
 }
 
 // ----- theme/v2/select ------------------------------------------------------

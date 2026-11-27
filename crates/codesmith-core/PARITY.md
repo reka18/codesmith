@@ -2040,7 +2040,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 **`config/command.test.ts`**
 
 - P interpolates ${JSON.stringify(item.template)} with literal input ${JSON.stringify(item.input)} ×7 — `src/command.rs::oc_command_interpolates_literal_input`
-- P loads inline and file-based commands in config order — `tests/oc_commands.rs::oc_command_loads_inline_and_file_based_commands_in_config_order` (adapted: a project codesmith.json below its .codesmith/ folder; no live reload)
+- P loads inline and file-based commands in config order — `tests/oc_commands.rs::oc_command_loads_inline_and_file_based_commands_in_config_order` (adapted: the global codesmith.json below the repository's .codesmith/commands/, since a repository's codesmith.json is never read; no live reload)
 - D rebuilds commands when a source file is ${testCase.name} · coalesces updates inside the debounce window into one rebuild · rebuilds on a config update published immediately after startup · ignores updates outside command source directories · ConfigCommandPlugin native watcher — deliberate: config.rs: no live reload or file watching
 
 **`config/markdown.test.ts`**
@@ -2205,7 +2205,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - D loads system configuration at highest priority · resolves the system configuration directory per platform · resolves macOS managed preferences with user-specific profiles first · strips MDM payload metadata from managed preferences — deliberate: config.rs: no system, MDM, well-known or integration config
 - P loads explicit file and content overrides in priority order — `src/config.rs::oc_config_loads_explicit_file_and_content_overrides_in_priority_order`
 - D layers integration documents below remote and user config and reloads when they change · ranks integration policies below managed policies and above user and project policies · keeps only the policies of documents from integrations managed policy denies — deliberate: config.rs: no system, MDM, well-known or integration config
-- P skips project configuration when project discovery is disabled — `src/config.rs::oc_config_skips_project_configuration_when_project_discovery_is_disabled`
+- P skips project configuration when project discovery is disabled — `src/config.rs::oc_config_skips_the_repositorys_commands_when_project_discovery_is_disabled` (adapted: a repository's config files are never read, so only its command files are left to skip; per-repo files in the global folder still load)
 - D reloads file substitutions when their source changes — deliberate: config.rs: no live reload or file watching
 - P excludes missing files under symlinked global roots when global is disabled — `tests/oc_config_sources.rs::oc_config_excludes_missing_files_under_symlinked_global_roots_when_global_is_disabled` (adapted: no config layer at the global folder, by any name (CodeSmith watches none))
 - D exposes filesystem updates under config roots through changes · does not reload when an unrelated file under a config root changes · reloads canonical events for a symlinked global root, even after removal · reloads ${source} config when its symlink target changes under a watched root ×2 · keeps watching a deleted config file so recreating it reloads · backs Config.Service and Config.Test with one shared test implementation — deliberate: config.rs: no live reload or file watching
@@ -2226,7 +2226,7 @@ The tests not listed in the roadmap or the backlog, by file: `P` ported, `F` por
 - P loads supported scalar and resource configuration — `src/config.rs::oc_config_loads_supported_scalar_and_resource_configuration`
 - D migrates the deprecated reference key into references · migrates v1 configuration when a v1-only key is present — deliberate: config.rs: no v1 format migration
 - D ignores an invalid file while loading valid config values — deliberate: config.rs: an invalid file is an error naming it (src/config.rs::oc_config_an_invalid_file_is_an_error_naming_it pins the difference)
-- P loads global and ancestor configuration across the project boundary — `src/config.rs::oc_config_loads_global_and_ancestor_configuration_in_order`
+- D loads global and ancestor configuration across the project boundary — deliberate: config.rs: a repository's config files are never read, only the global ones (src/config.rs::oc_config_loads_global_but_never_ancestor_configuration pins the difference)
 
 **`config/discovery.test.ts`**
 

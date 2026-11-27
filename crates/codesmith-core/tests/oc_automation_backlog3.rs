@@ -91,6 +91,7 @@ fn loader(base: String, py: Option<&'static str>) -> au::Loader {
             config,
             files: vec![],
             root: dir.to_path_buf(),
+            ..Default::default()
         })
     })
 }
