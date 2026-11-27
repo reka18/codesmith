@@ -821,7 +821,8 @@ pub const DEFINITIONS: &[Def] = &[
 /// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T). Ctrl+O stays the
 /// tool output key, so the open menu is Ctrl+X o; and since those terminals
 /// send Ctrl+M as Enter, the worktrees dialog also moves the session with
-/// Ctrl+G.
+/// Ctrl+G. Closing the terminal pane has no key, since CodeSmith has no
+/// terminal pane and Ctrl+X ↑ selects a tool group.
 pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
     ("agent.cycle", "tab"),
@@ -832,6 +833,7 @@ pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
     ("dialog.select.next", "down,ctrl+n,tab"),
     ("open.menu", "<leader>o"),
     ("dialog.move_session.move", "ctrl+m,ctrl+g"),
+    ("terminal.close", "none"),
 ];
 
 /// OpenCode's first-format names (`CommandMap`).

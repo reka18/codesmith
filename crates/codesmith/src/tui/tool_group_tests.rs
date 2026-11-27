@@ -593,6 +593,13 @@ fn alt_up_and_alt_down_still_switch_session_tabs() {
     let k = Keymap::default();
     assert_eq!(k.list("session.tab.previous"), ["ctrl+shift+tab", "alt+↑"]);
     assert_eq!(k.list("session.tool.select"), ["ctrl+x ↑"]);
+    // Nothing else has Ctrl+X ↑ by default: OpenCode's "close terminal
+    // pane" had it, and CodeSmith has no terminal pane.
+    assert!(
+        k.list("terminal.close").is_empty(),
+        "{:?}",
+        k.list("terminal.close")
+    );
     // With the cursor on a group, alt+up leaves it and switches tabs.
     select_group(&mut a);
     assert!(a.tool_cursor.is_some());
