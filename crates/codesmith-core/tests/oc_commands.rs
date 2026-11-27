@@ -110,8 +110,13 @@ async fn project(extra: Value, files: &[(&str, &str)]) -> Project {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(root.join(".git")).unwrap();
+    let global = tempfile::tempdir().unwrap();
     for (p, t) in files {
-        write(&root.join(p), t);
+        // `global/...` is in the global config folder; the rest in the repo.
+        match p.strip_prefix("global/") {
+            Some(rest) => write(&global.path().join(rest), t),
+            None => write(&root.join(p), t),
+        }
     }
     let log: Log = Arc::default();
     let base = model(log.clone()).await;
@@ -125,13 +130,12 @@ async fn project(extra: Value, files: &[(&str, &str)]) -> Project {
     for (k, v) in extra.as_object().unwrap() {
         cfg[k] = v.clone();
     }
-    let global = tempfile::tempdir().unwrap();
     let sources = Sources {
         global_dir: global.path().to_path_buf(),
         file: None,
         content: Some(cfg.to_string()),
         project: true,
-        trust: codesmith_core::trust::Mode::All,
+        per_repo: true,
     };
     let loaded = config::load_from(&root, &sources).unwrap();
     Project {
@@ -320,7 +324,8 @@ async fn oc_command_loads_inline_and_file_based_commands_in_config_order() {
     let p = project(
         json!({}),
         &[
-            ("codesmith.json", inline.to_string().as_str()),
+            // The global config sits below the repository's command files.
+            ("global/codesmith.json", inline.to_string().as_str()),
             (
                 ".codesmith/commands/review.md",
                 "---\ndescription: File review\nagent: reviewer\nmodel: anthropic/claude#high\nsubtask: true\n---\nReview files",
@@ -375,16 +380,45 @@ async fn oc_command_interpolates_shell_output() {
         "A !`cat marker.txt` B !`printf x; printf y >&2` C !`printf $((1+2))`",
         "/bin/sh",
         d.path(),
+        &|_| Ok(()),
     )
     .await
     .unwrap();
     assert_eq!(out, "A here B xy C 3");
     assert_eq!(
-        command::interpolate_shell("no `shell` here! `x`", "/bin/sh", d.path())
+        command::interpolate_shell("no `shell` here! `x`", "/bin/sh", d.path(), &|_| Ok(()))
             .await
             .unwrap(),
         "no `shell` here! `x`"
     );
+}
+
+/// Every `` !`cmd` `` is put to the check before any runs: one refusal
+/// runs none of them.
+#[tokio::test(flavor = "multi_thread")]
+async fn command_shell_runs_nothing_unless_every_command_is_allowed() {
+    let d = tempfile::tempdir().unwrap();
+    let asked = std::sync::Mutex::new(Vec::new());
+    let allow = |c: &str| {
+        asked.lock().unwrap().push(c.to_string());
+        if c.contains("touch") {
+            Err("declined".to_string())
+        } else {
+            Ok(())
+        }
+    };
+    let e = command::interpolate_shell(
+        "!`printf a > first` !`touch second`",
+        "/bin/sh",
+        d.path(),
+        &allow,
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{e:#}").contains("declined"), "{e:#}");
+    assert_eq!(*asked.lock().unwrap(), ["printf a > first", "touch second"]);
+    assert!(!d.path().join("first").exists(), "a command ran");
+    assert!(!d.path().join("second").exists(), "a command ran");
 }
 
 /// "replaces commands with later definitions": a later layer's command

@@ -1346,6 +1346,7 @@ impl H {
             config,
             files: vec![],
             root: root.clone(),
+            ..Default::default()
         };
         let db = outside.path().join("s.db");
         let s = Session::new(

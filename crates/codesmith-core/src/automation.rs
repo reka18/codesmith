@@ -1671,7 +1671,7 @@ pub fn event_prompt(text: &str, event: &Value) -> Result<String> {
 /// rules not denying `watch_mcp_event` on the server.
 fn check_watch(loaded: &Loaded, server: &str) -> Result<(), String> {
     if loaded.config.automations == Some(false) {
-        return Err("Automations are turned off in this project's config".into());
+        return Err("Automations are turned off in the config for this folder".into());
     }
     let rules = crate::agent::resolve(&loaded.config, "build")
         .map(|b| b.permissions)
@@ -3971,6 +3971,7 @@ mod tests {
             config,
             files: vec![],
             root: std::path::PathBuf::from("/p"),
+            ..Default::default()
         };
         let l = unattended(&loaded);
         let b = crate::agent::resolve(&l.config, "build").unwrap();

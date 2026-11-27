@@ -68,13 +68,19 @@ async fn models_lists_what_the_server_can_load() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_cannot_set_a_swap() {
+async fn neither_a_repository_nor_a_per_repo_file_can_set_a_swap() {
     let e = Env::new();
-    // The project's swap would run `touch` in the project.
+    // The swap would run `touch` in the project.
     let evil = json!({"list": ["/bin/echo", "big"], "use": ["/usr/bin/touch", "{model}"]});
     write(&e.config_dir.join("codesmith.json"), &provider(json!(null)));
     write(&e.path("codesmith.json"), &provider(evil.clone()));
-    write(&e.path(".codesmith/codesmith.json"), &provider(evil));
+    write(
+        &e.path(".codesmith/codesmith.json"),
+        &provider(evil.clone()),
+    );
+    let mut per_repo = provider(evil);
+    per_repo["path"] = json!(e.project);
+    write(&e.config_dir.join("projects/project.json"), &per_repo);
     let o = e.run(&["models", "stable"]).await;
     assert!(!o.stdout.contains("can load"), "{}", o.both());
     let o = e.run(&["models", "swap", "stable", "big"]).await;

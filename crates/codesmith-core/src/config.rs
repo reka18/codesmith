@@ -1,17 +1,24 @@
 //! `codesmith.json` / `codesmith.jsonc` discovery, merging and parsing.
 //!
 //! Lowest to highest precedence:
-//!   1. `<config dir>/codesmith.json[c]` (global)
-//!   2. the file named by `$CODESMITH_CONFIG`
-//!   3. from the project root down to the working directory, each folder's
-//!      `codesmith.json[c]`
-//!   4. then, in the same order, each folder's `.codesmith/codesmith.json[c]`
-//!      (3 and 4 are skipped when `$CODESMITH_DISABLE_PROJECT_CONFIG` is set)
+//!   1. `<config dir>/codesmith.json[c]` (global), and the global folder's
+//!      `agents/`, `modes/` and `commands/`
+//!   2. the repository's `.codesmith/commands/` files, from the project root
+//!      down to the working directory (skipped when
+//!      `$CODESMITH_DISABLE_PROJECT_CONFIG` is set): prompt templates only
+//!   3. the per-repo files in `<config dir>/projects/` whose `path` matches
+//!      the project root, least specific first, each followed by its
+//!      `projects/<name>/` folder (see [`crate::per_repo`])
+//!   4. the file named by `$CODESMITH_CONFIG`
 //!   5. inline JSON in `$CODESMITH_CONFIG_CONTENT`
 //!
-//! `$CODESMITH_DISABLE_GLOBAL_CONFIG` skips the global config folder, and
-//! the home folder's `.claude` and `.agents` folders, however they are
-//! reached (see [`global_disabled`]).
+//! Nothing else is read from the repository: never its `codesmith.json[c]`,
+//! `.codesmith/codesmith.json[c]`, agents, modes or themes. A repository is
+//! someone else's input.
+//!
+//! `$CODESMITH_DISABLE_GLOBAL_CONFIG` skips the global config folder (with
+//! its per-repo files), and the home folder's `.claude` and `.agents`
+//! folders, however they are reached (see [`global_disabled`]).
 //!
 //! Objects merge key by key; `permissions` and `instructions` lists append,
 //! so a later file's rules come after (and so override) earlier ones. A file
@@ -20,12 +27,14 @@
 //! Pinned to OpenCode's config loading by the `oc_config_*` tests (ported
 //! from `packages/core/test/config/config.test.ts` and `model.test.ts`).
 //! Deliberate differences:
-//! - Only `codesmith.json[c]` and `.codesmith/` are read, never
-//!   `opencode.json`; there is no system, MDM, well-known or integration
-//!   config, no v1 format migration (so `normalization.test.ts` has no
-//!   counterpart) and no live reload or file watching.
-//! - The project walk stops at the project root (the nearest `.git`), where
-//!   OpenCode keeps walking to the filesystem root.
+//! - Only your own `codesmith.json[c]` files are read, never
+//!   `opencode.json` and never a repository's; there is no system, MDM,
+//!   well-known or integration config, no v1 format migration (so
+//!   `normalization.test.ts` has no counterpart) and no live reload or file
+//!   watching.
+//! - The walk for a repository's command files stops at the project root
+//!   (the nearest `.git`), where OpenCode keeps walking to the filesystem
+//!   root.
 //! - A file that does not parse is an error naming the file. OpenCode skips
 //!   it and loads the rest; skipping silently could drop `deny` rules.
 //! - Named maps (`providers`, `agents`, `commands`) are ordered by key, not by
@@ -200,12 +209,6 @@ pub struct Config {
     /// `shell.env`.
     #[serde(skip)]
     pub shell_env: ShellEnv,
-
-    /// What [`load_from`] did about the project's config: what it asks
-    /// for, whether it is trusted, and what was ignored (see
-    /// [`crate::trust`]).
-    #[serde(skip)]
-    pub trust: crate::trust::Outcome,
 }
 
 /// `claude_agent` in the global codesmith.json: the Claude Agent
@@ -1114,6 +1117,20 @@ pub struct Loaded {
     /// Project root (nearest folder with `.git` or `.hg`, else the working
     /// directory).
     pub root: PathBuf,
+    /// The per-repo files that matched the root, in the order they applied
+    /// (see [`crate::per_repo`]).
+    pub repo: Vec<crate::per_repo::Match>,
+    /// What `codesmith debug config` warns about: equally specific per-repo
+    /// files, and global-only settings a per-repo file tried to set.
+    pub warnings: Vec<String>,
+}
+
+impl Loaded {
+    /// The matched per-repo files' folders (`projects/<name>/`), in the
+    /// order they applied.
+    pub fn repo_dirs(&self) -> Vec<PathBuf> {
+        self.repo.iter().filter_map(|m| m.dir.clone()).collect()
+    }
 }
 
 pub const NAMES: [&str; 2] = ["codesmith.json", "codesmith.jsonc"];
@@ -1130,17 +1147,19 @@ pub fn project_root(dir: &Path) -> PathBuf {
 /// Where [`load_from`] looks. [`Sources::from_env`] is what [`load`] uses.
 #[derive(Debug, Clone)]
 pub struct Sources {
-    /// The global config folder (`codesmith.json[c]` there loads first).
+    /// The global config folder (`codesmith.json[c]` there loads first,
+    /// and its `projects/` holds the per-repo files).
     pub global_dir: PathBuf,
-    /// An explicit file (`$CODESMITH_CONFIG`), above the global config.
+    /// An explicit file (`$CODESMITH_CONFIG`), above the per-repo files.
     pub file: Option<PathBuf>,
     /// Inline JSON (`$CODESMITH_CONFIG_CONTENT`), above everything.
     pub content: Option<String>,
-    /// Whether to look for project files (`$CODESMITH_DISABLE_PROJECT_CONFIG` turns it off).
+    /// Whether to read the repository's own command files
+    /// (`.codesmith/commands/`); `$CODESMITH_DISABLE_PROJECT_CONFIG` turns
+    /// it off. Nothing else is ever read from the repository.
     pub project: bool,
-    /// Where the answers on trusting project config are (see
-    /// [`crate::trust`]).
-    pub trust: crate::trust::Mode,
+    /// Whether the per-repo files in `global_dir/projects/` apply.
+    pub per_repo: bool,
 }
 
 impl Sources {
@@ -1149,51 +1168,39 @@ impl Sources {
             global_dir: paths::config_dir(),
             file: std::env::var_os("CODESMITH_CONFIG").map(PathBuf::from),
             content: std::env::var("CODESMITH_CONFIG_CONTENT").ok(),
-            project: std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_none(),
-            trust: crate::trust::Mode::Store(crate::trust::store_path()),
+            project: !project_disabled(),
+            per_repo: true,
         }
     }
 }
 
-/// Config file candidates in precedence order (lowest first).
-pub fn candidates(cwd: &Path, root: &Path) -> Vec<PathBuf> {
-    candidates_from(cwd, root, &Sources::from_env())
-}
-
-/// Candidates for `sources`: global, explicit file, then every folder's
-/// `codesmith.json[c]` from the project root down to `cwd`, then every
-/// folder's `.codesmith/codesmith.json[c]` in the same order (as OpenCode
-/// ranks its `.opencode/` folders above all plain project files).
-pub fn candidates_from(cwd: &Path, root: &Path, sources: &Sources) -> Vec<PathBuf> {
-    layers(cwd, root, sources)
-        .into_iter()
-        .filter_map(|l| match l {
-            Layer::File(p) => Some(p),
-            Layer::Dir(_) => None,
-        })
-        .collect()
-}
-
-/// One source of config, lowest precedence first: a config file, or a
-/// config folder whose `agents/`, `modes/` and `commands/` files are read
-/// (OpenCode's directory entries).
+/// One source of config, lowest precedence first.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Layer {
+    /// The global config file or `$CODESMITH_CONFIG`.
     File(PathBuf),
+    /// A per-repo file (`projects/<name>.json[c]`).
+    Repo(PathBuf),
+    /// A config folder of your own (the global folder or a per-repo
+    /// folder), whose `agents/`, `modes/` and `commands/` files are read.
     Dir(PathBuf),
+    /// A repository's `.codesmith/` folder: only its `commands/` files are
+    /// read, as prompt templates.
+    Commands(PathBuf),
 }
 
-/// Whether `$CODESMITH_DISABLE_GLOBAL_CONFIG` turns the global sources off
-/// (OpenCode's `global: false`): the global config folder and the home
-/// folder's `.claude` and `.agents` folders are then not read, even when
-/// the project walk passes through them. The explicit file and inline
-/// config still load.
-/// Whether `$CODESMITH_DISABLE_PROJECT_CONFIG` turns project config off:
-/// no project config files, instructions or nested instructions.
+/// Whether `$CODESMITH_DISABLE_PROJECT_CONFIG` turns off what is still read
+/// from the repository: its instructions files, skills and commands. (Per-repo
+/// files in the global folder are your own config and still load.)
 pub fn project_disabled() -> bool {
     std::env::var_os("CODESMITH_DISABLE_PROJECT_CONFIG").is_some()
 }
 
+/// Whether `$CODESMITH_DISABLE_GLOBAL_CONFIG` turns the global sources off
+/// (OpenCode's `global: false`): the global config folder, its per-repo
+/// files, and the home folder's `.claude` and `.agents` folders are then not
+/// read, even when the project walk passes through them. The explicit file
+/// and inline config still load.
 pub fn global_disabled() -> bool {
     std::env::var_os("CODESMITH_DISABLE_GLOBAL_CONFIG").is_some_and(|v| !v.is_empty() && v != "0")
 }
@@ -1206,16 +1213,15 @@ pub fn global_source(dir: &Path, global_dir: &Path, home: &Path) -> bool {
     d == real(global_dir) || d == real(home)
 }
 
-/// Every layer: the global files and then the global folder, the explicit
-/// file, every folder's `codesmith.json[c]`, then each folder's
-/// `.codesmith/codesmith.json[c]` followed by its `.codesmith/` folder.
-pub fn layers(cwd: &Path, root: &Path, sources: &Sources) -> Vec<Layer> {
-    split_layers(cwd, root, sources).0
-}
-
-/// [`layers`], and the index of the first project layer: those before it
-/// (the global config and `$CODESMITH_CONFIG`) are the person's own.
-fn split_layers(cwd: &Path, root: &Path, sources: &Sources) -> (Vec<Layer>, usize) {
+/// Every layer for `cwd` in project `root`, and the per-repo files that
+/// matched: the global files and folder, each repository folder's
+/// `.codesmith/` commands from the root down to `cwd`, the matching per-repo
+/// files (each followed by its folder), then `$CODESMITH_CONFIG`.
+pub fn layers(
+    cwd: &Path,
+    root: &Path,
+    sources: &Sources,
+) -> Result<(Vec<Layer>, crate::per_repo::Found)> {
     let global = !global_disabled();
     let mut out: Vec<Layer> = Vec::new();
     if global {
@@ -1230,10 +1236,6 @@ fn split_layers(cwd: &Path, root: &Path, sources: &Sources) -> (Vec<Layer>, usiz
     // The project walk may reach the global folder (a project inside it):
     // it is still global.
     let walked = |d: &Path| global || !global_source(d, &sources.global_dir, &home);
-    if let Some(p) = &sources.file {
-        out.push(Layer::File(p.clone()));
-    }
-    let project_start = out.len();
     if sources.project {
         let mut dirs: Vec<&Path> = cwd
             .ancestors()
@@ -1241,19 +1243,25 @@ fn split_layers(cwd: &Path, root: &Path, sources: &Sources) -> (Vec<Layer>, usiz
             .filter(|d| walked(d))
             .collect();
         dirs.reverse();
-        for d in &dirs {
-            for n in NAMES {
-                out.push(Layer::File(d.join(n)));
-            }
-        }
-        for d in &dirs {
-            for n in NAMES {
-                out.push(Layer::File(d.join(".codesmith").join(n)));
-            }
-            out.push(Layer::Dir(d.join(".codesmith")));
+        for d in dirs {
+            out.push(Layer::Commands(d.join(".codesmith")));
         }
     }
-    (out, project_start)
+    let found = if global && sources.per_repo {
+        crate::per_repo::find(&sources.global_dir, root)?
+    } else {
+        crate::per_repo::Found::default()
+    };
+    for m in &found.matches {
+        out.push(Layer::Repo(m.file.clone()));
+        if let Some(d) = &m.dir {
+            out.push(Layer::Dir(d.clone()));
+        }
+    }
+    if let Some(p) = &sources.file {
+        out.push(Layer::File(p.clone()));
+    }
+    Ok((out, found))
 }
 
 /// Load the config for `cwd`, with the process-wide models.dev catalog
@@ -1265,20 +1273,20 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
     // What programs CodeSmith starts may see of its environment.
     crate::child_env::install(&loaded.config);
-    crate::trust::announce(&loaded.config.trust);
     Ok(loaded)
 }
 
 /// The config a run with `HOME=home` sees, as a tailbus bridge runs it:
-/// that home's global config alone (no `$CODESMITH_CONFIG`, no project
-/// files, none of yours), with the process-wide models.dev catalog.
+/// that home's global config alone (no `$CODESMITH_CONFIG`, no per-repo or
+/// repository files, none of yours), with the process-wide models.dev
+/// catalog.
 pub fn load_home(home: &Path) -> Result<Loaded> {
     let sources = Sources {
         global_dir: crate::home::config_dir(home),
         file: None,
         content: None,
         project: false,
-        trust: crate::trust::Mode::Store(crate::trust::store_path()),
+        per_repo: false,
     };
     let mut loaded = load_from(home, &sources)?;
     let c = &loaded.config.catalog;
@@ -1289,7 +1297,7 @@ pub fn load_home(home: &Path) -> Result<Loaded> {
 
 /// Remove `providers.*.swap` from a config document that is not the global
 /// config file, noting each one as `<id> in <source>`: a swap runs
-/// commands, so a project (or anything else) may not set one.
+/// commands, so nothing else may set one.
 pub fn strip_swap(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
     let Some(providers) = v.get_mut("providers").and_then(Value::as_object_mut) else {
         return;
@@ -1303,27 +1311,30 @@ pub fn strip_swap(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
 
 /// One config source [`load_from`] reads, in order.
 enum Entry {
-    /// A config folder whose agent and command files are read.
+    /// A config folder of your own whose agent and command files are read.
     Dir(PathBuf),
+    /// A repository's `.codesmith/`, for its command files alone.
+    Commands(PathBuf),
     /// A config file: its path, real path, text, and whether it is a
-    /// project file (rather than the global config or `$CODESMITH_CONFIG`).
+    /// per-repo file.
     File {
         path: PathBuf,
         canonical: PathBuf,
         text: String,
-        project: bool,
+        repo: bool,
     },
 }
 
-/// The sources [`load_from`] reads for `cwd`, each read once.
-fn gather(cwd: &Path, root: &Path, sources: &Sources) -> Result<Vec<Entry>> {
+/// The sources [`load_from`] reads, each read once.
+fn gather(layers: Vec<Layer>) -> Result<Vec<Entry>> {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut out = Vec::new();
-    let (layers, project_start) = split_layers(cwd, root, sources);
-    for (i, layer) in layers.into_iter().enumerate() {
-        let path = match layer {
-            Layer::File(p) if p.is_file() => p,
-            Layer::Dir(d) if d.is_dir() => {
+    for layer in layers {
+        let (path, repo) = match layer {
+            Layer::File(p) if p.is_file() => (p, false),
+            Layer::Repo(p) if p.is_file() => (p, true),
+            Layer::Dir(d) | Layer::Commands(d) if !d.is_dir() => continue,
+            Layer::Dir(d) => {
                 let canonical = d.canonicalize().unwrap_or_else(|_| d.clone());
                 if seen.contains(&canonical) {
                     continue;
@@ -1332,11 +1343,14 @@ fn gather(cwd: &Path, root: &Path, sources: &Sources) -> Result<Vec<Entry>> {
                 out.push(Entry::Dir(d));
                 continue;
             }
+            Layer::Commands(d) => {
+                out.push(Entry::Commands(d));
+                continue;
+            }
             _ => continue,
         };
-        // A file reached twice (the project walk passing through the global
-        // folder, or `$CODESMITH_CONFIG` naming a project file) loads once,
-        // as the first source that reached it.
+        // A file reached twice (`$CODESMITH_CONFIG` naming the global
+        // config) loads once, as the first source that reached it.
         let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
         if seen.contains(&canonical) {
             continue;
@@ -1348,33 +1362,13 @@ fn gather(cwd: &Path, root: &Path, sources: &Sources) -> Result<Vec<Entry>> {
             path,
             canonical,
             text,
-            project: i >= project_start,
+            repo,
         });
     }
     Ok(out)
 }
 
-/// What `cwd`'s project config files ask for that needs trust (see
-/// [`crate::trust`]).
-pub fn trust_request(cwd: &Path, sources: &Sources) -> Result<crate::trust::Request> {
-    let root = project_root(cwd);
-    let files: Vec<(PathBuf, String)> = gather(cwd, &root, sources)?
-        .into_iter()
-        .filter_map(|e| match e {
-            Entry::File {
-                path,
-                text,
-                project: true,
-                ..
-            } => Some((path, text)),
-            _ => None,
-        })
-        .collect();
-    Ok(crate::trust::detect(&root, &files))
-}
-
 pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
-    use crate::trust::{Mode, State};
     let root = project_root(cwd);
     let mut merged = Value::Object(Map::new());
     let mut files: Vec<PathBuf> = Vec::new();
@@ -1388,42 +1382,16 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
             .canonicalize()
             .unwrap_or_else(|_| sources.global_dir.clone())
     });
-    let entries = gather(cwd, &root, sources)?;
-    // What the project's files ask for, and whether the person trusts the
-    // project for it.
-    let project_files: Vec<(PathBuf, String)> = entries
-        .iter()
-        .filter_map(|e| match e {
-            Entry::File {
-                path,
-                text,
-                project: true,
-                ..
-            } => Some((path.clone(), text.clone())),
-            _ => None,
-        })
-        .collect();
-    let request = crate::trust::detect(&root, &project_files);
-    let state = match &sources.trust {
-        _ if request.is_empty() => State::NotNeeded,
-        Mode::All => State::Trusted,
-        Mode::Store(p) => {
-            crate::trust::Store::new(p.clone()).state(&crate::trust::project_key(&root), &request)
-        }
-    };
-    // A project file's substitutions are filled in only when it is trusted
-    // for them; otherwise they are empty (so no host file is even read).
-    let fill = if state == State::Trusted {
-        Fill::Real
-    } else {
-        Fill::Empty
-    };
-    let untrusted = matches!(state, State::Distrusted | State::Undecided);
-    let mut skipped: Vec<String> = Vec::new();
-    for entry in entries {
-        let (path, canonical, text, project) = match entry {
+    let (layers, found) = layers(cwd, &root, sources)?;
+    let mut warnings = found.warnings.clone();
+    for entry in gather(layers)? {
+        let (path, canonical, text, repo) = match entry {
             Entry::Dir(d) => {
                 merge_layer(&mut merged, crate::agent::documents(&d));
+                merge_layer(&mut merged, crate::command::documents(&d));
+                continue;
+            }
+            Entry::Commands(d) => {
                 merge_layer(&mut merged, crate::command::documents(&d));
                 continue;
             }
@@ -1431,30 +1399,18 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
                 path,
                 canonical,
                 text,
-                project,
-            } => (path, canonical, text, project),
+                repo,
+            } => (path, canonical, text, repo),
         };
         let base = path.parent().unwrap_or(Path::new("."));
-        let mut v = if project {
-            parse_as(&text, base, fill).with_context(|| {
-                if untrusted {
-                    format!(
-                        "in {} (its {{env:}} and {{file:}} are empty because the project is not trusted)",
-                        path.display()
-                    )
-                } else {
-                    format!("in {}", path.display())
-                }
-            })?
-        } else {
-            parse(&text, base).with_context(|| format!("in {}", path.display()))?
-        };
-        if project && untrusted {
-            crate::trust::strip(&mut v, &merged, &root, &mut skipped);
+        let mut v = parse(&text, base).with_context(|| format!("in {}", path.display()))?;
+        if repo {
+            crate::per_repo::strip(&mut v, &path, &mut warnings);
         }
-        let global_file = global_dir
-            .as_deref()
-            .is_some_and(|g| canonical.parent() == Some(g));
+        let global_file = !repo
+            && global_dir
+                .as_deref()
+                .is_some_and(|g| canonical.parent() == Some(g));
         if !global_file {
             strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
             strip_claude_agent(
@@ -1493,16 +1449,13 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     config.swap_ignored = swap_ignored;
     config.claude_agent_ignored = claude_agent_ignored;
     config.shell_env = shell_env;
-    config.trust = crate::trust::Outcome {
-        request,
-        state,
-        skipped,
-    };
     crate::plugin::active().transform(&mut config);
     Ok(Loaded {
         config,
         files,
         root,
+        repo: found.matches,
+        warnings,
     })
 }
 
@@ -1516,8 +1469,6 @@ pub fn parse(text: &str, base: &Path) -> Result<Value> {
 pub enum Fill {
     /// The variable's value and the file's contents.
     Real,
-    /// Nothing (an untrusted project's config): no file is read.
-    Empty,
     /// Left as written (to see a file's shape without its secrets).
     Literal,
     /// The variable's value, but no file is read.
@@ -1528,12 +1479,11 @@ pub enum Fill {
 pub fn parse_as(text: &str, base: &Path, fill: Fill) -> Result<Value> {
     let env = |name: &str| match fill {
         Fill::Real | Fill::Env => std::env::var(name).unwrap_or_default(),
-        Fill::Empty => String::new(),
         Fill::Literal => format!("{{env:{name}}}"),
     };
     let file = |raw: &str, p: &Path| match fill {
         Fill::Real => std::fs::read_to_string(p).unwrap_or_default(),
-        Fill::Empty | Fill::Env => String::new(),
+        Fill::Env => String::new(),
         Fill::Literal => format!("{{file:{raw}}}"),
     };
     let substituted = substitute_using(text, base, &env, &file);
@@ -2839,17 +2789,37 @@ mod tests {
     }
 
     #[test]
-    fn candidates_walk_from_root_to_cwd() {
-        let root = Path::new("/r");
-        let c = candidates(Path::new("/r/a/b"), root);
-        let project: Vec<String> = c
-            .iter()
-            .map(|p| p.display().to_string())
-            .filter(|p| p.starts_with("/r"))
-            .collect();
-        assert_eq!(project.first().unwrap(), "/r/codesmith.json");
-        assert_eq!(project.last().unwrap(), "/r/a/b/.codesmith/codesmith.jsonc");
-        assert_eq!(project.len(), 12);
+    fn layers_read_only_commands_from_the_repository() {
+        let t = tempfile::tempdir().unwrap();
+        let global = t.path().join("global");
+        let sources = Sources {
+            global_dir: global.clone(),
+            file: Some(PathBuf::from("/explicit.json")),
+            content: None,
+            project: true,
+            per_repo: true,
+        };
+        let (layers, found) = layers(Path::new("/r/a/b"), Path::new("/r"), &sources).unwrap();
+        assert!(found.matches.is_empty());
+        let mut want = vec![
+            Layer::File(global.join("codesmith.json")),
+            Layer::File(global.join("codesmith.jsonc")),
+            Layer::Dir(global.clone()),
+        ];
+        for d in ["/r", "/r/a", "/r/a/b"] {
+            want.push(Layer::Commands(Path::new(d).join(".codesmith")));
+        }
+        want.push(Layer::File(PathBuf::from("/explicit.json")));
+        // Global config tests turn the global folder off in their own
+        // binary; here it is on.
+        if !global_disabled() {
+            assert_eq!(layers, want);
+        }
+        for l in &layers {
+            if let Layer::File(p) | Layer::Repo(p) = l {
+                assert!(!p.starts_with("/r"), "a repository file is read: {l:?}");
+            }
+        }
     }
 
     #[test]
@@ -3236,7 +3206,7 @@ mod tests {
             file: None,
             content: None,
             project: true,
-            trust: crate::trust::Mode::All,
+            per_repo: true,
         }
     }
 
@@ -3247,6 +3217,21 @@ mod tests {
         p
     }
 
+    /// A per-repo file `projects/<name>` in `global` for `project`, with
+    /// the keys of `doc` (a JSON object's text).
+    fn per_repo(global: &Path, name: &str, project: &Path, doc: &str) -> PathBuf {
+        let mut v: Value = serde_json::from_str(doc).unwrap();
+        v["path"] = json!(project);
+        let p = global.join(crate::per_repo::DIR).join(name);
+        write(&p, &v.to_string());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        p
+    }
+
     #[test]
     fn oc_config_loads_explicit_file_and_content_overrides_in_priority_order() {
         let (_d, t) = tmp();
@@ -3254,19 +3239,16 @@ mod tests {
         let explicit = t.join("custom.json");
         write(&global.join("codesmith.json"), r#"{"shell": "global"}"#);
         write(&explicit, r#"{"shell": "explicit"}"#);
+        let repo = per_repo(&global, "p.json", &project, r#"{"shell": "per-repo"}"#);
+        // Never read.
         write(&project.join("codesmith.json"), r#"{"shell": "project"}"#);
         let mut src = sources(&global);
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(l.config.shell.as_deref(), Some("per-repo"));
         src.file = Some(explicit.clone());
         let l = load_from(&project, &src).unwrap();
-        assert_eq!(
-            l.files,
-            vec![
-                global.join("codesmith.json"),
-                explicit,
-                project.join("codesmith.json")
-            ]
-        );
-        assert_eq!(l.config.shell.as_deref(), Some("project"));
+        assert_eq!(l.files, vec![global.join("codesmith.json"), repo, explicit]);
+        assert_eq!(l.config.shell.as_deref(), Some("explicit"));
         src.content = Some(r#"{"shell": "content"}"#.into());
         let l = load_from(&project, &src).unwrap();
         assert_eq!(l.config.shell.as_deref(), Some("content"));
@@ -3295,8 +3277,10 @@ mod tests {
         );
         let explicit = t.join("custom.json");
         write(&explicit, r#"{"claude_agent": {"max_processes": 30}}"#);
-        write(
-            &project.join("codesmith.json"),
+        per_repo(
+            &global,
+            "p.json",
+            &project,
             r#"{"claude_agent": {"max_processes": 32, "spare": 8}}"#,
         );
         write(
@@ -3315,7 +3299,9 @@ mod tests {
                 max_processes: 6
             }
         );
-        assert_eq!(l.config.claude_agent_ignored.len(), 4);
+        // The per-repo file, the explicit file and the content variable
+        // (the repository's file is never read at all).
+        assert_eq!(l.config.claude_agent_ignored.len(), 3);
         // Out of range values are brought within bounds.
         let c: Config =
             serde_json::from_value(json!({"claude_agent": {"spare": 99, "max_processes": 1000}}))
@@ -3354,10 +3340,12 @@ mod tests {
         assert!(l.config.swap_ignored.is_empty());
         assert_eq!(l.config.provider("stable").unwrap().swap, Some(s.clone()));
 
-        // A project file (plain or under .codesmith) cannot replace or add one.
-        write(&project.join("codesmith.json"), &swap("/tmp/evil"));
-        write(
-            &project.join(".codesmith/codesmith.json"),
+        // A per-repo file cannot replace or add one.
+        per_repo(&global, "a.json", &project, &swap("/tmp/evil"));
+        per_repo(
+            &global,
+            "b.json",
+            &project,
             r#"{"providers": {"other": {"swap": {"use": ["/tmp/evil", "{model}"]}, "name": "Other"}}}"#,
         );
         let l = load_from(&project, &sources(&global)).unwrap();
@@ -3373,7 +3361,7 @@ mod tests {
 
         // Nor can $CODESMITH_CONFIG or $CODESMITH_CONFIG_CONTENT.
         std::fs::remove_file(global.join("codesmith.json")).unwrap();
-        std::fs::remove_file(project.join("codesmith.json")).unwrap();
+        std::fs::remove_dir_all(global.join(crate::per_repo::DIR)).unwrap();
         let explicit = t.join("custom.json");
         write(&explicit, &swap("/tmp/evil"));
         let mut src = sources(&global);
@@ -3389,16 +3377,28 @@ mod tests {
     }
 
     #[test]
-    fn oc_config_skips_project_configuration_when_project_discovery_is_disabled() {
+    fn oc_config_skips_the_repositorys_commands_when_project_discovery_is_disabled() {
         let (_d, t) = tmp();
         let (global, project) = (t.join("global"), project(&t));
         write(&global.join("codesmith.json"), r#"{"shell": "global"}"#);
-        write(&project.join("codesmith.json"), r#"{"shell": "project"}"#);
+        write(&project.join(".codesmith/commands/c.md"), "From the repo");
+        let repo = per_repo(&global, "p.json", &project, r#"{"title": false}"#);
         let mut src = sources(&global);
+        assert!(load_from(&project, &src)
+            .unwrap()
+            .config
+            .commands
+            .contains_key("c"));
         src.project = false;
         let l = load_from(&project, &src).unwrap();
-        assert_eq!(l.config.shell.as_deref(), Some("global"));
-        assert_eq!(l.files, vec![global.join("codesmith.json")]);
+        assert!(!l.config.commands.contains_key("c"));
+        // Per-repo files are your own config, and still load.
+        assert_eq!(l.config.title, Some(false));
+        assert_eq!(l.files, vec![global.join("codesmith.json"), repo]);
+        // Unless per-repo files are off (a bridge's home).
+        src.per_repo = false;
+        let l = load_from(&project, &src).unwrap();
+        assert_eq!(l.config.title, None);
     }
 
     #[test]
@@ -3430,23 +3430,24 @@ mod tests {
     fn oc_config_loads_json_and_jsonc_files_from_lowest_to_highest_priority() {
         let (_d, t) = tmp();
         let project = project(&t);
+        let global = t.join("global");
         let provider = r#"{"settings": {"baseURL": "http://x"}}"#;
         write(
-            &project.join("codesmith.json"),
+            &global.join("codesmith.json"),
             &format!(r#"{{"$schema": "base", "providers": {{"base": {provider}}}}}"#),
         );
         write(
-            &project.join("codesmith.jsonc"),
+            &global.join("codesmith.jsonc"),
             &format!(
                 "{{\n  // Later files override scalar fields while retaining providers.\n  \"$schema\": \"last\",\n  \"providers\": {{ \"last\": {provider} }},\n}}"
             ),
         );
-        let l = load_from(&project, &sources(&t.join("global"))).unwrap();
+        let l = load_from(&project, &sources(&global)).unwrap();
         assert_eq!(
             l.files,
             vec![
-                project.join("codesmith.json"),
-                project.join("codesmith.jsonc")
+                global.join("codesmith.json"),
+                global.join("codesmith.jsonc")
             ]
         );
         assert_eq!(l.config.schema.as_deref(), Some("last"));
@@ -3527,7 +3528,7 @@ mod tests {
     fn oc_config_accepts_schema_metadata_without_writing_it_into_config_files() {
         let (_d, t) = tmp();
         let project = project(&t);
-        let file = project.join("codesmith.json");
+        let file = t.join("global/codesmith.json");
         let contents = r#"{"shell":"/bin/zsh","providers":{"local":{}}}"#;
         write(&file, contents);
         let l = load_from(&project, &sources(&t.join("global"))).unwrap();
@@ -3599,14 +3600,22 @@ mod tests {
     fn oc_config_an_invalid_file_is_an_error_naming_it() {
         let (_d, t) = tmp();
         let project = project(&t);
-        write(&project.join("codesmith.json"), r#"{"$schema": "base"}"#);
-        write(&project.join("codesmith.jsonc"), "{ invalid");
-        let e = load_from(&project, &sources(&t.join("global"))).unwrap_err();
+        let global = t.join("global");
+        write(&global.join("codesmith.json"), r#"{"$schema": "base"}"#);
+        write(&global.join("codesmith.jsonc"), "{ invalid");
+        let e = load_from(&project, &sources(&global)).unwrap_err();
         assert!(format!("{e:#}").contains("codesmith.jsonc"), "{e:#}");
+        // A repository's broken file is never read, so it is no error.
+        std::fs::remove_file(global.join("codesmith.jsonc")).unwrap();
+        write(&project.join("codesmith.jsonc"), "{ invalid");
+        load_from(&project, &sources(&global)).unwrap();
     }
 
+    /// Deliberate difference: OpenCode loads every folder's config from the
+    /// project root down; CodeSmith reads none of them, only the global
+    /// file.
     #[test]
-    fn oc_config_loads_global_and_ancestor_configuration_in_order() {
+    fn oc_config_loads_global_but_never_ancestor_configuration() {
         let (_d, t) = tmp();
         let global = t.join("global");
         let root = t.join("repo");
@@ -3633,20 +3642,9 @@ mod tests {
             );
         }
         let l = load_from(&directory, &sources(&global)).unwrap();
-        // OpenCode also loads "outside" (above the project root) after "global".
-        assert_eq!(
-            l.config.instructions,
-            [
-                "global",
-                "root",
-                "parent",
-                "directory",
-                "root-dot",
-                "directory-dot"
-            ]
-        );
-        assert_eq!(l.config.schema.as_deref(), Some("directory-dot"));
-        assert_eq!(l.files.len(), 6);
+        assert_eq!(l.config.instructions, ["global"]);
+        assert_eq!(l.config.schema.as_deref(), Some("global"));
+        assert_eq!(l.files, vec![global.join("codesmith.json")]);
     }
 
     #[test]

@@ -1033,7 +1033,7 @@ fn pax_path(body: &[u8]) -> Option<String> {
 // The opt-in update check.
 
 /// The update policy: `update` (or `autoupdate`) in the global
-/// `codesmith.json[c]` only, so a project can't turn on network requests;
+/// `codesmith.json[c]` only, so no per-repo file can turn on network requests;
 /// off when neither says, or when `$CODESMITH_DISABLE_AUTOUPDATE` is set.
 pub fn policy(config_dir: &Path) -> Policy {
     if std::env::var("CODESMITH_DISABLE_AUTOUPDATE")

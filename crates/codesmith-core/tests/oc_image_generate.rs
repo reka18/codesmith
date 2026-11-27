@@ -1048,6 +1048,7 @@ async fn oc_image_tool_runs_in_a_session_and_reports_its_notice_to_the_model() {
         config,
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let mut s = Session::new(
         &loaded,

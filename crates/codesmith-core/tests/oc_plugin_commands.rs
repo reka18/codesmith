@@ -67,6 +67,7 @@ fn session(config: &Config) -> Session {
         config: config.clone(),
         files: vec![],
         root: root.clone(),
+        ..Default::default()
     };
     let opts = Options {
         agent: None,

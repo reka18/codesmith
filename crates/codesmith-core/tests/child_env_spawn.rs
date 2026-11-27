@@ -90,7 +90,7 @@ async fn command_template_interpolation_sees_no_credentials() {
     setup();
     let d = tempfile::tempdir().unwrap();
     let text = format!("before !`{PRINT}` after");
-    let got = codesmith_core::command::interpolate_shell(&text, "/bin/sh", d.path())
+    let got = codesmith_core::command::interpolate_shell(&text, "/bin/sh", d.path(), &|_| Ok(()))
         .await
         .unwrap();
     assert!(got.contains("unset|unset|unset|plain|unset|end"), "{got}");

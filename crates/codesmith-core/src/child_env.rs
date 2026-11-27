@@ -26,7 +26,7 @@
 //!
 //! A user passes a variable through on purpose with `shell.env.pass` in
 //! the global config file (`{"shell": {"env": {"pass": ["GITHUB_TOKEN"]}}}`).
-//! A project config (or `$CODESMITH_CONFIG`, or the config content
+//! A per-repo file (or `$CODESMITH_CONFIG`, or the config content
 //! variable) cannot: [`crate::config::load_from`] drops `shell.env.pass`
 //! from every source but the global config file. CodeSmith's own secrets
 //! ([`INTERNAL`]) are never passed.
