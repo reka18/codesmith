@@ -3,6 +3,35 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Tool groups in the transcript.** At the default verbosity, a run of
+  tool calls with no text from the model between them is one line that
+  says what the calls did: `Ran 2 commands, read a file, edited 3 files`,
+  in the present tense while they run (`Running a command, reading a
+  file…`). Other tools, such as MCP servers' and plugins', are named
+  (`called github_create_issue`). Collapsing never hides how many calls
+  failed, the lines the edits added and removed, or a permission request
+  or question waiting on you. An open group shows each call's row as
+  before, led by `✓` or `✗`.
+- **Glyphs for tool calls.** Each group's line starts with a one-column
+  glyph in the style of the call running now: a sweeping dot for reads and
+  searches, a hammer for edits, a turning block for commands, an orbit for
+  web fetches and a spinner for subagents, glowing in the forge's heat
+  colours on the input box's 120 ms clock. Any other tool gets a braille
+  sprite made from its name, the same every time. A finished group
+  settles in the success colour, or the error colour when a call failed.
+  `tui.animations: false` keeps glyphs still; under `NO_COLOR` they move
+  in the muted colour.
+- **Open groups from the keyboard.** **alt+↑** (`session.tool.select`)
+  selects the latest group; **↑** and **↓** move between groups with the
+  transcript following, **enter**, **space** or **→** open one, **←**
+  closes it, and **esc** or typing goes back to the prompt. **ctrl+o**
+  still opens or closes them all. The keys are rebindable
+  (`session.tool.previous`, `.next`, `.open`, `.close`, `.exit`).
+  **alt+↑** no longer goes to the previous session tab; **ctrl+shift+tab**
+  still does.
+
 ## 0.7.0 — 2026-11-27
 
 **Upgrading:** this release changes where per-project settings live. A
