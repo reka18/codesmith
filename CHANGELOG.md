@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.6.1 — 2026-11-26
 
 - **Bifrost's route is a setting.** `providers.bifrost.settings.api`
   (`BIFROST_API`, or a model's own `api`) picks the OpenAI-shaped route
