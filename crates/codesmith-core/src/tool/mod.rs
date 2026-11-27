@@ -1258,6 +1258,9 @@ pub(crate) mod testing {
 mod secret_guard_tests;
 
 #[cfg(test)]
+mod nested_worktree_tests;
+
+#[cfg(test)]
 mod tests {
     use super::testing::Env;
     use super::*;
