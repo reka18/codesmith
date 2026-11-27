@@ -244,17 +244,42 @@ fn route_hint(protocol: crate::Protocol, url: &reqwest::Url) -> String {
     }
 }
 
+/// The setting that chose a Bifrost request's route, and the one change
+/// to try when the gateway doesn't serve it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouteOrigin {
+    /// What chose the route: `providers.bifrost.settings.api ("openai")`,
+    /// `BIFROST_OPENAI_BASE_URL`, the default, ….
+    pub setting: String,
+    /// The change to try, as an instruction: `set
+    /// providers.bifrost.settings.api to "unified"`.
+    pub fix: String,
+}
+
 /// The error for a request to `url` that the gateway answered as a route
 /// it doesn't serve ([`is_route_refusal`]): the URL, the gateway's own
-/// message without the key, and the setting that picks the route. It is
-/// never retried, on this route or another.
+/// message without the key, the setting that chose the route (from
+/// `p.bifrost_route`, else told from the URL) and the change to try. It
+/// is never retried, on this route or another.
 pub fn route_error(p: &Provider, url: &reqwest::Url, status: u16, body: &str) -> crate::Error {
-    crate::Error::Invalid(format!(
-        "Bifrost: {} answered HTTP {status} ({}): the gateway doesn't serve this route. Nothing else was tried; {}.",
+    let head = format!(
+        "Bifrost: {} answered HTTP {status} ({}): the gateway doesn't serve this route.",
         shown_url(url),
         gateway_message(body, p.api_key.as_deref()),
-        route_hint(p.protocol, url),
-    ))
+    );
+    crate::Error::Invalid(match &p.bifrost_route {
+        Some(o) => redact(
+            &format!(
+                "{head} The route was chosen by {}. Nothing else was tried; to fix it, {}.",
+                o.setting, o.fix
+            ),
+            p.api_key.as_deref(),
+        ),
+        None => format!(
+            "{head} Nothing else was tried; {}.",
+            route_hint(p.protocol, url)
+        ),
+    })
 }
 
 /// `text` with every copy of `key` taken out.
@@ -443,6 +468,21 @@ mod tests {
         p.protocol = crate::Protocol::GoogleGemini;
         let m = route_error(&p, &url, 405, "").to_string();
         assert!(m.contains("geminiBaseURL"), "{m}");
+        // With the setting that chose the route: it, and one change to try.
+        p.bifrost_route = Some(RouteOrigin {
+            setting: format!("BIFROST_OPENAI_BASE_URL (https://u:{key}@bifrost.example/x/v1)"),
+            fix: "set BIFROST_OPENAI_BASE_URL to where this gateway serves the OpenAI API".into(),
+        });
+        let m = route_error(&p, &url, 404, "").to_string();
+        assert!(
+            m.contains("The route was chosen by BIFROST_OPENAI_BASE_URL (")
+                && m.contains(
+                    "Nothing else was tried; to fix it, set BIFROST_OPENAI_BASE_URL to where"
+                )
+                && !m.contains("geminiBaseURL")
+                && !m.contains(key),
+            "{m}"
+        );
         // A long or control-laden message is cut and cleaned.
         let m = gateway_message(&format!("{}\n\u{7}end", "a".repeat(1000)), None);
         assert_eq!(m.chars().count(), 300);

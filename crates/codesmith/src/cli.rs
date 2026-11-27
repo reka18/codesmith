@@ -4658,6 +4658,16 @@ async fn list_provider_models(loaded: &config::Loaded, pid: &str) -> Result<()> 
     }
     // Providers with a live list keep it for model resolution.
     let settings = loaded.config.provider(&pid).unwrap_or_default().settings;
+    // Bifrost: where each surface goes, on stderr beside the list.
+    if pid == codesmith_core::providers::bifrost::ID {
+        use codesmith_core::providers::{bifrost, process_env};
+        if let Some(urls) = bifrost::urls(&settings, &process_env())? {
+            eprintln!("Bifrost routes:");
+            for line in urls.describe() {
+                eprintln!("  {line}");
+            }
+        }
+    }
     if let Some(ids) =
         codesmith_core::providers::live::refresh(&client, &pid, &m.provider, &settings).await
     {

@@ -171,6 +171,7 @@ fn provider(base: &str) -> Provider {
         encoding: Encoding::None,
         compat: Default::default(),
         hooks: None,
+        bifrost_route: None,
     }
 }
 

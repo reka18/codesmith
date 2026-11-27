@@ -61,6 +61,8 @@ pub struct State {
     /// Paths answered with this status and body, whatever the method
     /// (a route the gateway doesn't serve).
     pub refused: Vec<(String, u16, String)>,
+    /// Every POST answered with this status and body.
+    pub refuse_posts: Option<(u16, String)>,
     /// Where the model list is served (default `/v1/models`).
     pub models_path: Option<String>,
     /// Where the quota is served (default
@@ -234,7 +236,8 @@ async fn serve(mut s: tokio::net::TcpStream, st: Arc<Mutex<State>>) -> Option<()
             g.refused
                 .iter()
                 .find(|(p, _, _)| *p == req.path)
-                .map(|(_, c, b)| (*c, b.clone())),
+                .map(|(_, c, b)| (*c, b.clone()))
+                .or_else(|| g.refuse_posts.clone().filter(|_| req.method == "POST")),
             g.models_path.clone().unwrap_or_else(|| "/v1/models".into()),
             g.quota_path
                 .clone()

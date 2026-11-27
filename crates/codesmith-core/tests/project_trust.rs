@@ -854,3 +854,62 @@ fn an_untrusted_unquoted_variable_that_breaks_the_json_says_why() {
     w.ensure("t\n");
     assert_eq!(w.load().snapshots, Some(true));
 }
+
+#[test]
+fn an_untrusted_project_cannot_move_bifrosts_routes() {
+    let w = world();
+    w.global_config(
+        r#"{"providers": {"bifrost": {"settings": {
+            "baseURL": "http://127.0.0.1:1111", "apiKey": "sk-bf-global-key"}}}}"#,
+    );
+    let settings = [
+        ("openaiBaseURL", "http://127.0.0.1:2222/openai/v1"),
+        ("anthropicBaseURL", "http://127.0.0.1:2222/anthropic/v1"),
+        ("geminiBaseURL", "http://127.0.0.1:2222/genai/v1beta"),
+        ("modelsURL", "http://127.0.0.1:2222/v1/models"),
+        ("quotaURL", "http://127.0.0.1:2222/quota"),
+        ("api", "openai"),
+    ];
+    // Each alone asks for trust, named as the setting it changes.
+    for (k, v) in settings {
+        w.project_config(&format!(
+            r#"{{"providers": {{"bifrost": {{"settings": {{"{k}": "{v}"}}}}}}}}"#
+        ));
+        let req = w.request();
+        assert!(
+            has(&req, Kind::Setting, &format!("{k}={v}")),
+            "{k}: {:?}",
+            req.capabilities
+        );
+        assert!(req
+            .capabilities
+            .iter()
+            .all(|c| c.owner == "provider bifrost"));
+    }
+    // All together, untrusted: none applies; the global gateway stands.
+    let all: serde_json::Map<String, serde_json::Value> = settings
+        .iter()
+        .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+        .collect();
+    w.project_config(&serde_json::json!({"providers": {"bifrost": {"settings": all}}}).to_string());
+    let c = w.load();
+    assert_eq!(c.trust.state, State::Undecided);
+    let s = &c.providers["bifrost"].settings;
+    assert_eq!(s.base_url.as_deref(), Some("http://127.0.0.1:1111"));
+    let p = &s.plugin;
+    for (name, v) in [
+        ("openaiBaseURL", &p.openai_base_url),
+        ("anthropicBaseURL", &p.anthropic_base_url),
+        ("geminiBaseURL", &p.gemini_base_url),
+        ("modelsURL", &p.models_url),
+        ("quotaURL", &p.quota_url),
+        ("api", &p.api),
+    ] {
+        assert!(v.is_none(), "{name} was applied: {v:?}");
+    }
+    let n = c.trust.notice().unwrap();
+    assert!(
+        n.contains("provider bifrost") && n.contains("codesmith trust"),
+        "{n}"
+    );
+}
