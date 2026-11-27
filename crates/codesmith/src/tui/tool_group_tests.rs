@@ -75,8 +75,14 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn alt_up() -> KeyEvent {
-    KeyEvent::new(KeyCode::Up, KeyModifiers::ALT)
+fn alt(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::ALT)
+}
+
+/// `session.tool.select`'s default: the leader key (Ctrl+X), then ↑.
+fn select_group(a: &mut App) -> Option<super::app::Action> {
+    a.on_key(ctrl('x'));
+    a.on_key(key(KeyCode::Up))
 }
 
 fn ctrl(c: char) -> KeyEvent {
@@ -173,8 +179,8 @@ fn groups_are_drawn_at_low_verbosity_only() {
     assert!(lines(&a).iter().any(|l| l.starts_with("⚙ shell")));
     a.verbosity = Verbosity::High;
     assert!(view::tool_groups(&a).is_empty());
-    // And alt+up then does nothing.
-    a.on_key(alt_up());
+    // And ctrl+x ↑ then does nothing.
+    select_group(&mut a);
     assert_eq!(a.tool_cursor, None);
 }
 
@@ -554,9 +560,9 @@ fn selected(a: &App) -> Option<&str> {
 }
 
 #[test]
-fn alt_up_selects_the_latest_group_and_up_down_stop_at_the_ends() {
+fn leader_up_selects_the_latest_group_and_up_down_stop_at_the_ends() {
     let mut a = many(3);
-    a.on_key(alt_up());
+    select_group(&mut a);
     assert_eq!(selected(&a), Some("shell-step 2"));
     a.on_key(key(KeyCode::Down));
     assert_eq!(selected(&a), Some("shell-step 2"), "stops at the newest");
@@ -572,10 +578,36 @@ fn alt_up_selects_the_latest_group_and_up_down_stop_at_the_ends() {
 }
 
 #[test]
-fn alt_up_with_no_groups_does_nothing() {
+fn alt_up_and_alt_down_still_switch_session_tabs() {
+    let mut a = many(3);
+    a.tabs = Some(super::tabs::Strip::default());
+    assert_eq!(
+        a.on_key(alt(KeyCode::Up)),
+        Some(super::app::Action::Run("session.tab.previous"))
+    );
+    assert_eq!(
+        a.on_key(alt(KeyCode::Down)),
+        Some(super::app::Action::Run("session.tab.next"))
+    );
+    assert_eq!(a.tool_cursor, None, "alt+up does not select a group");
+    let k = Keymap::default();
+    assert_eq!(k.list("session.tab.previous"), ["ctrl+shift+tab", "alt+↑"]);
+    assert_eq!(k.list("session.tool.select"), ["ctrl+x ↑"]);
+    // With the cursor on a group, alt+up leaves it and switches tabs.
+    select_group(&mut a);
+    assert!(a.tool_cursor.is_some());
+    assert_eq!(
+        a.on_key(alt(KeyCode::Up)),
+        Some(super::app::Action::Run("session.tab.previous"))
+    );
+    assert_eq!(a.tool_cursor, None);
+}
+
+#[test]
+fn leader_up_with_no_groups_does_nothing() {
     let mut a = App::new();
     a.entries = vec![Entry::Assistant("hi".into())];
-    a.on_key(alt_up());
+    select_group(&mut a);
     assert_eq!(a.tool_cursor, None);
     assert!(a.input.is_empty());
 }
@@ -584,7 +616,7 @@ fn alt_up_with_no_groups_does_nothing() {
 fn return_space_and_right_open_left_closes() {
     for open in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Right] {
         let mut a = many(2);
-        a.on_key(alt_up());
+        select_group(&mut a);
         a.on_key(key(open));
         assert!(a.group_open("shell-step 1"), "{open:?}");
         assert!(!a.group_open("shell-step 0"), "only the selected one");
@@ -604,7 +636,7 @@ fn return_space_and_right_open_left_closes() {
 fn escape_leaves_without_interrupting_and_typing_leaves_to_the_input() {
     let mut a = many(2);
     a.busy = true;
-    a.on_key(alt_up());
+    select_group(&mut a);
     assert_eq!(a.on_key(key(KeyCode::Esc)), None, "no interrupt");
     assert_eq!(a.tool_cursor, None);
     // Escape again, outside the cursor, interrupts as usual.
@@ -613,12 +645,12 @@ fn escape_leaves_without_interrupting_and_typing_leaves_to_the_input() {
         Some(super::app::Action::Interrupt)
     );
     a.busy = false;
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(key(KeyCode::Char('h')));
     assert_eq!(a.tool_cursor, None);
     assert_eq!(a.input.text(), "h", "the key is typed");
     // Other keys leave and do what they do: ctrl+p opens the palette.
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(ctrl('p'));
     assert_eq!(a.tool_cursor, None);
     assert!(matches!(a.modal, Some(Modal::Picker(_))));
@@ -631,7 +663,7 @@ fn ctrl_o_opens_and_closes_every_group_in_and_out_of_the_cursor() {
     assert!(["shell-step 0", "shell-step 1", "shell-step 2"]
         .iter()
         .all(|k| a.group_open(k)));
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(key(KeyCode::Left));
     assert!(!a.group_open("shell-step 2"));
     // Ctrl+O sets them all again, the one closed by hand too.
@@ -646,7 +678,7 @@ fn ctrl_o_opens_and_closes_every_group_in_and_out_of_the_cursor() {
 fn the_view_scrolls_to_follow_the_selection() {
     let mut a = many(30);
     // Each group is 2 rows (its line, then the text), 10 rows shown.
-    a.on_key(alt_up());
+    select_group(&mut a);
     assert_eq!(a.scroll, 0, "the latest group is in view");
     for _ in 0..29 {
         a.on_key(key(KeyCode::Up));
@@ -675,7 +707,7 @@ fn the_view_scrolls_to_follow_the_selection() {
 fn an_open_group_scrolls_to_show_its_rows() {
     let mut a = many(3);
     a.scroll = 0;
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(key(KeyCode::Up));
     a.on_key(key(KeyCode::Up));
     // Opening the oldest: its rows come into view below its line.
@@ -701,8 +733,8 @@ fn the_cursor_keys_can_be_rebound() {
     assert!(k.warnings.is_empty(), "{:?}", k.warnings);
     let mut a = many(2);
     a.keymap = std::sync::Arc::new(k);
-    a.on_key(alt_up());
-    assert_eq!(a.tool_cursor, None, "alt+up is no longer bound");
+    select_group(&mut a);
+    assert_eq!(a.tool_cursor, None, "ctrl+x ↑ is no longer bound");
     a.on_key(KeyEvent::new(
         KeyCode::Char('t'),
         KeyModifiers::CONTROL | KeyModifiers::ALT,
@@ -740,7 +772,7 @@ fn up_in_an_empty_prompt_still_recalls_history() {
 #[test]
 fn the_cursor_leaves_when_its_group_goes() {
     let mut a = many(2);
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(key(KeyCode::Enter));
     // The session read again: the same calls, so the same groups.
     let same = a.entries.clone();
@@ -752,7 +784,7 @@ fn the_cursor_leaves_when_its_group_goes() {
     assert_eq!(a.tool_cursor, None);
     // A stale key (entries replaced behind its back) leaves on the next move.
     let mut a = many(2);
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.entries.clear();
     a.on_key(key(KeyCode::Up));
     assert_eq!(a.tool_cursor, None);
@@ -775,7 +807,7 @@ fn the_selected_group_has_a_bar_and_the_status_line_its_keys() {
     let rows = screen(&a, 80, 16);
     assert!(!rows.iter().any(|r| r.contains('▌')));
     assert!(!rows.iter().any(|r| r.contains("TRANSCRIPT")));
-    a.on_key(alt_up());
+    select_group(&mut a);
     a.on_key(key(KeyCode::Up));
     let rows = screen(&a, 80, 16);
     let bar: Vec<&String> = rows.iter().filter(|r| r.starts_with('▌')).collect();
@@ -809,7 +841,7 @@ fn the_selected_group_has_a_bar_and_the_status_line_its_keys() {
 #[test]
 fn a_selection_scrolled_out_of_view_draws_no_bar() {
     let mut a = many(20);
-    a.on_key(alt_up());
+    select_group(&mut a);
     // Scrolled away by hand: the selected line is below the view.
     a.scroll = 30;
     let rows = screen(&a, 80, 14);
@@ -820,7 +852,7 @@ fn a_selection_scrolled_out_of_view_draws_no_bar() {
 fn the_help_lists_the_tool_group_keys() {
     let h = super::app::help_text(&Keymap::default());
     for want in [
-        "alt+↑",
+        "ctrl+x ↑",
         "select the latest tool group",
         "with a tool group selected: open it",
         "with a tool group selected: back to the input",
@@ -939,7 +971,7 @@ fn many_groups_stay_cheap_to_find_and_move_through() {
     let mut a = many(2000);
     let start = Instant::now();
     assert_eq!(view::tool_groups(&a).len(), 2000);
-    a.on_key(alt_up());
+    select_group(&mut a);
     for _ in 0..50 {
         a.on_key(key(KeyCode::Up));
     }

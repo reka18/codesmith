@@ -23,14 +23,12 @@ All notable changes to CodeSmith are listed here. Versions follow
   settles in the success colour, or the error colour when a call failed.
   `tui.animations: false` keeps glyphs still; under `NO_COLOR` they move
   in the muted colour.
-- **Open groups from the keyboard.** **alt+↑** (`session.tool.select`)
+- **Open groups from the keyboard.** **ctrl+x ↑** (`session.tool.select`)
   selects the latest group; **↑** and **↓** move between groups with the
   transcript following, **enter**, **space** or **→** open one, **←**
   closes it, and **esc** or typing goes back to the prompt. **ctrl+o**
   still opens or closes them all. The keys are rebindable
   (`session.tool.previous`, `.next`, `.open`, `.close`, `.exit`).
-  **alt+↑** no longer goes to the previous session tab; **ctrl+shift+tab**
-  still does.
 
 ## 0.7.0 — 2026-11-27
 

@@ -872,10 +872,9 @@ async fn a_bang_prompt_runs_a_shell_command_without_the_model() {
     assert!(h[0].to_string().contains("user-shell-output"));
 }
 
-/// Ctrl+X 1 and Alt+Shift+Down: the first tab (the previous one in these
-/// tests; Alt+Up selects a tool group), and the next tab that is unread or
-/// waiting for its user.
-const PREVIOUS_TAB: &[u8] = b"\x181";
+/// Alt+Up and Alt+Shift+Down: the previous tab, and the next tab that is
+/// unread or waiting for its user.
+const PREVIOUS_TAB: &[u8] = b"\x1b[1;3A";
 const NEXT_UNREAD_TAB: &[u8] = b"\x1b[1;4B";
 
 // With tabs (on by default, as in OpenCode), `/new` opens a tab of its own

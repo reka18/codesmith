@@ -777,7 +777,7 @@ pub const DEFINITIONS: &[Def] = &[
     ),
     d(
         "session.tool.select",
-        "alt+up",
+        "<leader>up",
         "Select the latest tool group",
     ),
     d(
@@ -817,14 +817,12 @@ pub const DEFINITIONS: &[Def] = &[
 /// Where CodeSmith's default differs from OpenCode's, to keep its own keys:
 /// Tab and Shift+Tab cycle agents both ways, Ctrl+X h opens the help, Ctrl+X
 /// b backgrounds commands, Ctrl+End follows the transcript, Tab moves
-/// down a picker, Alt+Up selects a tool group (so it no longer goes to the
-/// previous tab), and Ctrl+X Shift+T reopens a tab (terminals without the
+/// down a picker, and Ctrl+X Shift+T reopens a tab (terminals without the
 /// kitty keyboard protocol send Ctrl+Shift+T as Ctrl+T). Ctrl+O stays the
 /// tool output key, so the open menu is Ctrl+X o; and since those terminals
 /// send Ctrl+M as Enter, the worktrees dialog also moves the session with
 /// Ctrl+G.
 pub const CODESMITH_DEFAULTS: &[(&str, &str)] = &[
-    ("session.tab.previous", "ctrl+shift+tab"),
     ("session.tab.reopen", "ctrl+shift+t,<leader>shift+t"),
     ("agent.cycle", "tab"),
     ("agent.cycle.reverse", "shift+tab"),

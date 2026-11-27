@@ -135,7 +135,7 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **ctrl+c** | Interrupt a running turn; on an empty prompt, quit; otherwise clear the prompt. |
 | **ctrl+d** on an empty prompt, **ctrl+x q** | Quit. |
 | **ctrl+o** | Expand or collapse all tool output, subagent activity and [groups](#verbosity) (CodeSmith's). |
-| **alt+↑** | Select the latest [tool group](#tool-groups), to open or close it from the keyboard (CodeSmith's). |
+| **ctrl+x ↑** | Select the latest [tool group](#tool-groups), to open or close it from the keyboard (CodeSmith's). |
 | **ctrl+t** | Next model [variant](configuration.md#provider-options-and-variants) (as `/variant`). |
 | **pgup/pgdn**, **ctrl+alt+b/f** | Scroll the transcript a page. |
 | **ctrl+alt+u/d**, **ctrl+alt+y/e** | Scroll half a page, or a line. |
@@ -144,10 +144,10 @@ dropped, and the UI takes the terminal back however the editor ended.
 | **alt+end** | Jump to your last prompt. |
 | **ctrl+b** while a command runs | Move the running commands to the background. |
 | **ctrl+z** | Suspend to the shell (Unix); `fg` returns. |
-| **alt+↓**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). OpenCode's **alt+↑** for the previous tab selects a [tool group](#tool-groups) instead. |
+| **alt+↓** / **alt+↑**, **ctrl+tab** / **ctrl+shift+tab** | Next or previous [session tab](#session-tabs). |
 | **alt+shift+↓** / **alt+shift+↑** | Next or previous tab that is unread or waiting for you. |
 | **ctrl+shift+t**, **ctrl+x shift+t** | Reopen the last closed tab (the second is CodeSmith's: most terminals send ctrl+shift+t as ctrl+t). |
-| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), CodeSmith's **o** [open menu](#projects-worktrees-and-other-folders), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
+| **ctrl+x**, then a key | OpenCode's leader keys: **m** models, **a** agents, **l** sessions, **n** new session (in a new tab), CodeSmith's **o** [open menu](#projects-worktrees-and-other-folders), **w** close the tab, **1**…**9**, **0** go to tab 1 to 10, **c** compact, **u** undo, **r** redo, **q** quit, and CodeSmith's **h** help, **b** background, **↑** select a [tool group](#tool-groups) and **shift+←/→** move the tab. The input box's title shows `ctrl+x …` while it waits (2 seconds). |
 
 Reasoning has no key by default (OpenCode's `session.toggle.thinking`);
 `/thinking` shows or hides it. Nor have the verbosity and grouping
@@ -336,7 +336,7 @@ CodeSmith never takes the mouse, so groups open from the keyboard:
 | Key | Action |
 |---|---|
 | **ctrl+o** | Open or close every group at once (and all tool output). |
-| **alt+↑** | Select the latest group (`session.tool.select`). |
+| **ctrl+x ↑** | Select the latest group (`session.tool.select`: the leader key, then ↑). |
 | **↑** / **↓** | With a group selected, the one before or after it; the transcript scrolls to follow. |
 | **enter**, **space**, **→** | Open the selected group. |
 | **←** | Close it. |

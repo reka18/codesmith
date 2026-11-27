@@ -266,7 +266,7 @@ Where the tests live:
   The level is not written back to the config (the UI never writes it).
   Since then a `low` run with calls in it is drawn as one of CodeSmith's
   tool groups (`docs/design/tool-groups.md`): worded by what the calls did,
-  with a glyph, and opened one at a time from the keyboard (alt+↑), so the
+  with a glyph, and opened one at a time from the keyboard (ctrl+x ↑), so the
   ported tests of its summary row are adapted to that wording.
 
 - **Code Mode calls and instruction loads in the transcript**

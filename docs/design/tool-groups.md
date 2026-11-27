@@ -71,7 +71,7 @@ CodeSmith never captures the mouse, so groups are reached from the keyboard.
 | Key | Does |
 |---|---|
 | `Ctrl+O` | Opens or closes every group at once (`session.toggle.tool_output`, as today). |
-| `Alt+↑` | Enters the transcript cursor on the most recent group (new: `session.tool.select`). |
+| `Ctrl+X ↑` | Enters the transcript cursor on the most recent group (new: `session.tool.select`: the leader key, then ↑). |
 | `↑` / `↓` | In the cursor, moves between groups; the view scrolls to follow. |
 | `Enter`, `Space`, `→` | Opens the selected group. |
 | `←` | Closes it. |
@@ -83,6 +83,8 @@ CodeSmith never captures the mouse, so groups are reached from the keyboard.
 - `↑` in an empty prompt still recalls input history: the cursor has its own
   entry key.
 - Every key goes through the keymap, so it can be rebound.
+- The entry key is `Ctrl+X ↑` rather than `Alt+↑`, which stays the
+  previous-tab key (Ray, 2026-11-27).
 
 ## Elsewhere
 
@@ -115,7 +117,7 @@ CodeSmith never captures the mouse, so groups are reached from the keyboard.
   - always a valid braille character;
   - a rotation of their resting dots.
 - **Keys:**
-  - Alt+↑ selects the latest group;
+  - Ctrl+X ↑ selects the latest group;
   - ↑ and ↓ stop at the ends;
   - Enter, Space and → open; ← closes;
   - Esc and typing leave;
