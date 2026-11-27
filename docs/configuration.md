@@ -1108,15 +1108,33 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
 
   or `export BIFROST_API=openai` beside the URL and key.
   `codesmith debug model bifrost/<id>` prints the URL each surface
-  resolves to and the setting it came from.
+  resolves to and the setting it came from, and `codesmith models
+  bifrost` prints the same on stderr beside the list.
+
+  A project's `codesmith.json` can't change any of these settings until
+  you trust the project (see
+  [Trusting a project's config](#trusting-a-projects-config)): untrusted,
+  they are ignored and the global config's gateway is used.
 - **A route the gateway doesn't serve** fails at once with an error that
-  names the URL tried, the gateway's own message (without the key), and
-  the setting that picks the route, for example: `Bifrost:
-  https://bifrost.example/v1/chat/completions answered HTTP 403 (This
-  hostname serves inference only. …): the gateway doesn't serve this
-  route. Nothing else was tried; … this gateway may serve only Bifrost's
-  integration routes: set providers.bifrost.settings.api to "openai", or
-  point openaiBaseURL at where it serves the OpenAI API`.
+  names the URL tried, the gateway's own message (without the key), the
+  one setting that chose the route, and the one change to try, for
+  example:
+
+  ```text
+  Bifrost: https://bifrost.example/v1/chat/completions answered HTTP 403
+  (This hostname serves inference only. …): the gateway doesn't serve this
+  route. The route was chosen by the default (providers.bifrost.settings.api
+  unset), which is "unified" (https://bifrost.example/v1). Nothing else was
+  tried; to fix it, set providers.bifrost.settings.api to "openai" (or
+  BIFROST_API=openai) (this gateway may serve only Bifrost's integration
+  routes).
+  ```
+
+  The setting named is whichever chose the route: the model's own `api`,
+  `openaiBaseURL` or `BIFROST_OPENAI_BASE_URL`, the provider's `api` or
+  `BIFROST_API`, the default, or for Anthropic and Gemini models their
+  `anthropicBaseURL` and `geminiBaseURL` (setting or variable) or the
+  default from `baseURL`.
   It is never retried, on that route or another. A 405 is always such an
   error (Bifrost answers a POST to a path it doesn't serve with 405); a
   403 or 404 is one when its body isn't an API error (a string `error`
@@ -1134,8 +1152,12 @@ variables; `codesmith bridge init` offers Bifrost and asks for the URL.
   bifrost` use it. A model outside it is refused with an error naming
   `codesmith models bifrost`, unless you configured it under
   `providers.bifrost.models`. The list is kept in `live-models.json` under
-  a hash of the gateway URL and key, never the key itself, so another key
-  never shows it; the kept list is used only when the fetch at the start
+  a hash of the model list's URL (`modelsURL` as resolved) and the key,
+  never the key itself, so another key or another list URL never shows
+  it. A list 0.6.0 kept (under a hash of the gateway's root and the key)
+  is still used when the model list URL is the default
+  `<base>/v1/models`, the URL 0.6.0 read it from; with another
+  `modelsURL` it isn't. The kept list is used only when the fetch at the start
   fails, and the session says so. With no list saved for the key either,
   a Bifrost model is refused (in `codesmith run -m`, a bridge's run, and
   choosing one in the terminal UI, `serve` or ACP), with an error saying
