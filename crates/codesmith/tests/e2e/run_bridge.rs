@@ -395,3 +395,112 @@ async fn a_run_with_no_key_fails_at_once_and_says_how_to_give_it_one() {
     // (A server on this machine needs no key, so the check leaves it
     // alone: the run above would have passed without FIREWORKS_API_KEY.)
 }
+
+/// A step that narrates and reads a file, then a step that answers.
+fn narrated(prompt: &str) -> Script {
+    Script::new()
+        .then(
+            "read",
+            M::prompt(prompt).and(M::step(0)),
+            Reply::empty()
+                .and_text("Let me look at the notes first.\n")
+                .and_call("read", json!({"path": "notes.txt"}))
+                .finish("tool_calls"),
+        )
+        .then(
+            "answer",
+            M::prompt(prompt).and(M::step(1)),
+            Reply::text("The notes say hello."),
+        )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_final_prints_only_the_final_answer() {
+    let e = Env::new();
+    e.write("notes.txt", "hello\n");
+    let m = Model::start(narrated("look")).await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "--output", "final", "look"]).await;
+    out.ok();
+    assert_eq!(
+        out.stdout.trim_end(),
+        "The notes say hello.",
+        "{}",
+        out.both()
+    );
+    assert!(!out.stdout.contains("Let me look"), "{}", out.both());
+    // Tool activity still goes to stderr, as with `--output all`.
+    assert!(out.stderr.contains("read"), "{}", out.both());
+
+    // The default still prints every step's text.
+    let m = Model::start(narrated("again")).await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "again"]).await;
+    out.ok();
+    assert!(
+        out.stdout.contains("Let me look at the notes first."),
+        "{}",
+        out.both()
+    );
+    assert!(
+        out.stdout.contains("The notes say hello."),
+        "{}",
+        out.both()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_final_falls_back_to_the_last_step_with_text() {
+    let e = Env::new();
+    e.write("notes.txt", "hello\n");
+    // The last step says nothing: the answer is the last text there was.
+    let script = Script::new()
+        .then(
+            "read",
+            M::prompt("look").and(M::step(0)),
+            Reply::empty()
+                .and_text("Here is what I found.")
+                .and_call("read", json!({"path": "notes.txt"}))
+                .finish("tool_calls"),
+        )
+        .then("quiet", M::prompt("look").and(M::step(1)), Reply::empty());
+    let m = Model::start(script).await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "--output", "final", "look"]).await;
+    out.ok();
+    assert_eq!(
+        out.stdout.trim_end(),
+        "Here is what I found.",
+        "{}",
+        out.both()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_final_is_refused_with_json() {
+    let e = Env::new();
+    let m = Model::start(answer("hi", "hello")).await;
+    e.config(&m.url, json!({}));
+    let out = e
+        .run(&["run", "--format", "json", "--output", "final", "hi"])
+        .await;
+    assert_ne!(out.code, Some(0));
+    assert!(
+        out.stderr
+            .contains("--output final applies to the default format"),
+        "{}",
+        out.both()
+    );
+    assert!(m.steps().is_empty(), "nothing is sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_final_keeps_control_characters_out() {
+    let e = Env::new();
+    let m = Model::start(answer("hi", "done \u{1b}]52;c;ZXZpbA==\u{7}")).await;
+    e.config(&m.url, json!({}));
+    let out = e.run(&["run", "--output", "final", "hi"]).await;
+    out.ok();
+    assert!(!out.stdout.contains('\u{1b}'), "{:?}", out.stdout);
+    assert!(out.stdout.contains("\\x1b"), "{:?}", out.stdout);
+}

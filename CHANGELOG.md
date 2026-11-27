@@ -49,6 +49,11 @@ All notable changes to CodeSmith are listed here. Versions follow
   second clone or a worktree starts with none; a symlink to the folder
   shares them. Approvals saved under a first commit stay in the database
   but no longer apply.
+- **`codesmith run --output final`** prints only the final answer on
+  stdout, when the run ends, without the narration ("Let me look…") of
+  the steps before it. Tool activity still goes to stderr. `--output all`,
+  every step's text as it streams, stays the default. A tailbus bridge
+  wants `--output final`, so its reply is the answer alone.
 
 ## 0.6.1 — 2026-11-26
 

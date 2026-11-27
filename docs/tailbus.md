@@ -173,6 +173,7 @@ yours with `codesmith --version` and `codesmith run --help`.
 | Effort (`effort_args`) | `["--effort", "{EFFORT}"]` |
 | Tools (`tools_args`, `no_tools_args`) | `["--tools", "{TOOLS}"]`, and `["--no-tools", "--no-mcp"]` |
 | MCP off (`no_mcp_args`) | `["--no-mcp"]` |
+| The answer only (`args`) | `--output final`: stdout is the final answer, without the narration of the steps before it. |
 | Usage (`[usage]`) | `--usage-log {SESSION_DIR}/usage.jsonl`: one JSON line per model step and tool call. |
 
 ```toml
