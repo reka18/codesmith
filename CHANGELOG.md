@@ -3,7 +3,7 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.8.0 — 2026-11-27
 
 - **Tool groups in the transcript.** At the default verbosity, a run of
   tool calls with no text from the model between them is one line that
