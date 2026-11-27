@@ -1,7 +1,8 @@
 # Design: an operating-system sandbox for shell commands
 
 Status: **plan for approval.** Nothing here is built yet. Ray asked for it
-on 2026-11-27, for macOS and Linux.
+on 2026-11-27, for macOS and Linux, **on by default: you opt out, never
+in.**
 
 ## Why
 
@@ -80,12 +81,19 @@ channel just reports the error.
 
 ## Settings
 
+**On by default, opt-out.** Every session sandboxes its commands wherever
+the machine supports it, in the terminal and headless alike, with no setting
+needed. Turning any of it off is a deliberate choice in your own config:
+`"sandbox": {"enabled": false}` for everything, `"network": "all"` for the
+network alone, or `"write": [...]` for one more folder. CodeSmith says once
+per session when the sandbox is off, so it's never off unnoticed.
+
 Global config only (and per-repo files in the global folder). Never from a
 repo:
 
 ```jsonc
 "sandbox": {
-  "enabled": true,              // default true where supported
+  "enabled": true,              // the default; false opts out
   "network": "allowlist",       // "all" | "allowlist" | "none"
   "allow": ["internal.example"],// extra hosts for "allowlist"
   "write": ["~/scratch"],       // extra folders commands may always write
@@ -188,6 +196,9 @@ Things that should keep working, with tests:
 - **Compatibility:** the list above, on both systems.
 - **Repo config can't touch it:** a repo can't set `sandbox.*`, and per-repo
   files in the global folder can.
+- **On by default:** a session with no `sandbox` settings at all is
+  sandboxed, in the terminal and headless. Each opt-out (`enabled: false`,
+  `network: "all"`) works and gets the once-per-session notice.
 
 ## Open questions
 
