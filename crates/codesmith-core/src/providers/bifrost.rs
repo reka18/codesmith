@@ -15,6 +15,14 @@
 //!   (`<root>/v1/chat/completions`), a Claude model served by another
 //!   upstream (`fireworks/anthropic/…`) included. A model's `protocol`
 //!   setting picks another.
+//! - **Which route.** `settings.api` (`BIFROST_API`, or a model's own
+//!   `api`) picks the OpenAI-shaped route family: `unified`
+//!   (`<root>/v1`, the default) or `openai` (Bifrost's OpenAI integration,
+//!   `<root>/openai/v1`), for Chat and Responses alike. `openaiBaseURL`,
+//!   `anthropicBaseURL`, `geminiBaseURL`, `modelsURL` and `quotaURL` (each
+//!   with its `BIFROST_…` variable) put one surface elsewhere ([`Urls`]).
+//!   A route the gateway refuses as one it doesn't serve fails with the
+//!   URL and the setting; nothing else is tried.
 //! - **Models.** The list is the gateway's `GET <root>/v1/models` for the
 //!   virtual key, which Bifrost filters to what the key may use. It is
 //!   fetched fresh when a session starts ([`session_start`]) and kept in
@@ -92,12 +100,223 @@ pub fn protocol_for(model_id: &str, configured: Option<Protocol>) -> Protocol {
     })
 }
 
-/// The base URL of `protocol` on the gateway at `root`.
+/// The base URL of `protocol` on the gateway at `root`, with the default
+/// (unified) API.
 pub fn surface(root: &str, protocol: Protocol) -> String {
     match protocol {
         Protocol::AnthropicMessages => format!("{root}/anthropic/v1"),
         Protocol::GoogleGemini => format!("{root}/genai/v1beta"),
-        _ => format!("{root}/v1"),
+        _ => Api::Unified.root(root),
+    }
+}
+
+pub const API_VAR: &str = "BIFROST_API";
+pub const OPENAI_URL_VAR: &str = "BIFROST_OPENAI_BASE_URL";
+pub const ANTHROPIC_URL_VAR: &str = "BIFROST_ANTHROPIC_BASE_URL";
+pub const GEMINI_URL_VAR: &str = "BIFROST_GEMINI_BASE_URL";
+pub const MODELS_URL_VAR: &str = "BIFROST_MODELS_URL";
+pub const QUOTA_URL_VAR: &str = "BIFROST_QUOTA_URL";
+
+/// Which of Bifrost's OpenAI-shaped route families a model is sent to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Api {
+    /// Bifrost's unified API, `<root>/v1`.
+    Unified,
+    /// Bifrost's OpenAI integration, `<root>/openai/v1`.
+    Openai,
+}
+
+impl Api {
+    pub fn parse(s: &str) -> Option<Api> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "unified" => Some(Api::Unified),
+            "openai" => Some(Api::Openai),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Api::Unified => "unified",
+            Api::Openai => "openai",
+        }
+    }
+
+    /// The OpenAI-shaped root of this API on the gateway at `root`.
+    pub fn root(self, root: &str) -> String {
+        match self {
+            Api::Unified => format!("{root}/v1"),
+            Api::Openai => format!("{root}/openai/v1"),
+        }
+    }
+}
+
+/// A URL the gateway is reached at, and the setting it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub url: String,
+    pub from: String,
+}
+
+/// Every URL a Bifrost gateway is reached at, each from its own setting
+/// or the gateway's root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Urls {
+    pub root: String,
+    pub api: Api,
+    /// Where `api` came from: `settings.api`, `BIFROST_API` or the default.
+    pub api_from: String,
+    /// The configured OpenAI-shaped root, replacing what `api` picks.
+    pub openai_override: Option<Resolved>,
+    pub anthropic: Resolved,
+    pub gemini: Resolved,
+    pub models: Resolved,
+    pub quota: Resolved,
+}
+
+const SETTINGS: &str = "providers.bifrost.settings";
+
+/// An `api` value, or an error naming where it came from.
+fn parse_api(v: &str, from: &str) -> Result<Api> {
+    Api::parse(v).ok_or_else(|| {
+        let shown: String = v.chars().filter(|c| !c.is_control()).take(40).collect();
+        anyhow!("{from} must be \"unified\" or \"openai\", not {shown:?}")
+    })
+}
+
+/// A URL setting (`settings.<name>`, else the variable `var`), without
+/// surrounding spaces or a trailing `/`; an error when it isn't an HTTP URL.
+fn url_setting(
+    value: &Option<String>,
+    name: &str,
+    var: &str,
+    env: &super::Env,
+) -> Result<Option<Resolved>> {
+    let (url, from) = match set(value) {
+        Some(v) => (v.to_string(), format!("{SETTINGS}.{name}")),
+        None => match env(var).filter(|v| !v.trim().is_empty()) {
+            Some(v) => (v, var.to_string()),
+            None => return Ok(None),
+        },
+    };
+    let url = url.trim().trim_end_matches('/').to_string();
+    let lower = url.to_ascii_lowercase();
+    let host = lower
+        .strip_prefix("http://")
+        .or_else(|| lower.strip_prefix("https://"));
+    if host.is_none_or(|h| h.is_empty() || h.starts_with('/')) {
+        anyhow::bail!("{from} must be an http:// or https:// URL");
+    }
+    Ok(Some(Resolved { url, from }))
+}
+
+/// The URLs of the gateway at `root`, from `settings` and the environment.
+pub fn urls_at(
+    root: &str,
+    settings: &crate::config::ProviderSettings,
+    env: &super::Env,
+) -> Result<Urls> {
+    let s = &settings.plugin;
+    let (api, api_from) = match set(&s.api) {
+        Some(v) => (
+            parse_api(v, &format!("{SETTINGS}.api"))?,
+            format!("{SETTINGS}.api"),
+        ),
+        None => match env(API_VAR).filter(|v| !v.trim().is_empty()) {
+            Some(v) => (parse_api(&v, API_VAR)?, API_VAR.to_string()),
+            None => (Api::Unified, "the default".to_string()),
+        },
+    };
+    let or = |r: Option<Resolved>, url: String| {
+        r.unwrap_or(Resolved {
+            url,
+            from: format!("{SETTINGS}.baseURL"),
+        })
+    };
+    Ok(Urls {
+        root: root.to_string(),
+        api,
+        api_from,
+        openai_override: url_setting(&s.openai_base_url, "openaiBaseURL", OPENAI_URL_VAR, env)?,
+        anthropic: or(
+            url_setting(
+                &s.anthropic_base_url,
+                "anthropicBaseURL",
+                ANTHROPIC_URL_VAR,
+                env,
+            )?,
+            surface(root, Protocol::AnthropicMessages),
+        ),
+        gemini: or(
+            url_setting(&s.gemini_base_url, "geminiBaseURL", GEMINI_URL_VAR, env)?,
+            surface(root, Protocol::GoogleGemini),
+        ),
+        models: or(
+            url_setting(&s.models_url, "modelsURL", MODELS_URL_VAR, env)?,
+            format!("{root}/v1/models"),
+        ),
+        quota: or(
+            url_setting(&s.quota_url, "quotaURL", QUOTA_URL_VAR, env)?,
+            format!("{root}/api/governance/virtual-keys/quota"),
+        ),
+    })
+}
+
+/// The gateway's URLs, when its root is set.
+pub fn urls(settings: &crate::config::ProviderSettings, env: &super::Env) -> Result<Option<Urls>> {
+    match root(settings, env) {
+        Some(r) => urls_at(&r, settings, env).map(Some),
+        None => Ok(None),
+    }
+}
+
+impl Urls {
+    /// The OpenAI-shaped root a model uses: its own `api` (`model_api`),
+    /// else `openaiBaseURL`, else the provider's `api`.
+    pub fn openai(&self, model_api: Option<(Api, String)>) -> Resolved {
+        if let Some((api, from)) = model_api {
+            return Resolved {
+                url: api.root(&self.root),
+                from,
+            };
+        }
+        if let Some(o) = &self.openai_override {
+            return o.clone();
+        }
+        Resolved {
+            url: self.api.root(&self.root),
+            from: format!("api \"{}\" ({})", self.api.name(), self.api_from),
+        }
+    }
+
+    /// The base URL of `protocol`.
+    pub fn base(&self, protocol: Protocol, model_api: Option<(Api, String)>) -> Resolved {
+        match protocol {
+            Protocol::AnthropicMessages => self.anthropic.clone(),
+            Protocol::GoogleGemini => self.gemini.clone(),
+            _ => self.openai(model_api),
+        }
+    }
+
+    /// One line per surface: its URL and the setting it came from.
+    pub fn describe(&self) -> Vec<String> {
+        let o = self.openai(None);
+        vec![
+            format!(
+                "openai:    {}/chat/completions, {}/responses (from {})",
+                o.url, o.url, o.from
+            ),
+            format!(
+                "anthropic: {}/messages (from {})",
+                self.anthropic.url, self.anthropic.from
+            ),
+            format!(
+                "gemini:    {}/models/<id>:streamGenerateContent (from {})",
+                self.gemini.url, self.gemini.from
+            ),
+            format!("models:    {} (from {})", self.models.url, self.models.from),
+            format!("quota:     {} (from {})", self.quota.url, self.quota.from),
+        ]
     }
 }
 
@@ -111,13 +330,21 @@ pub fn route(input: &Input) -> Result<Route> {
         .ok_or_else(|| {
             anyhow!("Bifrost needs the gateway's URL: set {URL_VAR} or settings.baseURL on the bifrost provider")
         })?;
+    let urls = urls_at(&root, input.settings, &input.env)?;
     let protocol = protocol_for(
         input.model_id,
         input.model_protocol.or(input.configured_protocol),
     );
+    let model_api = match input.model_api.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v) => {
+            let from = format!("providers.bifrost.models.{}.api", input.model_id);
+            Some((parse_api(v, &from)?, from))
+        }
+        None => None,
+    };
     Ok(Route {
         protocol,
-        base_url: surface(&root, protocol),
+        base_url: urls.base(protocol, model_api).url,
         auth: Auth::Header(KEY_HEADER.into()),
         api_key: input.api_key.clone(),
         headers: vec![],
@@ -227,24 +454,50 @@ pub fn normalize(data: &[Value]) -> Vec<Value> {
     out
 }
 
-/// Read the whole model list for `p`'s key (every page), from the gateway
-/// at `root`.
+/// A failed GET of a gateway URL (`setting` picks it) as an error: a route
+/// the gateway doesn't serve names the URL and the setting, never the key.
+fn get_error(
+    e: codesmith_ai::Error,
+    p: &codesmith_ai::Provider,
+    url: &str,
+    setting: &str,
+) -> anyhow::Error {
+    use codesmith_ai::bifrost as bf;
+    match &e {
+        codesmith_ai::Error::Status { status, body } if bf::is_route_refusal(*status, body) => {
+            let shown = reqwest::Url::parse(url)
+                .map(|u| bf::shown_url(&u))
+                .unwrap_or_else(|_| codesmith_ai::redact_urls(url));
+            anyhow!(
+                "{shown} answered HTTP {status} ({}): the gateway doesn't serve this route; set {setting} to where it does",
+                bf::gateway_message(body, p.api_key.as_deref())
+            )
+        }
+        _ => anyhow!("{}", bf::redact(&e.to_string(), p.api_key.as_deref())),
+    }
+}
+
+/// Read the whole model list for `p`'s key (every page), from `urls`'s
+/// model list.
 pub async fn fetch(
     client: &reqwest::Client,
     p: &codesmith_ai::Provider,
-    root: &str,
+    urls: &Urls,
 ) -> Result<Vec<Value>> {
     let mut all = Vec::new();
     let mut token: Option<String> = None;
+    let list = &urls.models.url;
+    let sep = if list.contains('?') { '&' } else { '?' };
+    let setting = format!("{SETTINGS}.modelsURL ({MODELS_URL_VAR})");
     for _ in 0..MAX_PAGES {
-        let mut url = format!("{root}/v1/models?page_size={PAGE_SIZE}");
+        let mut url = format!("{list}{sep}page_size={PAGE_SIZE}");
         if let Some(t) = &token {
             url.push_str("&page_token=");
             url.push_str(&super::encode(t));
         }
         let v = codesmith_ai::bifrost::get_json(p, client, &url, PAGE_TIMEOUT)
             .await
-            .map_err(|e| anyhow!("{e}"))?;
+            .map_err(|e| get_error(e, p, list, &setting))?;
         let page = v["data"]
             .as_array()
             .ok_or_else(|| anyhow!("the gateway's answer has no data list"))?;
@@ -269,14 +522,15 @@ pub async fn refresh(
     client: &reqwest::Client,
     path: &Path,
     p: &codesmith_ai::Provider,
-    root: &str,
+    urls: &Urls,
 ) -> Result<Vec<String>> {
+    let root = urls.root.as_str();
     if p.api_key.as_deref().is_none_or(str::is_empty) {
         anyhow::bail!(
             "Bifrost needs a virtual key: set {KEY_VAR}, settings.apiKey, or run `codesmith auth login bifrost`"
         );
     }
-    let data = fetch(client, p, root)
+    let data = fetch(client, p, urls)
         .await
         .map_err(|e| anyhow!("listing Bifrost models: {e:#}"))?;
     let raw = normalize(&data);
@@ -556,7 +810,8 @@ pub fn session_start_in(cfg: &crate::config::Config, path: &Path) -> Option<Pend
         return None;
     }
     let p = cfg.provider(ID)?;
-    let root = root(&p.settings, &super::process_env())?;
+    let urls = urls(&p.settings, &super::process_env()).ok()??;
+    let root = urls.root.clone();
     let m = cfg.resolve_model(&format!("{ID}/_")).ok()?;
     m.provider.api_key.as_deref().filter(|k| !k.is_empty())?;
     let account = account(&root, m.provider.api_key.as_deref());
@@ -571,7 +826,7 @@ pub fn session_start_in(cfg: &crate::config::Config, path: &Path) -> Option<Pend
         let account = account.clone();
         async move {
             let client = reqwest::Client::new();
-            let r = tokio::time::timeout(START_WAIT, refresh(&client, &path, &m.provider, &root))
+            let r = tokio::time::timeout(START_WAIT, refresh(&client, &path, &m.provider, &urls))
                 .await
                 .unwrap_or_else(|_| Err(anyhow!("the gateway took too long")));
             match r {
@@ -673,15 +928,15 @@ pub struct Budget {
 /// How long a quota read may take.
 pub const QUOTA_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// The key's budgets (`GET <root>/api/governance/virtual-keys/quota`,
-/// authenticated by the virtual key alone); `None` when the read fails.
+/// The key's budgets (`GET <quota URL>`, by default
+/// `<root>/api/governance/virtual-keys/quota`, authenticated by the virtual
+/// key alone); `None` when the read fails.
 pub async fn quota(
     client: &reqwest::Client,
     p: &codesmith_ai::Provider,
-    root: &str,
+    url: &str,
 ) -> Option<Vec<Budget>> {
-    let url = format!("{root}/api/governance/virtual-keys/quota");
-    let v = codesmith_ai::bifrost::get_json(p, client, &url, QUOTA_TIMEOUT)
+    let v = codesmith_ai::bifrost::get_json(p, client, url, QUOTA_TIMEOUT)
         .await
         .ok()?;
     Some(budgets(&v))

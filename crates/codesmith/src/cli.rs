@@ -1623,6 +1623,16 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             println!("model:    {base} (sent as {})", m.model_id);
             println!("protocol: {:?}", m.provider.protocol);
             println!("url:      {}", m.provider.base_url);
+            if m.provider_id == codesmith_core::providers::bifrost::ID {
+                use codesmith_core::providers::{bifrost, process_env};
+                let p = loaded.config.provider(bifrost::ID).unwrap_or_default();
+                if let Ok(Some(urls)) = bifrost::urls(&p.settings, &process_env()) {
+                    println!("bifrost:  the gateway's routes");
+                    for line in urls.describe() {
+                        println!("  {line}");
+                    }
+                }
+            }
             if m.local {
                 println!("local:    yes (a session's title waits for the turn's response)");
             }
@@ -4469,7 +4479,8 @@ pub(crate) fn serve_bifrost_fetch(cfg: &config::Config) {
 struct RunQuota {
     client: reqwest::Client,
     provider: codesmith_ai::Provider,
-    root: String,
+    /// The quota's URL.
+    url: String,
     start: tokio::task::JoinHandle<Option<Vec<codesmith_core::providers::bifrost::Budget>>>,
 }
 
@@ -4486,7 +4497,7 @@ impl RunQuota {
         if before.is_empty() {
             return None;
         }
-        let after = bifrost::quota(&self.client, &self.provider, &self.root).await?;
+        let after = bifrost::quota(&self.client, &self.provider, &self.url).await?;
         bifrost::spent(&before, &after)
     }
 }
@@ -4502,17 +4513,17 @@ fn run_quota(cfg: &config::Config, m: &config::ModelRef) -> Option<RunQuota> {
     if p.settings.plugin.quota == Some(false) {
         return None;
     }
-    let root = bifrost::root(&p.settings, &process_env())?;
+    let url = bifrost::urls(&p.settings, &process_env()).ok()??.quota.url;
     let client = reqwest::Client::new();
     let provider = m.provider.clone();
     let start = tokio::spawn({
-        let (client, provider, root) = (client.clone(), provider.clone(), root.clone());
-        async move { bifrost::quota(&client, &provider, &root).await }
+        let (client, provider, url) = (client.clone(), provider.clone(), url.clone());
+        async move { bifrost::quota(&client, &provider, &url).await }
     });
     Some(RunQuota {
         client,
         provider,
-        root,
+        url,
         start,
     })
 }
