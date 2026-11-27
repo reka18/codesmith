@@ -166,6 +166,8 @@ fn the_try_runs_what_tailbus_runs() {
         tailbus_args(&headless(), s, "crucible@mac", "01ID"),
         [
             "run",
+            "--output",
+            "final",
             "-m",
             "fireworks/kimi#high",
             "--usage-log",

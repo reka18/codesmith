@@ -173,14 +173,14 @@ yours with `codesmith --version` and `codesmith run --help`.
 | Effort (`effort_args`) | `["--effort", "{EFFORT}"]` |
 | Tools (`tools_args`, `no_tools_args`) | `["--tools", "{TOOLS}"]`, and `["--no-tools", "--no-mcp"]` |
 | MCP off (`no_mcp_args`) | `["--no-mcp"]` |
-| The answer only (`args`) | `--output final`: stdout is the final answer, without the narration of the steps before it. |
+| The answer only (`args`) | `--output final`: stdout is the final answer, without the narration of the steps before it. tailbus's `codesmith` kind passes it (CodeSmith 0.7.0 or later). |
 | Usage (`[usage]`) | `--usage-log {SESSION_DIR}/usage.jsonl`: one JSON line per model step and tool call. |
 
 ```toml
 [bridges.codesmith]
 owner = "you@example.com"
 command = "/opt/homebrew/bin/codesmith"
-args = ["run", "-m", "{MODEL}", "--usage-log", "{SESSION_DIR}/usage.jsonl"]
+args = ["run", "--output", "final", "-m", "{MODEL}", "--usage-log", "{SESSION_DIR}/usage.jsonl"]
 model = "anthropic/claude-sonnet-5-5"
 working_directory = "/Users/you/agent-home/workspace"
 home = "/Users/you/agent-home/home"
@@ -270,7 +270,7 @@ cd /tmp/bridge-home
 # the new HOME.
 KEY=$(cat /Users/you/.secrets/fireworks)
 echo "say hi" | HOME=/tmp/bridge-home FIREWORKS_API_KEY="$KEY" \
-  codesmith run -m fireworks/accounts/fireworks/models/kimi-k3p1-pro --effort high
+  codesmith run --output final -m fireworks/accounts/fireworks/models/kimi-k3p1-pro --effort high
 ```
 
 With a CodeSmith from before `--effort`, put the effort in the model

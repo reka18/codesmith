@@ -29,6 +29,8 @@ All notable changes to CodeSmith are listed here. Versions follow
   closes it, and **esc** or typing goes back to the prompt. **ctrl+o**
   still opens or closes them all. The keys are rebindable
   (`session.tool.previous`, `.next`, `.open`, `.close`, `.exit`).
+- `codesmith bridge init` tries a headless bridge with `--output final`, as
+  tailbus's `codesmith` kind now runs it, so the try matches the real run.
 
 ## 0.7.0 — 2026-11-27
 

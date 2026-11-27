@@ -191,6 +191,8 @@ pub(crate) fn tailbus_args(b: &Bridge, session_dir: &Path, sender: &str, id: &st
         Mode::Headless { model, .. } => {
             let mut out: Vec<String> = [
                 "run",
+                "--output",
+                "final",
                 "-m",
                 "{MODEL}",
                 "--usage-log",
