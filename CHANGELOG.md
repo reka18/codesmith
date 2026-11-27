@@ -3,6 +3,27 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Bifrost's route is a setting.** `providers.bifrost.settings.api`
+  (`BIFROST_API`, or a model's own `api`) picks the OpenAI-shaped route
+  non-Anthropic models use: `"unified"`, `<base>/v1` (the default, as in
+  0.6.0), or `"openai"`, Bifrost's OpenAI integration at
+  `<base>/openai/v1`, for Chat and the Responses API alike. A gateway
+  whose inference hostname serves only Bifrost's integration routes now
+  works with `"api": "openai"`; in 0.6.0 every non-Anthropic model failed
+  there. `openaiBaseURL`, `anthropicBaseURL`, `geminiBaseURL`,
+  `modelsURL` and `quotaURL` (each with its `BIFROST_…` variable) put a
+  surface elsewhere, and `codesmith debug model` prints the URL each
+  surface resolves to. There is no detection and no fallback.
+- **A Bifrost route the gateway doesn't serve fails clearly.** A 405, or
+  a 403 or 404 that isn't an API error, names the URL tried, the
+  gateway's message without the key, and the setting to change, instead
+  of saying the key may not have access to the model. It is not retried,
+  and no other route is tried. The model list's error names `modelsURL`
+  the same way.
+- A Bifrost error body that echoes the virtual key no longer shows it.
+
 ## 0.6.0 — 2026-11-26
 
 - **Bifrost is a built-in provider.** `bifrost` reaches models through a
