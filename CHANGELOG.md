@@ -30,6 +30,22 @@ All notable changes to CodeSmith are listed here. Versions follow
   one names the folder, so a model in a headless run sees why.
 - Quoted paths in inline code (`python3 -c "open('../x/f', 'w')"`) are
   checked for `external_directory`.
+- **New worktrees go inside the repository**, at `<repo>/.worktrees/<name>`
+  (`codesmith -w`, `codesmith worktree create`, `/worktrees`, the
+  `codesmith` tool), instead of the data folder, so the agent never needs
+  to write outside the project. The main checkout is found through git's
+  common directory, also from inside another worktree. `.worktrees/` is
+  added to `.git/info/exclude` (never `.gitignore`) before the first one.
+  `worktree.directory` still overrides. Worktrees made by earlier
+  versions stay where they are and keep working.
+- `worktree remove` refuses a worktree with uncommitted changes, or with
+  commits that are on no remote branch and not on its base, unless
+  `--force`, and says which.
+- Undo snapshots leave nested worktrees out, so undoing a turn in the main
+  checkout never changes files inside one.
+- The agent's system prompt says to make separate checkouts with `git
+  worktree add <repo>/.worktrees/<name>` (or the `codesmith` tool), never
+  as a folder beside the repository.
 
 ## 0.6.1 — 2026-11-26
 
