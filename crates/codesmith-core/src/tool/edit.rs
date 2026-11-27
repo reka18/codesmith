@@ -970,9 +970,12 @@ mod tests {
 
         let (env, rec) = Env::recording(allow_read());
         rec.deny_action("external_directory");
-        assert_eq!(
-            call(&env.ctx(), input.clone()).unwrap_err(),
-            "The user declined this request."
+        // CodeSmith names the folder of a declined outside request.
+        let err = call(&env.ctx(), input.clone()).unwrap_err();
+        assert!(
+            err.starts_with("Access outside the project: ")
+                && err.ends_with(". The user declined this request."),
+            "{err}"
         );
         assert_eq!(rec.actions(), vec!["external_directory"]);
 
