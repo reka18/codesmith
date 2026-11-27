@@ -27,8 +27,8 @@ pub const ID: &str = "codesmith";
 const DESCRIPTION: &str = "Manage CodeSmith itself. `action` picks what to do:
 - \"models\": search the models available to use. Use this to turn a model name the user mentions into an exact reference (provider/model) for a tool that takes a model. Check your own provider first. Takes query, provider, type (\"chat\", the default: a language model that powers sessions and subagents and can call tools; \"image\": generates or edits images, can't chat or call tools; \"video\": generates videos, can't chat or call tools), all (include older versions of each model family), limit (1-100, default 20) and offset.
 - \"worktree_list\": list the project's git worktrees.
-- \"worktree_create\": create a named worktree (name). Returns its directory.
-- \"worktree_remove\": remove a worktree (directory, relative to the working directory or absolute). Set force only when the user has confirmed discarding its modified and untracked files.";
+- \"worktree_create\": create a named worktree (name), by default in the repository's .worktrees folder. Returns its directory.
+- \"worktree_remove\": remove a worktree (directory, relative to the working directory or absolute). Set force only when the user has confirmed discarding its modified and untracked files or its unpushed commits.";
 
 /// One model as `models` lists it.
 #[derive(Debug, Clone, PartialEq)]
@@ -422,8 +422,11 @@ pub async fn run(ctx: &ToolContext, input: &Value, check: &Check) -> Result<Valu
                 crate::worktree::remove(&ctx.config.worktree, &ctx.cwd, &d, force)
             })
             .map_err(|e| {
-                if e.to_string().contains("uncommitted changes") {
+                let e = e.to_string();
+                if e.contains("uncommitted changes") {
                     format!("Unable to remove worktree {d}: it has modified or untracked files.")
+                } else if e.contains("not on any remote branch") {
+                    format!("Unable to remove worktree {d}: it has commits that are not on any remote branch or on its base.")
                 } else {
                     format!("Unable to remove worktree {d}.")
                 }

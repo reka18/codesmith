@@ -249,3 +249,64 @@ async fn codesmith_tool_rejects_unknown_actions_and_types() {
     .unwrap_err()
     .contains("Unknown model type"));
 }
+
+/// CodeSmith's default: the tool creates worktrees inside the project, so
+/// creating one is an `edit` of a project path; removing one with commits
+/// nothing else holds is refused, and says why.
+#[tokio::test(flavor = "multi_thread")]
+async fn worktrees_go_inside_the_project_and_unpushed_commits_keep_them() {
+    isolate();
+    let repo = tempfile::tempdir().unwrap();
+    let r = repo.path().canonicalize().unwrap();
+    for a in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "t"],
+        &["config", "commit.gpgsign", "false"],
+    ] {
+        git(&r, a);
+    }
+    std::fs::write(r.join("a.txt"), "a").unwrap();
+    git(&r, &["add", "."]);
+    git(&r, &["commit", "-q", "-m", "first"]);
+    let c = ctx(codesmith_core::config::Config::default(), &r, "test/alpha");
+    let a = Arc::new(Approvals::default());
+    let k = check(&a);
+    let call = |input: Value| {
+        let (c, k) = (&c, k.clone());
+        async move { run(c, &input, k.as_ref()).await }
+    };
+    let created = call(json!({"action": "worktree_create", "name": "task"}))
+        .await
+        .unwrap();
+    let directory = created["directory"].as_str().unwrap().to_string();
+    assert_eq!(directory, r.join(".worktrees/task").display().to_string());
+    assert_eq!(
+        a.seen.lock().unwrap().clone(),
+        vec![(
+            "edit".to_string(),
+            vec![".worktrees/task".to_string()],
+            vec!["*".to_string()]
+        )],
+        "an edit inside the project"
+    );
+    let exclude = std::fs::read_to_string(r.join(".git/info/exclude")).unwrap();
+    assert!(exclude.lines().any(|l| l == ".worktrees/"), "{exclude}");
+
+    let wt = Path::new(&directory);
+    git(wt, &["checkout", "-q", "--detach"]);
+    std::fs::write(wt.join("b.txt"), "b").unwrap();
+    git(wt, &["add", "b.txt"]);
+    git(wt, &["commit", "-q", "-m", "only here"]);
+    assert_eq!(
+        call(json!({"action": "worktree_remove", "directory": ".worktrees/task"}))
+            .await
+            .unwrap_err(),
+        format!("Unable to remove worktree {directory}: it has commits that are not on any remote branch or on its base.")
+    );
+    assert!(wt.join("b.txt").exists());
+    call(json!({"action": "worktree_remove", "directory": ".worktrees/task", "force": true}))
+        .await
+        .unwrap();
+    assert!(!wt.exists());
+}
