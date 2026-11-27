@@ -717,6 +717,7 @@ fn permission() -> (
         resources: vec!["bun run test".into()],
         save: vec![],
         title: String::new(),
+        access: None,
     };
     (super::bridge::Ev::Permission(req, tx), rx)
 }

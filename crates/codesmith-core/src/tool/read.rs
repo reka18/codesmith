@@ -49,7 +49,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
     };
     let target = ctx.resolve(path);
     let is_dir = target.absolute.is_dir();
-    ctx.authorize_external(&target, is_dir)?;
+    ctx.authorize_external(&target, is_dir, super::Access::Read)?;
     ask_read(ctx, &target)?;
     match read_target(path, &target, page) {
         Ok(out) => return Ok(out),
@@ -96,7 +96,7 @@ pub fn authorize_any(ctx: &Ctx, path: &str) -> Result<(std::path::PathBuf, bool)
 pub(crate) fn authorize_target(ctx: &Ctx, path: &str) -> Result<(super::Target, bool), String> {
     let target = ctx.resolve(path);
     let is_dir = target.absolute.is_dir();
-    ctx.authorize_external(&target, is_dir)?;
+    ctx.authorize_external(&target, is_dir, super::Access::Read)?;
     ask_read(ctx, &target)?;
     Ok((target, is_dir))
 }
@@ -131,6 +131,7 @@ pub(crate) fn ask_read(ctx: &Ctx, target: &super::Target) -> Result<(), String> 
         resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Read {}", target.resource),
+        access: None,
     })
 }
 

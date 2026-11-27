@@ -621,6 +621,7 @@ fn assert(gate: &Gate, action: &str, resource: &str) -> Result<(), BrowserError>
         resources: vec![resource.into()],
         save: vec![],
         title: format!("{action} {resource}"),
+        access: None,
     };
     gate.assert(&req)
         .map_err(|e: Denied| BrowserError::Denied(e.to_string()))

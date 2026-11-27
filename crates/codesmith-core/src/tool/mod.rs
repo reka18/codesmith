@@ -26,6 +26,7 @@ mod write;
 
 use crate::config::ToolOutputConfig;
 use crate::paths;
+pub use crate::permission::Access;
 use crate::permission::{Denied, Effect, Gate, Request};
 use codesmith_ai::ToolSpec;
 use serde_json::Value;
@@ -723,13 +724,19 @@ impl Ctx<'_> {
     /// containing directory first (answering "always" saves the enclosing
     /// repository; see [`repository_glob`]). A file is named by its path; a directory
     /// as `<dir>/*`, as OpenCode names it, so a rule for `<dir>/*` covers the
-    /// directory itself. A symlink is judged by where it points.
-    pub fn authorize_external(&self, t: &Target, is_dir: bool) -> Result<(), String> {
+    /// directory itself. A symlink is judged by where it points. `access`
+    /// says whether the tool only reads there (see [`Access`]).
+    pub fn authorize_external(
+        &self,
+        t: &Target,
+        is_dir: bool,
+        access: Access,
+    ) -> Result<(), String> {
         if !t.external {
             return Ok(());
         }
         if is_dir {
-            return self.authorize_external_dirs(std::slice::from_ref(&t.absolute));
+            return self.authorize_external_dirs(std::slice::from_ref(&t.absolute), access);
         }
         let files = self.external_names(t, Path::to_path_buf);
         let dirs =
@@ -746,12 +753,13 @@ impl Ctx<'_> {
             resources: files.iter().map(|f| f.display().to_string()).collect(),
             save,
             title: format!("Access outside the project: {}", dirs[0].display()),
+            access: Some(access),
         })
     }
 
     /// One `external_directory` request for every directory in `dirs`
     /// outside the project (absolute paths), each named `<dir>/*`.
-    pub fn authorize_external_dirs(&self, dirs: &[PathBuf]) -> Result<(), String> {
+    pub fn authorize_external_dirs(&self, dirs: &[PathBuf], access: Access) -> Result<(), String> {
         let mut globs: Vec<String> = Vec::new();
         for d in dirs {
             let t = self.resolve(&d.display().to_string());
@@ -781,6 +789,7 @@ impl Ctx<'_> {
             resources: globs.clone(),
             save,
             title: format!("Access outside the project: {}", shown.join(", ")),
+            access: Some(access),
         })
     }
 
@@ -820,7 +829,14 @@ impl Ctx<'_> {
         if gate.guarded(&req.action, &req.resources) {
             req.save.clear();
         }
-        tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e: Denied| e.to_string())
+        tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e: Denied| match e {
+            // Say which folder, so a model told "no" by a headless run
+            // knows why.
+            Denied::Declined { .. } if req.action == "external_directory" => {
+                format!("{}. {e}", req.title)
+            }
+            e => e.to_string(),
+        })
     }
 
     /// Shorten an absolute path for display: relative to cwd when inside it.
@@ -1309,6 +1325,7 @@ mod tests {
             resources: vec![file.into()],
             save: vec![save.into()],
             title: String::new(),
+            access: None,
         };
         for tmp in ["/tmp", "/private/tmp", "/var/tmp"] {
             let file = format!("{tmp}/x.txt");

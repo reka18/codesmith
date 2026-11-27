@@ -45,6 +45,7 @@ fn evaluate(
         resources: resources.iter().map(|r| r.to_string()).collect(),
         save: vec![],
         title: String::new(),
+        access: None,
     };
     match g.assert(&req) {
         Err(Denied::Policy { message }) => (Effect::Deny, Some(message)),
@@ -168,6 +169,7 @@ fn a_saved_approval_never_lifts_a_policy_deny() {
         resources: vec![cmd.into()],
         save: vec!["*".into()],
         title: String::new(),
+        access: None,
     };
     g.assert(&req("ls")).unwrap();
     assert!(!g.saved().is_empty());
@@ -201,6 +203,7 @@ fn config_policies_reach_every_agent_and_the_earlier_file_has_the_final_say() {
                 resources: vec!["git push origin".into()],
                 save: vec![],
                 title: String::new(),
+                access: None,
             })
             .unwrap_err();
         assert_eq!(e.to_string(), "Permission denied: No pushing", "{id}");

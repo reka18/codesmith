@@ -50,7 +50,10 @@
 //!   denying `code:*` refuses it. A script file (`python x.py`), a module
 //!   (`-m`) and an ordinary awk/sed program are no marker.
 //! - Files programs write by name: `awk '{print > "f"}'`, `sed 'w f'`,
-//!   `find -fprint f`.
+//!   `find -fprint f`, and (see `targets`) the operands of `rm`, `cp`,
+//!   `mv`, `perl -i`, `curl -o` and the like; and folders options point a
+//!   program at (`git -C`, `make -C`, `env -C`, `GIT_DIR=`), checked like
+//!   `cd` targets.
 //!
 //! Left open: what a program does from its own config or a file it reads
 //! (`git` hooks and config-file aliases, `make`, `npm run`, `python x.py`);
@@ -68,6 +71,8 @@
 //! see [`Command::alternate`]). Dash runs `(( $x ))` as the command `$x`:
 //! that is dynamic only when `$x` can name a command (see
 //! [`dash_name_matters`]), so `(( $i < 3 ))` on a counter asks nothing.
+
+mod targets;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -2088,7 +2093,10 @@ impl<'a> Scanner<'a> {
         // The name as the shell reads it: `GIT_S\SH_COMMAND=x` is one.
         let name = value.split(['=', '[']).next().unwrap_or(value);
         let name = name.trim_end_matches('+');
-        if COMMAND_VARS.contains(&name) || name.starts_with("GIT_CONFIG_") {
+        if COMMAND_VARS.contains(&name)
+            || name.starts_with("GIT_CONFIG_")
+            || targets::GIT_DIR_VARS.contains(&name)
+        {
             self.shared
                 .command_vars
                 .borrow_mut()
@@ -2756,6 +2764,18 @@ pub struct Analysis {
     /// Why the input can run code its commands do not show (arithmetic fed
     /// from text, a dynamic command name, a non-static `eval`/`sh -c`).
     pub dynamic: Option<String>,
+    /// Paths named in code in another language (`python -c
+    /// "open('/x/f')"`), which it may read or write: checked for
+    /// `external_directory` only.
+    pub reached: Vec<Write>,
+    /// Some command may change files: it is not one known to only read
+    /// (`ls`, `cat`, `git log`, `git status`...; see `targets::read_only`).
+    /// Folders outside the project such a line reaches count as written.
+    pub mutating: bool,
+    /// A file or folder a program names by a path only known at run time
+    /// (`rm "$f"`, `xargs rm`, `patch < x.diff`), as written: it may be
+    /// outside the project.
+    pub unknown_target: Option<String>,
 }
 
 /// A file a redirect writes to.
@@ -2965,6 +2985,15 @@ fn analyze_shared(command: &str, cwd: &Path, shared: &Shared) -> Result<Analysis
                 out.dynamic.get_or_insert(d);
             }
             out.unknown_cwd |= alt.unknown_cwd;
+            out.mutating |= alt.mutating;
+            if let Some(t) = alt.unknown_target {
+                out.unknown_target.get_or_insert(t);
+            }
+            for w in alt.reached {
+                if !out.reached.contains(&w) {
+                    out.reached.push(w);
+                }
+            }
         }
     }
     if shared.exhausted() {
@@ -3038,6 +3067,9 @@ fn analyze_into(
         if item.declaration {
             continue;
         }
+        if !targets::read_only(&item.words) {
+            out.mutating = true;
+        }
         if item.alternate {
             if item.words.is_empty() {
                 continue;
@@ -3069,6 +3101,24 @@ fn analyze_into(
             out.deny_only.extend(alt.commands);
             out.deny_only.extend(alt.delegated);
             out.deny_only.extend(alt.deny_only);
+            // Folders and files that reading reaches above the working
+            // directory (Dash's `((rm ../x))`) are checked all the same;
+            // `(( a > b ))` writing `b` there adds nothing.
+            let away = |p: &str| p.starts_with('/') || p.split('/').any(|c| c == "..");
+            for d in alt.directories.into_iter().filter(|d| away(d)) {
+                if !out.directories.contains(&d) {
+                    out.directories.push(d);
+                }
+            }
+            for w in alt
+                .writes
+                .into_iter()
+                .filter(|w| w.path.as_deref().is_some_and(away))
+            {
+                if !out.writes.contains(&w) {
+                    out.writes.push(w);
+                }
+            }
             continue;
         }
         if let Some(end) = item.redirect_prefix_end {
@@ -3203,6 +3253,10 @@ fn delegate(
             .push((resource.clone(), save_pattern(&words, &resource)));
     }
     let kind = canonical_name(base);
+    if kind != "git" {
+        // Folders and files named in the arguments (`make -C`, `rm x`).
+        targets::command_targets(kind, raw, cooked, cwd, out);
+    }
     let push_wrapped = |at: usize, out: &mut Analysis| -> Result<(), Opaque> {
         for j in 1..at.min(cooked.len()) {
             // `sudo GIT_SSH_COMMAND=... git fetch`.
@@ -3247,6 +3301,7 @@ fn delegate(
     if let Some(code) = inline_code(kind, raw, cooked) {
         // Code in a language other than the shell's.
         push_code_marker(name, &code, out);
+        targets::code_paths(&code, out);
         return Ok(());
     }
     match kind {
@@ -3261,6 +3316,7 @@ fn delegate(
         _ => {}
     }
     if kind == "find" {
+        targets::find_targets(raw, cooked, cwd, out);
         let mut i = 1;
         while i < cooked.len() {
             if ["-fprint", "-fprint0", "-fprintf", "-fls"].contains(&cooked[i].as_str()) {
@@ -3307,11 +3363,22 @@ fn delegate(
                 // `xargs -I{} sh -c 'echo {}'` runs what it reads.
                 mark_dynamic(out, "dynamic-execution");
             }
+            if let Some(program) = words.first() {
+                let b = program.rsplit('/').next().unwrap_or(program);
+                if targets::writes_operands(canonical_name(b)) {
+                    // `ls ../x | xargs rm`: the names come from the input.
+                    out.unknown_target.get_or_insert_with(|| cooked.join(" "));
+                }
+            }
         }
     }
     let Some(wrapped) = wrapped_command(base, cooked) else {
         return Ok(());
     };
+    if let Wrapped::At(at) = wrapped {
+        // `env -C dir cmd`, `sudo -D dir cmd`.
+        targets::wrapper_dirs(kind, raw, cooked, at, cwd, out);
+    }
     // Files the wrapper itself writes: a lock file, a typescript.
     match (kind, wrapped) {
         ("flock", Wrapped::At(k)) | ("lockf", Wrapped::At(k)) => {
@@ -3398,7 +3465,12 @@ fn run_string(
     out.deny_only.extend(inner.deny_only);
     out.directories.extend(inner.directories);
     out.writes.extend(inner.writes);
+    out.reached.extend(inner.reached);
     out.unknown_cwd |= inner.unknown_cwd;
+    out.mutating |= inner.mutating;
+    if let Some(t) = inner.unknown_target {
+        out.unknown_target.get_or_insert(t);
+    }
     if let Some(d) = inner.dynamic {
         mark_dynamic(out, &d);
     }
@@ -4535,6 +4607,12 @@ fn command_var(
         return Ok(());
     };
     let name = name.trim_end_matches('+');
+    if targets::GIT_DIR_VARS.contains(&name) {
+        // `GIT_DIR=../x git commit`: git works on that repository.
+        let v = value.split_once('=').map_or("", |(_, v)| v);
+        targets::git_dir_var(name, raw_value, v, cwd, out);
+        return Ok(());
+    }
     if name.starts_with("GIT_CONFIG_") {
         // `GIT_CONFIG_KEY_0=core.pager`: settings Git reads like `-c`;
         // `GIT_CONFIG_GLOBAL=file` names a file of them.
@@ -5531,6 +5609,7 @@ fn push_code_marker(name: &str, code: &str, out: &mut Analysis) {
     let base = name.rsplit('/').next().unwrap_or(name);
     let resource = format!("code:{base} {code}");
     let save = format!("code:{base} *");
+    out.mutating = true;
     if !out.delegated.iter().any(|(r, _)| *r == resource) {
         out.delegated.push((resource, save));
     }
@@ -5546,6 +5625,9 @@ fn git_effects(
     out: &mut Analysis,
 ) -> Result<(), Opaque> {
     let n = cooked.len();
+    // `-C`, `--git-dir`, `--work-tree`: checked like `cd`.
+    let mut chain = targets::git_globals(raw, cooked, cwd, out);
+    targets::git_targets(raw, cooked, &mut chain, cwd, out);
     let mut i = 1;
     while i < n {
         let w = cooked[i].as_str();
@@ -6918,8 +7000,15 @@ mod tests {
         let paths = |src: &str| -> Vec<Option<String>> {
             full(src).writes.into_iter().map(|w| w.path).collect()
         };
-        assert_eq!(paths("flock l rm x"), [Some("l".to_string())]);
-        assert_eq!(paths("script -qc 'rm x'"), [Some("typescript".to_string())]);
+        // `rm x` writes `x` too (see `targets`).
+        assert_eq!(
+            paths("flock l rm x"),
+            [Some("l".to_string()), Some("x".to_string())]
+        );
+        assert_eq!(
+            paths("script -qc 'rm x'"),
+            [Some("typescript".to_string()), Some("x".to_string())]
+        );
         assert!(full("ssh host 'cd /etc && rm x'").directories.is_empty());
     }
 

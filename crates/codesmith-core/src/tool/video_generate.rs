@@ -232,14 +232,16 @@ async fn start(ctx: &Ctx<'_>, env: Env<'_>, input: &Value) -> Result<String, Str
         resources: vec![reference.clone()],
         save: vec!["*".into()],
         title: format!("Generate a video with {reference}"),
+        access: None,
     })?;
     if let Some(t) = &target {
-        ctx.authorize_external(t, false)?;
+        ctx.authorize_external(t, false, super::Access::Write)?;
         ctx.ask(Request {
             action: "edit".into(),
             resources: t.resources.clone(),
             save: vec!["*".into()],
             title: format!("Write {}", t.resource),
+            access: None,
         })?;
     }
     let frame = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_string);

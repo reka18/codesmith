@@ -338,6 +338,7 @@ mod tests {
             resources: vec!["rm x".into()],
             save: vec![],
             title: String::new(),
+            access: None,
         }
     }
 

@@ -3117,6 +3117,7 @@ impl Session {
             resources,
             save,
             title,
+            access: None,
         };
         tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
     }
@@ -3862,6 +3863,7 @@ impl Session {
                 resources: vec![resource.into()],
                 save: vec![],
                 title,
+                access: None,
             };
             let gate = Gate::new(vec![], self.gate.asker());
             tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())

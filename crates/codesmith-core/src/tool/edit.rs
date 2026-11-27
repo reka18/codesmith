@@ -447,7 +447,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         return Err("oldString must not be empty. Use write to create or overwrite a file.".into());
     }
     let target = ctx.resolve(path);
-    ctx.authorize_external(&target, false)?;
+    ctx.authorize_external(&target, false, super::Access::Write)?;
     let lock = file_lock(&target.real);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     if target.absolute.is_dir() {
@@ -477,6 +477,7 @@ pub fn run(ctx: &Ctx, input: &Value) -> Outcome {
         resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Edit {} (-{removed} +{added} lines)", target.resource),
+        access: None,
     })?;
     let (updated, n) = match result {
         Ok(r) => r,

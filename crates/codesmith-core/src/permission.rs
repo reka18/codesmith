@@ -357,6 +357,30 @@ pub struct Request {
     pub save: Vec<String>,
     /// One-line description for the prompt (e.g. the command or a diff summary).
     pub title: String,
+    /// For a request about paths outside the project
+    /// (`external_directory`): whether the tool only reads there or may
+    /// change something. `None` for every other request.
+    pub access: Option<Access>,
+}
+
+/// What a request for a path outside the project does there. A command
+/// the scan cannot fully read counts as [`Access::Write`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Reading, searching, listing, or a `cd` followed only by commands
+    /// that read.
+    Read,
+    /// Changing a file, a ref or the index, or anything not known to read.
+    Write,
+}
+
+impl Access {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Access::Read => "read",
+            Access::Write => "write",
+        }
+    }
 }
 
 /// Asks the user. Implemented by the CLI and, later, the TUI.
@@ -1102,6 +1126,7 @@ mod tests {
             resources: vec![cmd.into()],
             save: vec![cmd.into()],
             title: cmd.into(),
+            access: None,
         }
     }
 
@@ -1161,6 +1186,7 @@ mod tests {
             resources: vec![key.clone()],
             save: vec![key],
             title: "read key".into(),
+            access: None,
         };
         if g.guarded("read", &req.resources) {
             assert!(g.assert(&req).is_ok());
@@ -1297,6 +1323,7 @@ mod tests {
             resources: res.iter().map(|s| s.to_string()).collect(),
             save: vec!["*".into()],
             title: String::new(),
+            access: None,
         }
     }
 
@@ -1396,6 +1423,7 @@ mod tests {
                 resources: vec!["x".into()],
                 save: save.iter().map(|s| s.to_string()).collect(),
                 title: String::new(),
+                access: None,
             })
         };
         assert_eq!(
@@ -1435,6 +1463,7 @@ mod tests {
                 resources: resources.to_vec(),
                 save: save.to_vec(),
                 title: String::new(),
+                access: None,
             })
             .unwrap();
             let out: Vec<String> = g
@@ -1650,6 +1679,7 @@ mod tests {
             resources: res.iter().map(|s| s.to_string()).collect(),
             save: save.iter().map(|s| s.to_string()).collect(),
             title: String::new(),
+            access: None,
         }
     }
 
@@ -1918,6 +1948,7 @@ mod tests {
             resources,
             save: save.clone(),
             title: String::new(),
+            access: None,
         };
         (outcome(&g, &n, &req), save)
     }
@@ -2134,6 +2165,7 @@ mod tests {
                 resources,
                 save,
                 title: String::new(),
+                access: None,
             }
         };
         for (command, grants, next, next_effect) in fixtures {

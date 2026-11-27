@@ -196,6 +196,7 @@ pub async fn run(gate: &Gate, input: &Value) -> Result<Value, String> {
         resources: vec![url.clone()],
         save: webfetch::save_patterns(&parsed),
         title,
+        access: None,
     };
     ask(gate, &asked, &url)?;
     send(gate, parsed, req, &url).await
@@ -303,6 +304,7 @@ async fn send(
                     req.method,
                     current.origin().ascii_serialization()
                 ),
+                access: None,
             };
             let started = tokio::time::Instant::now();
             ask(gate, &asked, &shown)?;

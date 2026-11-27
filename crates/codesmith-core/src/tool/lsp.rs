@@ -57,12 +57,13 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         return Err("Language servers are off; set \"lsp\": true in codesmith.json.".into());
     };
     let target = ctx.resolve(path);
-    ctx.authorize_external(&target, false)?;
+    ctx.authorize_external(&target, false, super::Access::Read)?;
     ctx.ask(Request {
         action: "lsp".into(),
         resources: target.resources.clone(),
         save: vec!["*".into()],
         title: format!("Query language servers: {op} in {}", target.resource),
+        access: None,
     })?;
     if !target.absolute.is_file() {
         return Err(format!("File not found: {path}"));

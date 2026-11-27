@@ -2479,6 +2479,7 @@ impl Runner {
                     resources: vec!["*".into()],
                     save: vec![],
                     title: format!("Run MCP tool {tool}"),
+                    access: None,
                 });
                 async move {
                     allowed.map_err(|e| e.to_string())?;
