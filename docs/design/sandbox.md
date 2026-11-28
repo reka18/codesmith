@@ -1,8 +1,26 @@
 # Design: an operating-system sandbox for shell commands
 
-Status: **plan for approval.** Nothing here is built yet. Ray asked for it
-on 2026-11-27, for macOS and Linux, **on by default: you opt out, never
-in.**
+Status: **steps 1 and 2 of the [Order](#order) built** (unreleased, for
+1.0.0): Seatbelt on macOS; Landlock, seccomp (`network: "none"`) and
+`no_new_privs` on Linux; the failure-to-prompt rerun; the settings;
+`codesmith debug sandbox`; the `sudo` refusal. Not built yet: the proxy and
+`allowlist`, Landlock's TCP rules, the network-namespace fallback, and
+sandboxing language servers, formatters and MCP servers. What's built is
+documented in [docs/sandbox.md](../sandbox.md). Ray asked for it on
+2026-11-27, for macOS and Linux, **on by default: you opt out, never in.**
+
+Where the build settled what this plan left open (see the pull request for
+the reasons):
+- removing the package caches is `"caches": false`;
+- `"allowlist"` refuses commands until the proxy exists;
+- the failure-to-prompt rerun is always asked, even where a rule allows the
+  folder, and offers one folder per command;
+- Rustup's toolchains aren't a default write folder; `CARGO_TARGET_DIR` is
+  when set; GPG's `trustdb.gpg` and `random_seed` are writable;
+- a linked worktree's git folders are writable;
+- `/tmp`, macOS's per-user temp folder and `/dev/shm` aren't writable by
+  default;
+- on macOS, `/bin/ps` (setuid) runs outside the sandbox.
 
 ## Why
 

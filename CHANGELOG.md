@@ -3,6 +3,48 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Shell commands run in an operating-system sandbox.** Every command the
+  agent runs with `shell`, background jobs and everything they start
+  included, runs under Seatbelt on macOS (`sandbox-exec`, with a profile
+  made for each command) and under Landlock, a seccomp filter and
+  `no_new_privs` on Linux. It may write only to the project (nested
+  worktrees included), the session's own temp folder (`TMPDIR`),
+  CodeSmith's scratch and tool-output folders, the package caches (Cargo,
+  npm, pip, Go), `sandbox.write` and folders you approved; it reads
+  everywhere except the protected secret files (`~/.ssh` keys, `~/.aws`,
+  GPG's private keys, the keychains, CodeSmith's own keys and more). A
+  script that computes a path, an unknown program, `git -C` with a folder
+  known only at run time, a planted symlink or hard link, or moving the
+  project folder can't write outside it, whatever the permission rules say.
+  `ssh`, `git` over SSH and `git commit -S` keep working through their
+  agents. The command analysis stays: it still decides what to ask about.
+  See [docs/sandbox.md](docs/sandbox.md).
+- **A refused write offers its folder.** When the sandbox refuses a write
+  outside the allowed folders, CodeSmith reads the error, asks to allow
+  writing to that folder, and on approval runs the command again with that
+  one folder added. "Always" saves it as any `external_directory` approval
+  is saved. A headless run with nobody to ask reports the error.
+- **`sandbox` settings, from your own config only.** `enabled` (on by
+  default; `false` turns it off), `network` (`all`, the default, or `none`
+  for Unix sockets only; `allowlist` is refused until its proxy is built),
+  `write` (extra folders), `caches` (`false` drops the package caches) and
+  `unsupported`. A repository can't set them. CodeSmith says once per
+  session when commands run without the sandbox.
+- **A machine that can't sandbox refuses the agent's commands**, in the
+  terminal and headless alike, and says why, unless
+  `"sandbox": {"unsupported": "run"}` is set. Linux needs Landlock (5.13 or
+  later) and seccomp.
+- **`codesmith debug sandbox`** prints whether this machine can sandbox
+  commands and the policy a command in this folder would get; `--profile`
+  adds the macOS profile.
+- **`sudo` is refused with a pointer to the planned password prompt**
+  (`docs/design/askpass.md`): it can't gain privileges inside the sandbox.
+- The shell daemon of `codesmith serve` applies the sandbox to the commands
+  it runs; on Linux, a daemon from before this version is passed over and
+  the command runs in the server instead.
+
 ## 0.8.0 — 2026-11-27
 
 - **Tool groups in the transcript.** At the default verbosity, a run of
