@@ -27,6 +27,10 @@ mod busctl;
 mod claude_token;
 mod cli;
 mod links;
+#[cfg(all(unix, feature = "remote"))]
+mod pair_tty;
+#[cfg(all(unix, feature = "remote"))]
+mod remotectl;
 mod render;
 mod serve;
 mod tui;
@@ -50,6 +54,10 @@ pub fn main(plugins: Vec<Arc<dyn plugin::Plugin>>) -> ! {
     // bus starts.
     #[cfg(unix)]
     codesmith_core::bus::child_main_if_requested();
+    // And the remote-access gateway (`__remoted`), which `/mobile`,
+    // `codesmith remote pair` and `start` start.
+    #[cfg(all(unix, feature = "remote"))]
+    codesmith_core::remote::child_main_if_requested();
     // Before any thread starts: `serve` alone gets the server token, and no
     // child process inherits it.
     cli::take_server_token();

@@ -383,3 +383,138 @@ fn path_forms_cover_shell_spellings() {
     assert_eq!(f("x|~/.npmrc"), ["x", "/h/zoë/.npmrc"]);
     assert_eq!(shell::path_forms_for_test("~/.ssh/id", None), ["~/.ssh/id"]);
 }
+
+/// X1: the agent's reads of the remote-access files (the machine key,
+/// `remote.db` and its WAL) ask, by any route, and writing them (which
+/// would pair a device) asks too.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_remote_files_are_guarded() {
+    let h = home();
+    let data = h.path.join(".local/share/codesmith");
+    std::fs::create_dir_all(&data).unwrap();
+    for f in ["remote-key", "remote.db", "remote.db-wal"] {
+        std::fs::write(data.join(f), KEY).unwrap();
+    }
+    let mut rules = vec![
+        Rule::new("*", "*", Effect::Allow),
+        Rule::new("external_directory", "*", Effect::Allow),
+    ];
+    rules.extend(secret_guards_for(
+        std::slice::from_ref(&h.path),
+        std::slice::from_ref(&data),
+        &[],
+        &[],
+    ));
+    let (env, rec) = Env::recording(rules);
+    rec.deny_action("read");
+    let ctx = env.ctx();
+    for f in ["remote-key", "remote.db", "remote.db-wal"] {
+        let e = Tool::Read
+            .run(&ctx, &json!({"path": s(&data.join(f))}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains(KEY), "{f}: {e}");
+    }
+    for c in [
+        format!("cat '{}'", s(&data.join("remote-key"))),
+        format!(
+            "sqlite3 '{}' 'select * from devices'",
+            s(&data.join("remote.db"))
+        ),
+    ] {
+        let e = Tool::Shell
+            .run(&ctx, &json!({"command": c}))
+            .await
+            .unwrap_err();
+        assert!(!e.contains(KEY), "{c}: {e}");
+    }
+    assert_eq!(rec.actions(), ["read"; 5]);
+    rec.deny_action("edit");
+    let e = Tool::Write
+        .run(
+            &ctx,
+            &json!({"path": s(&data.join("remote.db")), "content": "x"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(e.contains("declined"), "{e}");
+    assert_eq!(rec.actions().last().unwrap(), "edit");
+    assert_eq!(
+        std::fs::read_to_string(data.join("remote.db")).unwrap(),
+        KEY
+    );
+}
+
+/// X2: the agent's `codesmith remote` commands ask whatever the rules
+/// allow, by any spelling, but `id` and `status`, which only read.
+#[test]
+fn codesmith_remote_commands_always_ask_but_id_and_status() {
+    use crate::permission::evaluate;
+    let mut rules = vec![Rule::new("*", "*", Effect::Allow)];
+    rules.extend(secret_guards_for(&[], &[], &[], &[]));
+    for c in [
+        "codesmith remote pair",
+        "codesmith remote pair --session ses_1 --all",
+        "codesmith remote revoke abc",
+        "codesmith remote start",
+        "codesmith remote stop",
+        "codesmith remote devices",
+        "codesmith remote",
+        "/usr/local/bin/codesmith remote pair",
+        "codesmith --any-folder remote pair",
+        "codesmith __remoted --dir /tmp/x",
+        "codesmith remote id; codesmith remote pair",
+        "codesmith remote id --session x",
+    ] {
+        assert_eq!(evaluate("shell", c, &rules), Effect::Ask, "{c}");
+    }
+    for c in [
+        "codesmith remote id",
+        "codesmith remote status",
+        "codesmith remote status --json",
+        "/opt/bin/codesmith remote id",
+        "codesmith run hello",
+        "echo codesmith remote pair",
+    ] {
+        assert_eq!(evaluate("shell", c, &rules), Effect::Allow, "{c}");
+    }
+    // "Always allow" never lifts it; only the user's own rule naming it.
+    let mut saved = vec![Rule::new("shell", "codesmith remote pair", Effect::Allow)];
+    saved.splice(0..0, rules.clone());
+    assert_eq!(
+        evaluate("shell", "codesmith remote pair", &saved),
+        Effect::Allow,
+        "a configured rule naming it exactly"
+    );
+    let mut broad = rules.clone();
+    broad.push(Rule::new("shell", "codesmith *", Effect::Allow));
+    assert_eq!(
+        evaluate("shell", "codesmith remote pair", &broad),
+        Effect::Ask
+    );
+}
+
+/// X2 through the shell tool: each command of a compound line is judged.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_agents_codesmith_remote_commands_ask() {
+    let h = home();
+    let (env, rec) = plan_like(&h, &[]);
+    rec.deny_action("shell");
+    let ctx = env.ctx();
+    for (i, c) in [
+        "codesmith remote pair",
+        "echo hi && codesmith remote revoke all",
+        "sh -c 'codesmith remote start'",
+        "x=$(codesmith remote pair --all)",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let e = Tool::Shell
+            .run(&ctx, &json!({"command": c}))
+            .await
+            .unwrap_err();
+        assert!(e.contains("declined"), "{c}: {e}");
+        assert_eq!(rec.actions().len(), i + 1, "{c} asked once");
+    }
+}

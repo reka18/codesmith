@@ -202,6 +202,13 @@ enum Command {
         #[command(subcommand)]
         what: crate::busctl::BusCmd,
     },
+    /// Remote access from a phone: pair one, list or revoke devices, and
+    /// start, stop or look at the gateway.
+    #[cfg(all(unix, feature = "remote"))]
+    Remote {
+        #[command(subcommand)]
+        what: crate::remotectl::RemoteCmd,
+    },
     /// Set up a tailbus bridge that hands other agents' messages to
     /// CodeSmith: a headless `codesmith run`, or a relay to a session you
     /// have open.
@@ -1540,6 +1547,8 @@ async fn run(cli: Cli) -> Result<()> {
         }) => crate::links::run(check).await,
         Some(Command::Debug { what }) => debug(cwd, what),
         Some(Command::Bus { what }) => crate::busctl::run(cwd, what).await,
+        #[cfg(all(unix, feature = "remote"))]
+        Some(Command::Remote { what }) => crate::remotectl::run(what).await,
         Some(Command::Bridge { what }) => crate::bridge_init::run_cmd(&cwd, what).await,
         Some(Command::Upgrade {
             target,

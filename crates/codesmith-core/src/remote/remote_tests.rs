@@ -761,3 +761,32 @@ fn tailnet_address() -> Option<std::net::Ipv4Addr> {
     }
     out
 }
+
+/// Bound to every interface (as it runs for real), the gateway serves a
+/// phone on this machine through whichever of its addresses it dials.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gateway_on_every_interface_serves_a_local_phone() {
+    let gw = Gw::start(|o| o.loopback = false).await;
+    let (mut d, code) = gw.dialog(Some("ses_1")).await;
+    let p = Phone::new().await.unwrap();
+    let port = gw.ready.addrs.iter().find(|a| a.is_ipv4()).unwrap().port();
+    let conn = tokio::time::timeout(
+        WAIT,
+        p.connect(
+            gw.id(),
+            &[std::net::SocketAddr::from(([127, 0, 0, 1], port))],
+            PAIR_ALPN,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let b = body(&code);
+    let claim = tokio::spawn(async move { phone::claim(&conn, &b).await.unwrap() });
+    let Frame::Confirm { id, .. } = next(&mut d).await else {
+        panic!()
+    };
+    d.send(&allow(id, "ses_1", Scope::Control)).await.unwrap();
+    assert_eq!(claim.await.unwrap().status, 200);
+    gw.stop().await;
+}

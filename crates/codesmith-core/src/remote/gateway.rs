@@ -627,10 +627,10 @@ async fn dialog(
         loop {
             let expires = {
                 let st = state.lock().unwrap();
-                match st.pairing.as_ref().filter(|p| p.dialog == me) {
-                    None => None,
-                    Some(p) => Some(p.code.as_ref().map(|(_, at)| *at)),
-                }
+                st.pairing
+                    .as_ref()
+                    .filter(|p| p.dialog == me)
+                    .map(|p| p.code.as_ref().map(|(_, at)| *at))
             };
             let Some(expires) = expires else {
                 // Replaced or ended: say what's queued, then close.
