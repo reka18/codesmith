@@ -3,6 +3,26 @@
 All notable changes to CodeSmith are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- **Remote access from a phone, part one: pairing** (in development, not
+  for release until Skeptic Dog's relays are ready). `/mobile`, or
+  `codesmith remote pair`, shows a QR code for CodeSmith Mobile to scan,
+  then asks you at the terminal, showing a 12-digit check code to compare
+  with the phone's. Only `y` allows; `w` gives watching only, and `a`
+  every session after you type `all`. The answer is read from the terminal
+  itself, never from piped input. `codesmith remote devices`, `revoke`,
+  `start`, `stop`, `id` and `status` manage devices and the gateway
+  (`codesmith __remoted`), which connects over iroh through Skeptic Dog's
+  relays (or one of your own, or none) and opens no listening port.
+  Nothing touches the network until you opt in. Settings are read only
+  from your global config. The agent's reads and writes of the remote
+  files, and its `codesmith remote` commands, always ask. Following and
+  driving sessions from the phone come next. See
+  [remote access](docs/remote.md) and the [protocol](docs/remote-protocol.md).
+- The `remote` cargo feature (on by default) builds it in;
+  `--no-default-features` leaves it out.
+
 ## 0.8.0 — 2026-11-27
 
 - **Tool groups in the transcript.** At the default verbosity, a run of

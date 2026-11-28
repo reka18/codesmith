@@ -180,6 +180,7 @@ is parsed:
 | `worktree` | | `{"directory", "start"}`. `directory` is the folder new worktrees go in: absolute, or relative to the main checkout (default `.worktrees`, inside it, kept out of git by `.git/info/exclude`; `~` is not expanded). `start` is a setup command run in each new one. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
+| `remote` | off | [Remote access from a phone](remote.md#settings): `enabled` and `relay`. Read only from your global config file; a `remote` key anywhere else is ignored with a warning. In development. |
 | `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Your own config, so a folder can't silence the warning about itself; your home folder and `/` are asked about regardless. |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |

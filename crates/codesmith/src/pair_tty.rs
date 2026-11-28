@@ -505,7 +505,10 @@ fn draw_code(out: &mut dyn Write, offer: &Offer, stage: &Stage, cols: usize) -> 
                 writeln!(out, "{l}")?;
             }
         }
-        None => writeln!(out, "(The link is too long for a QR code; copy it instead.)")?,
+        None => writeln!(
+            out,
+            "(The link is too long for a QR code; copy it instead.)"
+        )?,
     }
     writeln!(out)?;
     writeln!(

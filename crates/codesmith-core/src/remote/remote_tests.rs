@@ -790,3 +790,62 @@ async fn a_gateway_on_every_interface_serves_a_local_phone() {
     assert_eq!(claim.await.unwrap().status, 200);
     gw.stop().await;
 }
+
+/// The published schema (G4) parses, and the bodies the gateway sends have
+/// the fields it requires, so the two don't drift apart.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bodies_match_the_published_schema() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../../docs/remote-protocol.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    let required = |def: &str| -> Vec<String> {
+        defs[def]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let gw = Gw::start(|_| {}).await;
+    let (mut d, code) = gw.dialog(Some("ses_1")).await;
+    let p = Phone::new().await.unwrap();
+    let c = gw.dial(&p, PAIR_ALPN).await;
+    let wrong = phone::claim(&c, &body("x".repeat(22).as_str()))
+        .await
+        .unwrap();
+    for k in required("error") {
+        assert!(wrong.body.get(&k).is_some(), "{k}");
+    }
+    for k in ["code", "message"] {
+        assert!(wrong.body["error"][k].is_string(), "{k}");
+    }
+    let (r, _) = claim_answered(&gw, &p, &mut d, &code, |id| {
+        Some(allow(id, "ses_1", Scope::Control))
+    })
+    .await;
+    for k in required("claimResponse") {
+        assert!(r.body.get(&k).is_some(), "{k}: {}", r.body);
+    }
+    let node = regex_lite(defs["nodeId"]["pattern"].as_str().unwrap());
+    assert!(node(r.body["machine"]["id"].as_str().unwrap()));
+    assert!(node(r.body["device"]["id"].as_str().unwrap()));
+    for g in r.body["grants"].as_array().unwrap() {
+        for k in required("grant") {
+            assert!(g.get(&k).is_some(), "{k}");
+        }
+    }
+    // The claim's own fields are what the schema names.
+    let props: Vec<&String> = defs["claimRequest"]["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert_eq!(props, ["code", "device", "push", "unlock_key"]);
+    gw.stop().await;
+}
+
+/// The node id pattern `^[0-9a-f]{64}$`, checked without a regex engine.
+fn regex_lite(pattern: &str) -> impl Fn(&str) -> bool {
+    assert_eq!(pattern, "^[0-9a-f]{64}$");
+    |s: &str| super::key::is_node_id(s)
+}

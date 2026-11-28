@@ -36,6 +36,8 @@ New here? Start with [Getting started](getting-started.md).
 - [tailbus](tailbus.md): reaching a CodeSmith session from other agents on
   your tailnet, or running CodeSmith as a tailbus bridge's agent;
   `codesmith bridge init` sets either one up.
+- [Remote access](remote.md): pairing a phone with a session (in
+  development), and its [protocol](remote-protocol.md).
 - [Editors (ACP)](editors-acp.md): Zed and other ACP clients.
 - [Local server](local-server.md): the HTTP API.
 - [Plugins](plugins.md): native Rust plugins.

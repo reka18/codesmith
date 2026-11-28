@@ -26,10 +26,6 @@ fn remote_config(e: &Env, enabled: bool, relay: &str) {
 
 fn vars(e: &Env) -> Vec<(String, String)> {
     let mut v = e.vars();
-    v.push((
-        "CODESMITH_REMOTE_DIR".into(),
-        e.root.join("rm").display().to_string(),
-    ));
     v.push(("CODESMITH_REMOTE_IDLE_MS".into(), "3000".into()));
     v
 }

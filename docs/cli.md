@@ -364,6 +364,21 @@ The [local bus](bus.md) between sessions on this machine.
 | `codesmith bus inbox [SESSION] [--json]` | The messages waiting for a session (default: the newest one in this folder). |
 | `codesmith bus relay --to NAME` | Carry the message on stdin to the session shared as `NAME` and print its answer: what a [tailbus bridge](tailbus.md) runs. `--from` names the sender, `--id` makes a repeat get the first answer, `--offline run` continues a closed session headless (default `refuse`), `--timeout` (seconds, default 3600). |
 
+## `codesmith remote`
+
+[Remote access from a phone](remote.md), in development. Only `pair` and
+`start` start the gateway or touch the network.
+
+| Command | |
+|---|---|
+| `codesmith remote pair [--session ID] [--all] [--watch]` | Show a QR code for a phone to scan, then ask here before pairing it: control of the session, `--watch` for watching only, `--all` for every session, or with neither `--session` nor `--all` no session yet. Needs a terminal; turns `remote.enabled` on. |
+| `codesmith remote devices [--all] [--json]` | The paired devices and their grants (`--all`: revoked ones too). |
+| `codesmith remote revoke DEVICE` | Unpair a device (its id, a prefix of it, or its name) and close its connections. |
+| `codesmith remote start` | Start the gateway, turning `remote.enabled` on. |
+| `codesmith remote stop` | Stop the gateway. |
+| `codesmith remote id` | This machine's node id. |
+| `codesmith remote status [--json]` | Whether the gateway runs, its relay and addresses, connections and paired devices. |
+
 ## `codesmith debug`
 
 | Command | Shows |
