@@ -42,7 +42,11 @@ pub mod key;
 #[cfg(feature = "remote")]
 pub mod link;
 #[cfg(feature = "remote")]
+pub mod mirror;
+#[cfg(feature = "remote")]
 pub mod phone;
+#[cfg(feature = "remote")]
+pub mod rebuild;
 #[cfg(feature = "remote")]
 pub mod store;
 
