@@ -1,0 +1,148 @@
+{
+  "about": "Pairing-link vectors (SPEC.md §8.2) and check codes (§8.3). transport/tests/fixtures.rs checks them against the Rust parser; the iOS and Android tests check them through the bindings. Keep CodeSmith's link builder in step.",
+  "valid": [
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=mini&c=pn00cOpwBxfLmPR62H1EaQ",
+      "expect": {
+        "nodeId": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+        "relayUrl": null,
+        "addrs": [],
+        "machineName": "mini",
+        "session": null,
+        "code": "pn00cOpwBxfLmPR62H1EaQ"
+      }
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&r=https%3A%2F%2Fusw1-1.relay.n0.iroh.link.%2F&a=4.18.23.250%3A61823%2C100.72.137.44%3A61823%2C192.168.8.172%3A61823&m=Rays-Mac-mini&s=ses_1a21547aca5e297de&c=pn00cOpwBxfLmPR62H1EaQ",
+      "expect": {
+        "nodeId": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+        "relayUrl": "https://usw1-1.relay.n0.iroh.link./",
+        "addrs": [
+          "4.18.23.250:61823",
+          "100.72.137.44:61823",
+          "192.168.8.172:61823"
+        ],
+        "machineName": "Rays-Mac-mini",
+        "session": "ses_1a21547aca5e297de",
+        "code": "pn00cOpwBxfLmPR62H1EaQ"
+      }
+    },
+    {
+      "url": "codesmith://pair?v=1&n=AA980150BE84FAA3788D7D170F02984F084BCAEB6871FE1FE7805FF2505A375C&a=%5B2001%3Adb8%3A%3A20%5D%3A51820,10.0.0.1:5000&m=Ray%E2%80%99s%20Mac+Pro&c=0123456789abcdef_-xy&extra=ignored",
+      "expect": {
+        "nodeId": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+        "relayUrl": null,
+        "addrs": [
+          "[2001:db8::20]:51820",
+          "10.0.0.1:5000"
+        ],
+        "machineName": "Ray’s Mac+Pro",
+        "session": null,
+        "code": "0123456789abcdef_-xy"
+      }
+    },
+    {
+      "url": "  CODESMITH://Pair/?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&r=&a=&s=&m=%1Bm%07&c=pn00cOpwBxfLmPR62H1EaQ#frag\n",
+      "expect": {
+        "nodeId": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+        "relayUrl": null,
+        "addrs": [],
+        "machineName": "m",
+        "session": null,
+        "code": "pn00cOpwBxfLmPR62H1EaQ"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "url": "",
+      "error": "notPairingUrl"
+    },
+    {
+      "url": "https://example.com/?v=1",
+      "error": "notPairingUrl"
+    },
+    {
+      "url": "codesmith://other?v=1",
+      "error": "notPairingUrl"
+    },
+    {
+      "url": "codesmith://pair",
+      "error": "notPairingUrl"
+    },
+    {
+      "url": "codesmith://pair?v=2&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "unsupportedVersion"
+    },
+    {
+      "url": "codesmith://pair?n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "missing"
+    },
+    {
+      "url": "codesmith://pair?v=1&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "missing"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "missing"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=m",
+      "error": "missing"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=abc&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=m&c=short",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&r=ftp%3A%2F%2Fx&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&a=1.2.3.4&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=%zz&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&s=a%2Fb&m=m&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    },
+    {
+      "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=m&c=pn00cOpwBxfLmPR62H1EaQ&c=pn00cOpwBxfLmPR62H1EaQ",
+      "error": "invalid"
+    }
+  ],
+  "checkCodes": [
+    {
+      "code": "pn00cOpwBxfLmPR62H1EaQ",
+      "machine": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+      "device": "f8820d751e90d88eca3b848440efc98ae226f1552a6fb5c76c7ad09c96832dc6",
+      "expect": "779 852 318 371"
+    },
+    {
+      "code": "pn00cOpwBxfLmPR62H1EaQ",
+      "machine": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+      "device": "2862abb12e90d88eca3b848440efc98ae226f1552a6fb5c76c7ad09c96832dc6",
+      "expect": "425 748 398 457"
+    },
+    {
+      "code": "0123456789abcdef_-xy",
+      "machine": "aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c",
+      "device": "65b2276e47000000000000000000000000000000000000000000000000000000",
+      "expect": "203 664 825 594"
+    },
+    {
+      "code": "pn00cOpwBxfLmPR62H1EaQ",
+      "machine": "AA980150BE84FAA3788D7D170F02984F084BCAEB6871FE1FE7805FF2505A375C",
+      "device": "F8820D751E90D88ECA3B848440EFC98AE226F1552A6FB5C76C7AD09C96832DC6",
+      "expect": "779 852 318 371"
+    }
+  ]
+}

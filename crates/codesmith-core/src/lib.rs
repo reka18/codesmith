@@ -44,6 +44,7 @@ pub mod providers;
 pub mod pty;
 pub mod question;
 pub mod reference;
+pub mod remote;
 pub mod repository;
 pub mod retry;
 pub mod review;

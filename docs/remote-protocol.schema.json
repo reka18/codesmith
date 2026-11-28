@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/reka18/codesmith/blob/main/docs/remote-protocol.schema.json",
+  "title": "CodeSmith remote protocol bodies",
+  "description": "Every request and response body of the CodeSmith remote protocol built so far (see remote-protocol.md). In development: more are added as the protocol grows.",
+  "$defs": {
+    "nodeId": {
+      "description": "An ed25519 public key as 64 lower-case hex characters.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["control", "watch"]
+    },
+    "grant": {
+      "type": "object",
+      "required": ["session", "scope"],
+      "properties": {
+        "session": {
+          "description": "A session id, or \"*\" for every session on the machine, now and future.",
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": { "$ref": "#/$defs/scope" }
+      }
+    },
+    "error": {
+      "description": "Every /v1 error body.",
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": {
+              "description": "What a client acts on. New codes may be added; treat an unknown one by its HTTP status.",
+              "type": "string",
+              "examples": [
+                "bad_request",
+                "not_found",
+                "pairing_refused",
+                "code_expired",
+                "too_large",
+                "rate_limited",
+                "internal"
+              ]
+            },
+            "message": {
+              "description": "For people.",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "claimRequest": {
+      "description": "POST /v1/pair/claim on ALPN codesmith/pair/1.",
+      "type": "object",
+      "required": ["code", "device"],
+      "properties": {
+        "code": {
+          "description": "The pairing code from the link's c.",
+          "type": "string"
+        },
+        "device": {
+          "type": "object",
+          "required": ["name", "platform"],
+          "properties": {
+            "name": {
+              "description": "Shown at the terminal. Control and text-direction characters are removed and it is cut to 64 characters; it must not be empty after that.",
+              "type": "string"
+            },
+            "platform": {
+              "description": "For example ios or android. Cleaned like name and cut to 32 characters.",
+              "type": "string"
+            }
+          }
+        },
+        "push": {
+          "description": "An opaque push token, kept for wake-ups.",
+          "type": "object",
+          "required": ["kind", "token"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,32}$"
+            },
+            "token": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        },
+        "unlock_key": {
+          "description": "A passkey for unlocking terminals: a P-256 key kept apart from the device's iroh key. Replaced only by pairing again.",
+          "type": "object",
+          "required": ["alg", "spki"],
+          "properties": {
+            "alg": { "const": "ES256" },
+            "spki": {
+              "description": "The DER SubjectPublicKeyInfo, standard base64 with padding.",
+              "type": "string",
+              "contentEncoding": "base64"
+            }
+          }
+        }
+      }
+    },
+    "claimResponse": {
+      "description": "200 to POST /v1/pair/claim.",
+      "type": "object",
+      "required": ["machine", "device", "grants"],
+      "properties": {
+        "machine": {
+          "type": "object",
+          "required": ["id", "name"],
+          "properties": {
+            "id": { "$ref": "#/$defs/nodeId" },
+            "name": { "type": "string" }
+          }
+        },
+        "device": {
+          "type": "object",
+          "required": ["id", "name", "platform"],
+          "properties": {
+            "id": { "$ref": "#/$defs/nodeId" },
+            "name": { "type": "string" },
+            "platform": { "type": "string" }
+          }
+        },
+        "grants": {
+          "description": "Every grant the device has now.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/grant" }
+        }
+      }
+    }
+  }
+}

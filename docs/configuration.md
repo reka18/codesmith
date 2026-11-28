@@ -180,6 +180,7 @@ is parsed:
 | `worktree` | | `{"directory", "start"}`. `directory` is the folder new worktrees go in: absolute, or relative to the main checkout (default `.worktrees`, inside it, kept out of git by `.git/info/exclude`; `~` is not expanded). `start` is a setup command run in each new one. See [worktrees](sessions.md#worktrees). |
 | `automations` | `true` | `false` keeps this process from running automations. See [automations](automations.md). |
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
+| `remote` | off | [Remote access from a phone](remote.md#settings): `enabled` and `relay`. Read only from your global config file; a `remote` key anywhere else is ignored with a warning. In development. |
 | `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Your own config, so a folder can't silence the warning about itself; your home folder and `/` are asked about regardless. |
 | `sandbox` | on | The operating-system sandbox under shell commands: `enabled`, `network` (`all`, `none`), `write`, `caches`, `unsupported` (`refuse`, `run`). Your own config only (the global file and per-repo files); a repository can't set it. See [Sandbox](sandbox.md). |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |

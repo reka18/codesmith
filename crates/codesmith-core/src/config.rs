@@ -1313,6 +1313,18 @@ pub fn strip_swap(v: &mut Value, source: &str, ignored: &mut Vec<String>) {
     }
 }
 
+/// Remove `remote` from a config document that is not the global config
+/// file, with a warning: remote access is set only in your own global
+/// config (see [`crate::remote::settings`]), so a project can't turn it
+/// on, change the relay or turn the terminal unlock off.
+pub fn strip_remote(v: &mut Value, source: &str, warnings: &mut Vec<String>) {
+    if v.as_object_mut().and_then(|o| o.remove("remote")).is_some() {
+        warnings.push(format!(
+            "{source}: remote is read only from the global codesmith.json, so it is ignored here"
+        ));
+    }
+}
+
 /// One config source [`load_from`] reads, in order.
 enum Entry {
     /// A config folder of your own whose agent and command files are read.
@@ -1416,6 +1428,7 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
                 .as_deref()
                 .is_some_and(|g| canonical.parent() == Some(g));
         if !global_file {
+            strip_remote(&mut v, &path.display().to_string(), &mut warnings);
             strip_swap(&mut v, &path.display().to_string(), &mut swap_ignored);
             strip_claude_agent(
                 &mut v,
@@ -1437,6 +1450,7 @@ pub fn load_from(cwd: &Path, sources: &Sources) -> Result<Loaded> {
     }
     if let Some(text) = &sources.content {
         let mut v = parse(text, cwd).context("in $CODESMITH_CONFIG_CONTENT")?;
+        strip_remote(&mut v, "$CODESMITH_CONFIG_CONTENT", &mut warnings);
         strip_swap(&mut v, "$CODESMITH_CONFIG_CONTENT", &mut swap_ignored);
         strip_claude_agent(
             &mut v,
@@ -3323,6 +3337,60 @@ mod tests {
                 .unwrap();
         assert_eq!(c.claude_agent.pool().max_processes, 1);
         assert_eq!(c.claude_agent.pool().spare, 0);
+    }
+
+    // G5: `remote.*` comes only from the global config file. A per-repo
+    // file, $CODESMITH_CONFIG or $CODESMITH_CONFIG_CONTENT can't turn
+    // remote access on or move the relay, and each gets a warning.
+    #[test]
+    fn remote_comes_only_from_the_global_config_file() {
+        let (_d, t) = tmp();
+        let (global, project) = (t.join("global"), project(&t));
+        write(&global.join("codesmith.json"), r#"{"model": "a/b"}"#);
+        per_repo(
+            &global,
+            "a.json",
+            &project,
+            r#"{"remote": {"enabled": true, "relay": "https://evil.example.com"}}"#,
+        );
+        let explicit = t.join("custom.json");
+        write(&explicit, r#"{"remote": {"enabled": true}}"#);
+        let src = Sources {
+            file: Some(explicit.clone()),
+            content: Some(r#"{"remote": {"terminal_unlock": false}}"#.into()),
+            ..sources(&global)
+        };
+        let l = load_from(&project, &src).unwrap();
+        let warned: Vec<&String> = l
+            .warnings
+            .iter()
+            .filter(|w| w.contains("remote is read only from the global"))
+            .collect();
+        assert_eq!(warned.len(), 3, "{:?}", l.warnings);
+        assert!(warned
+            .iter()
+            .any(|w| w.contains("CODESMITH_CONFIG_CONTENT")));
+        assert!(warned.iter().any(|w| w.contains("custom.json")));
+        // The settings the gateway reads ignore all three.
+        let s = crate::remote::settings::load_from(&global).unwrap();
+        assert!(!s.enabled);
+        assert_eq!(s.relay, crate::remote::settings::Relay::Default);
+        // The global file's own `remote` is read, with no warning.
+        write(
+            &global.join("codesmith.json"),
+            r#"{"remote": {"enabled": true}}"#,
+        );
+        let l = load_from(&project, &sources(&global)).unwrap();
+        assert_eq!(
+            l.warnings
+                .iter()
+                .filter(|w| w.contains("remote is read"))
+                .count(),
+            1,
+            "only the per-repo file's: {:?}",
+            l.warnings
+        );
+        assert!(crate::remote::settings::load_from(&global).unwrap().enabled);
     }
 
     // A provider's `swap` runs commands, so only the global config file

@@ -861,6 +861,7 @@ impl Runner {
             }
             "variant" if self.idle_or_say() => self.set_variant(args)?,
             "bus" => self.bus_command(args),
+            "mobile" => self.mobile_command(args),
             "effort" if self.idle_or_say() => {
                 if args.trim().is_empty() {
                     self.open_effort_picker();
@@ -1931,6 +1932,16 @@ impl Runner {
         }
     }
 
+    /// `/mobile [watch|all|devices|status|id|stop|revoke DEVICE]`: the
+    /// terminal is handed to `codesmith remote …`, which shows the QR code
+    /// and asks its confirmation on this terminal (docs/remote.md).
+    fn mobile_command(&mut self, args: &str) {
+        match mobile_args(args, &self.session_id, self.app.header.title.as_deref()) {
+            Ok(a) => self.handoff = Some(a),
+            Err(e) => self.app.notice(e),
+        }
+    }
+
     /// Show the sign-in picker asking for a pasted Claude Code token.
     fn ask_token(&mut self, choice: usize) {
         if let Some(Modal::Login(v)) = self.app.modal.as_mut() {
@@ -2968,9 +2979,53 @@ const BUILTINS: &[(&str, bool)] = &[
     ("variant", true),
     ("effort", true),
     ("bus", true),
+    ("mobile", true),
     ("diff", false),
     ("editor", false),
 ];
+
+/// The `codesmith` arguments `/mobile ARGS` hands the terminal to, in
+/// session `session` (titled `title`), or what to say instead.
+pub(crate) fn mobile_args(
+    args: &str,
+    session: &str,
+    title: Option<&str>,
+) -> std::result::Result<Vec<String>, String> {
+    if !cfg!(all(unix, feature = "remote")) {
+        return Err("This CodeSmith was built without remote access.".into());
+    }
+    let words: Vec<&str> = args.split_whitespace().collect();
+    let mut a: Vec<String> = vec!["remote".into()];
+    let pair = |a: &mut Vec<String>| {
+        a.push("pair".into());
+        if !session.is_empty() {
+            a.extend(["--session".into(), session.to_string()]);
+            a.extend([
+                "--title".into(),
+                title.unwrap_or("this session").to_string(),
+            ]);
+        }
+    };
+    match words.as_slice() {
+        [] => pair(&mut a),
+        ["watch"] => {
+            pair(&mut a);
+            a.push("--watch".into());
+        }
+        ["all"] => {
+            pair(&mut a);
+            a.push("--all".into());
+        }
+        [w @ ("devices" | "status" | "id" | "stop" | "start")] => a.push(w.to_string()),
+        ["revoke", d] => a.extend(["revoke".into(), d.to_string()]),
+        _ => {
+            return Err(
+                "/mobile pairs a phone with this session; or /mobile watch, all, devices, status, id, stop, or revoke DEVICE".into(),
+            )
+        }
+    }
+    Ok(a)
+}
 
 /// The built-in command `/name args` invokes, if any. As in OpenCode
 /// (`mini/prompt.shared`), a built-in's name ignores case, and one that
@@ -3013,5 +3068,30 @@ mod login_switch_tests {
         ));
         // The agent's own model.
         assert!(model_chosen(None, None, true));
+    }
+}
+
+#[cfg(all(test, unix, feature = "remote"))]
+mod mobile_tests {
+    use super::mobile_args;
+
+    #[test]
+    fn mobile_hands_the_terminal_to_codesmith_remote() {
+        let a = |args: &str| mobile_args(args, "ses_1", Some("fix it")).unwrap();
+        assert_eq!(
+            a(""),
+            ["remote", "pair", "--session", "ses_1", "--title", "fix it"]
+        );
+        assert_eq!(a("watch").last().unwrap(), "--watch");
+        assert_eq!(a("all").last().unwrap(), "--all");
+        assert_eq!(a("devices"), ["remote", "devices"]);
+        assert_eq!(a("revoke ab12"), ["remote", "revoke", "ab12"]);
+        // No session yet: the phone is paired alone.
+        assert_eq!(mobile_args("", "", None).unwrap(), ["remote", "pair"]);
+        // An untitled session still names itself.
+        assert_eq!(mobile_args("", "ses_2", None).unwrap()[5], "this session");
+        for bad in ["revoke", "nonsense", "pair now", "revoke a b"] {
+            assert!(mobile_args(bad, "ses_1", None).is_err(), "{bad}");
+        }
     }
 }

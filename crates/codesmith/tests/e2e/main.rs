@@ -49,6 +49,9 @@
 //! - `folder`: starting outside a repository: the warning, the question
 //!   at a terminal, the refusal in the home folder or `/` without one.
 //! - `oc_cli`: OpenCode's CLI tests that need the binary (see PARITY.md).
+//! - `remote`: `codesmith remote pair` at a pseudo-terminal with a fake
+//!   phone claiming its code, every answer, and nothing on the network
+//!   until you opt in.
 //! - `outside`: a headless run whose shell commands name a repository
 //!   beside the project (`git -C`, `rm`, `perl -i`, `cp`): all refused.
 
@@ -67,6 +70,8 @@ mod mcp;
 mod oc_cli;
 mod outside;
 mod pty;
+#[cfg(all(unix, feature = "remote"))]
+mod remote;
 mod repo_config;
 mod run_bridge;
 mod run_cli;

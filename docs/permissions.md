@@ -155,13 +155,22 @@ usually holds credentials:
 - CodeSmith's own saved keys, `auth.json` and `mcp-auth.json` (and their
   backups) in the data folder, where a Claude Code token is kept too, the
   global `codesmith.json` or `codesmith.jsonc`, and the per-repo files in
-  its `projects/` folder.
+  its `projects/` folder;
+- [remote access](remote.md)'s machine key `remote-key`, its device list
+  `remote.db` (and its `-wal` and `-shm` files) in the data folder, and
+  everything in the gateway's folder. Writing them asks too: it would pair
+  a device.
 
 Shell commands that read secrets out of the macOS keychain ask the same
 way: `security find-generic-password`, `security find-internet-password`,
 `security dump-keychain` and `security export`, by any path, inside `sh
 -c` or `$(…)` too. The keychain holds Claude Code's login among much else,
 and these print it.
+
+So do the agent's `codesmith remote` commands, all but `codesmith remote
+id` and `codesmith remote status`, and `codesmith __remoted` itself: they
+pair phones, revoke them and start the gateway. (Pairing can't be
+confirmed from the agent's commands anyway: they have no terminal.)
 
 These guards are a floor under every other rule. A blanket allow (`read
 *`, `* *`, `~/*`), whether in the config, an agent's rules or an

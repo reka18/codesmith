@@ -137,6 +137,8 @@ impl Env {
             // session.
             ("CODESMITH_BUS_DIR".into(), p(&self.root.join("bus"))),
             ("CODESMITH_BUS_IDLE_MS".into(), "1500".into()),
+            // And its own remote-access gateway folder, never the user's.
+            ("CODESMITH_REMOTE_DIR".into(), p(&self.root.join("rm"))),
             ("CODESMITH_CONFIG_DIR".into(), p(&self.config_dir)),
             ("CODESMITH_DB".into(), p(&self.db)),
             // No test reaches models.dev; the bundled catalog serves.

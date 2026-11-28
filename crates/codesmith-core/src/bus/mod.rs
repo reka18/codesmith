@@ -108,7 +108,7 @@ pub fn dir() -> io::Result<PathBuf> {
 /// Where the bus directory may go, best first. Never `$HOME` or
 /// `$TMPDIR`: a relay run by a tailbus bridge has the bridge's, and must
 /// still find the bus.
-fn bases() -> Vec<PathBuf> {
+pub(crate) fn bases() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         out.push(PathBuf::from(x));

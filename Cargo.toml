@@ -65,8 +65,11 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
+iroh = { version = "1.5", default-features = false, features = ["tls-ring", "portmapper", "fast-apple-datapath"] }
+qrcode = { version = "0.14", default-features = false }
+httparse = "1"
 codesmith-ai = { path = "crates/codesmith-ai", version = "0.8.0" }
-codesmith-core = { path = "crates/codesmith-core", version = "0.8.0" }
+codesmith-core = { path = "crates/codesmith-core", version = "0.8.0", default-features = false }
 
 [profile.release]
 lto = true

@@ -809,6 +809,10 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
         "this session on the local bus: name, share, pause, other sessions",
     ),
     (
+        "mobile",
+        "pair a phone with this session: a QR code to scan; devices, revoke",
+    ),
+    (
         "login",
         "sign in to a provider: browser, API key or Claude Code login",
     ),

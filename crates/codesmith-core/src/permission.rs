@@ -939,8 +939,10 @@ pub fn base_rules() -> Vec<Rule> {
 /// login file (`~/.claude/.credentials.json`, or under
 /// `$CLAUDE_CONFIG_DIR`); CodeSmith's own saved keys (`auth.json`,
 /// `mcp-auth.json`, where a Claude Code token is kept) and global config
-/// file; and shell commands that read secrets out of the macOS keychain
-/// (`security find-generic-password` and the like). Each
+/// file; remote access's machine key, `remote.db` and the gateway's
+/// folder (edits to them ask too); shell commands that read secrets out
+/// of the macOS keychain (`security find-generic-password` and the like);
+/// and the agent's `codesmith remote` commands but `id` and `status`. Each
 /// folder is named as written and as resolved, so a symlink to it, or a
 /// path through one, is caught by its real name.
 pub fn secret_guards() -> Vec<Rule> {
@@ -972,6 +974,23 @@ pub fn secret_guards() -> Vec<Rule> {
         &configs,
         &resolved(gh),
     );
+    // Everything in the remote-access gateway's folder: its registration
+    // holds the token for its control socket.
+    #[cfg(unix)]
+    if let Ok(dir) = crate::remote::dir_path() {
+        for d in resolved(vec![dir]) {
+            let d = d.display().to_string();
+            let d = d.trim_end_matches('/');
+            for action in ["read", "edit"] {
+                for p in [d.to_string(), format!("{d}/*")] {
+                    let r = Rule::new(action, &p, Effect::Ask).into_guard();
+                    if !rules.contains(&r) {
+                        rules.push(r);
+                    }
+                }
+            }
+        }
+    }
     // Claude Code's login file in another config folder.
     let claude: Vec<std::path::PathBuf> = std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|v| !v.is_empty())
@@ -1057,6 +1076,18 @@ pub fn secret_guards_for(
         // `*` after the name: the `.bak` copies and lock files too.
         rules.push(ask(&format!("{d}/auth.json*")));
         rules.push(ask(&format!("{d}/mcp-auth.json*")));
+        // Remote access: the machine key and the paired devices. Writing
+        // them would pair a device, so edits ask too.
+        for f in [crate::remote::KEY_FILE, crate::remote::DB_FILE] {
+            rules.push(ask(&format!("{d}/{f}*")));
+            rules.push(Rule::new("edit", &format!("{d}/{f}*"), Effect::Ask).into_guard());
+        }
+    }
+    // `codesmith remote …` (but `id` and `status`) and the gateway itself
+    // always ask when the agent runs them, as keychain reads do.
+    for (pattern, asks) in crate::remote::shell_guard_patterns() {
+        let effect = if asks { Effect::Ask } else { Effect::Allow };
+        rules.push(Rule::new("shell", &pattern, effect).into_guard());
     }
     for c in config {
         let c = shown(c);
