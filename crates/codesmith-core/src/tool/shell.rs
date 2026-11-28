@@ -355,6 +355,14 @@ struct Shared {
     /// What the session's commands lose of their environment (see
     /// [`crate::child_env`]); the policy in force when unset.
     env_policy: Mutex<Option<crate::child_env::Policy>>,
+    /// The session's `sandbox` settings; the ones in force when unset (see
+    /// [`crate::sandbox::current`]).
+    sandbox: Mutex<Option<crate::sandbox::Settings>>,
+    /// Whether this machine can sandbox, when a test says (see
+    /// [`Jobs::set_sandbox_support`]).
+    support: Mutex<Option<crate::sandbox::Support>>,
+    /// The once-per-session notice that the sandbox is off was given.
+    sandbox_noticed: std::sync::atomic::AtomicBool,
     /// The server's shell daemon, when commands run there.
     #[cfg(unix)]
     daemon: Mutex<Option<DaemonCtx>>,
@@ -751,6 +759,54 @@ impl Jobs {
             .unwrap_or_else(crate::child_env::current)
     }
 
+    /// Set the session's `sandbox` settings (see [`crate::sandbox`]):
+    /// `None` is the settings in force.
+    pub fn set_sandbox(&self, settings: Option<crate::sandbox::Settings>) {
+        *self.shared.sandbox.lock().unwrap() = settings;
+    }
+
+    /// The `sandbox` settings the session's commands run with.
+    pub fn sandbox_settings(&self) -> crate::sandbox::Settings {
+        self.shared
+            .sandbox
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(crate::sandbox::current)
+    }
+
+    /// Judge whether this machine can sandbox as `support` says rather
+    /// than by probing it (`None` probes): how tests stand for a machine
+    /// that can't.
+    #[doc(hidden)]
+    pub fn set_sandbox_support(&self, support: Option<crate::sandbox::Support>) {
+        *self.shared.support.lock().unwrap() = support;
+    }
+
+    /// What happens to the session's commands (see [`crate::sandbox::decide`]).
+    pub fn sandbox_decision(&self) -> crate::sandbox::Decision {
+        let support = self
+            .shared
+            .support
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(crate::sandbox::support);
+        crate::sandbox::decide(&self.sandbox_settings(), &support)
+    }
+
+    /// The notice that the session's commands run without the sandbox,
+    /// the first time it is asked for; `None` after that, and when they
+    /// are sandboxed (or refused, which each refusal says).
+    pub fn take_sandbox_notice(&self) -> Option<String> {
+        match self.sandbox_decision() {
+            crate::sandbox::Decision::Unsandboxed { notice } => {
+                (!self.shared.sandbox_noticed.swap(true, Ordering::SeqCst)).then_some(notice)
+            }
+            _ => None,
+        }
+    }
+
     /// Stop every command still running, background and foreground: SIGTERM
     /// to each process group, then SIGKILL to those still there after
     /// [`KILL_GRACE`]. Returns once the background jobs have ended (or the
@@ -799,24 +855,42 @@ impl Jobs {
         file: &Path,
         environment: Option<&BTreeMap<String, String>>,
         #[allow(unused_mut)] mut meta: super::shell_proc::Meta,
+        sandbox: Option<&crate::sandbox::Policy>,
     ) -> Result<Proc, String> {
         #[cfg(unix)]
         {
             let ctx = self.shared.daemon.lock().unwrap().clone();
-            if let Some(ctx) = ctx {
+            // On Linux the daemon applies the sandbox itself; one too old
+            // to know how would run the command without it, so the
+            // command runs here instead.
+            let usable = |ctx: &DaemonCtx| {
+                sandbox.is_none()
+                    || !cfg!(target_os = "linux")
+                    || ctx
+                        .client
+                        .has_feature(crate::daemon::protocol::FEATURE_SANDBOX)
+                        .unwrap_or(false)
+            };
+            if let Some(ctx) = ctx.filter(usable) {
                 use crate::daemon::protocol::{Request, Response};
                 meta.directory = ctx.directory.clone();
                 let mut args: Vec<String> =
                     shell_args(shell).iter().map(|a| a.to_string()).collect();
                 args.push(sc.command.clone());
+                let (prog, args) = launch(sandbox, &program(shell), args)?;
+                let mut env = command_env(sc, environment, &self.env_policy());
+                if let Some(p) = sandbox {
+                    env.extend(temp_env(p));
+                }
                 let req = Request::CreatePipe {
-                    program: program(shell).display().to_string(),
+                    program: prog,
                     args,
                     cwd: sc.cwd.display().to_string(),
-                    env: command_env(sc, environment, &self.env_policy()),
+                    env,
                     group_id: ctx.directory.clone(),
                     output_path: file.display().to_string(),
                     metadata: Value::Object(meta.to_map()),
+                    sandbox: sandbox.filter(|_| cfg!(target_os = "linux")).cloned(),
                 };
                 match ctx.client.call(req, true).await {
                     Ok(Response::Created { process }) => {
@@ -847,7 +921,7 @@ impl Jobs {
             }
         }
         let _ = &meta;
-        spawn(shell, sc, file, environment, &self.env_policy()).map(Proc::Local)
+        spawn(shell, sc, file, environment, &self.env_policy(), sandbox).map(Proc::Local)
     }
 
     /// A foreground command ended and its call has its result: the daemon
@@ -1734,6 +1808,31 @@ fn resolve_dir(workdir: &Path, dir: &str) -> PathBuf {
 /// what it writes and the secrets it reads. A command template's
 /// `` !`cmd` `` goes through this too (see [`crate::command`]).
 pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String> {
+    authorize_grants(ctx, command, dir).map(|_| ())
+}
+
+/// What a command's checks approved that its sandbox must allow too.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Grants {
+    /// Folders outside the project approved for writing: a working
+    /// directory or `cd` target of a command that may write, and the
+    /// folders of the files it names and writes.
+    pub write: Vec<PathBuf>,
+    /// A command it runs is `sudo` (or `doas`).
+    pub sudo: bool,
+}
+
+impl Grants {
+    fn add(&mut self, p: PathBuf) {
+        if !p.as_os_str().is_empty() && !self.write.contains(&p) {
+            self.write.push(p);
+        }
+    }
+}
+
+/// [`authorize`], returning what it approved (see [`Grants`]).
+pub fn authorize_grants(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<Grants, String> {
+    let mut grants = Grants::default();
     let dir = dir.to_path_buf();
     let analysis = shell_scan::analyze(command, &dir)?;
     let mut dirs = vec![dir.clone()];
@@ -1789,6 +1888,36 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
     for t in &targets {
         ctx.authorize_external(t, false, Access::Write)?;
     }
+    // Approved for writing: the sandbox allows it for this command.
+    if access == Access::Write {
+        for d in &dirs {
+            let t = ctx.resolve(&d.display().to_string());
+            if t.external {
+                grants.add(t.real.clone());
+            }
+        }
+        // A folder it names is granted itself, not the folder it is in:
+        // `rm -r ../other` may change `../other`, not its neighbours.
+        for t in reached.iter().filter(|t| t.external) {
+            if t.real.is_dir() {
+                grants.add(t.real.clone());
+            } else {
+                grants.add(t.real.parent().map(Path::to_path_buf).unwrap_or_default());
+            }
+        }
+    }
+    for t in targets.iter().filter(|t| t.external) {
+        grants.add(t.real.parent().map(Path::to_path_buf).unwrap_or_default());
+    }
+    grants.sudo = analysis
+        .commands
+        .iter()
+        .chain(&analysis.delegated)
+        .any(|(r, _)| {
+            shell_words(r)
+                .first()
+                .is_some_and(|w| crate::sandbox::is_sudo(w))
+        });
     let (mut resources, mut save): (Vec<String>, Vec<String>) =
         analysis.commands.iter().cloned().unzip();
     // Other spellings of what runs (see `Analysis::delegated`) are shown only
@@ -1878,7 +2007,7 @@ pub fn authorize(ctx: &Ctx<'_>, command: &str, dir: &Path) -> Result<(), String>
             access: None,
         })?;
     }
-    Ok(())
+    Ok(grants)
 }
 
 pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
@@ -1899,7 +2028,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
     };
     crate::plugin::active().shell_before(&mut sc);
     let dir = sc.cwd.clone();
-    authorize(ctx, &sc.command, &dir)?;
+    let grants = authorize_grants(ctx, &sc.command, &dir)?;
     // Approval can outlive the directory, so check it just before spawning.
     match std::fs::metadata(&dir) {
         Err(_) => {
@@ -1922,6 +2051,198 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         );
     }
     let jobs = ctx.jobs.clone().unwrap_or_default();
+    let sandboxed = match jobs.sandbox_decision() {
+        crate::sandbox::Decision::Enforce => true,
+        crate::sandbox::Decision::Unsandboxed { .. } => false,
+        crate::sandbox::Decision::Refuse { message } => return Err(message),
+    };
+    if sandboxed && grants.sudo {
+        return Err(format!("Not run: {}", crate::sandbox::SUDO_NOTE));
+    }
+    // A write the sandbox refused can be allowed once, and the command run
+    // again with that one folder added.
+    let mut extra: Vec<PathBuf> = Vec::new();
+    let mut note = String::new();
+    loop {
+        let policy = if sandboxed {
+            let mut all = grants.write.clone();
+            all.extend(extra.iter().cloned());
+            Some(sandbox_policy(ctx, &jobs, &all)?)
+        } else {
+            None
+        };
+        let ran = execute(
+            ctx,
+            &jobs,
+            &sc,
+            command,
+            background,
+            timeout,
+            policy.as_ref(),
+        )
+        .await?;
+        let (text, raw) = match ran {
+            Ran::Returned(mut out) => {
+                out.content = format!("{note}{}", out.content);
+                return Ok(out);
+            }
+            Ran::Failed { text, raw } => (text, raw),
+        };
+        let with = |more: String| Output::bounded(format!("{note}{text}{more}"));
+        let Some(policy) = policy else {
+            return Ok(with(sudo_hint(&raw, false)));
+        };
+        match crate::sandbox::refused_write(&raw, &sc.cwd, &policy) {
+            Some(crate::sandbox::Refusal::Protected(p)) => {
+                return Ok(with(format!(
+                    "\n\nThe sandbox protects {}: commands can't read or write it.",
+                    p.display()
+                )))
+            }
+            Some(crate::sandbox::Refusal::Write { path, folder }) if extra.is_empty() => {
+                match offer_write(ctx, command, &path, &folder) {
+                    Ok(()) => {
+                        note = format!(
+                            "(The sandbox refused a write to {}. Writing to {} was allowed, so the command ran again.)\n\n",
+                            path.display(),
+                            folder.display()
+                        );
+                        extra.push(folder);
+                        continue;
+                    }
+                    Err(why) => {
+                        return Ok(with(format!(
+                            "\n\nThe sandbox refused a write to {}, outside the folders commands may write. {why}",
+                            path.display()
+                        )))
+                    }
+                }
+            }
+            Some(crate::sandbox::Refusal::Write { path, .. }) => {
+                return Ok(with(format!(
+                    "\n\nThe sandbox refused a write to {}, outside the folders commands may write.",
+                    path.display()
+                )))
+            }
+            None => return Ok(with(sudo_hint(&raw, true))),
+        }
+    }
+}
+
+/// How one run of a command went.
+enum Ran {
+    /// Its result as the model sees it: it succeeded, moved to the
+    /// background, or timed out.
+    Returned(Output),
+    /// It exited with a failure: its result text, and the end of its raw
+    /// output to read what the sandbox refused.
+    Failed { text: String, raw: String },
+}
+
+/// The sandbox policy for one of the session's commands, with `grants`
+/// (folders approved for it) added.
+fn sandbox_policy(
+    ctx: &Ctx<'_>,
+    jobs: &Jobs,
+    grants: &[PathBuf],
+) -> Result<crate::sandbox::Policy, String> {
+    let mut rules = ctx.gate.configured().to_vec();
+    rules.extend(ctx.gate.saved());
+    let env = jobs.environment();
+    let settings = jobs.sandbox_settings();
+    let project = ctx.boundary();
+    crate::sandbox::policy(&crate::sandbox::Inputs {
+        project: project.as_deref(),
+        session_id: &ctx.session_id,
+        settings: &settings,
+        grants,
+        rules: &rules,
+        env: env.as_ref(),
+    })
+    .map_err(|e| format!("Unable to prepare the sandbox: {e}"))
+}
+
+/// Ask to write to `folder` (where the sandbox refused `path`) and run
+/// the command again. `Err` says why not: the folder is `/`, the home
+/// folder or above it (too broad to offer), or the answer was no.
+fn offer_write(ctx: &Ctx<'_>, command: &str, path: &Path, folder: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().map(|h| crate::sandbox::canonical(&h));
+    if folder.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(folder)) {
+        return Err(format!(
+            "CodeSmith doesn't offer {} for writing; add a narrower folder to \"sandbox\": {{\"write\": [...]}} in your config if commands need it.",
+            folder.display()
+        ));
+    }
+    let glob = format!("{}/*", folder.display());
+    let req = Request {
+        action: "external_directory".into(),
+        resources: vec![glob],
+        save: vec![super::repository_glob(folder)],
+        title: format!(
+            "$ {command} (the sandbox refused a write to {}; allow writing to {} and run it again)",
+            path.display(),
+            folder.display()
+        ),
+        access: Some(Access::Write),
+    };
+    // Running the command again is asked about even where a rule allows
+    // the folder: a rule allowing everything must not turn a refused write
+    // into a silent second run. Denies, policies and guards still refuse,
+    // and an earlier "always" for the folder still counts; "always" now
+    // saves as it does anywhere.
+    let mut gate = ctx.gate.clone();
+    gate.set_rules(
+        ctx.gate
+            .configured()
+            .iter()
+            .filter(|r| r.effect == Effect::Deny || r.policy.is_some() || r.guard)
+            .cloned()
+            .collect(),
+    );
+    tokio::task::block_in_place(|| gate.assert(&req)).map_err(|e| e.to_string())
+}
+
+/// The note for a failed command whose output shows `sudo` refusing to
+/// run (`sandboxed`: under the sandbox, where it can't).
+fn sudo_hint(raw: &str, sandboxed: bool) -> String {
+    let sudo = raw.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("sudo:")
+            || l.starts_with("doas:")
+            || l.contains("/sudo:")
+            || l.contains("/doas:")
+    });
+    if sudo && sandboxed {
+        format!("\n\n{}", crate::sandbox::SUDO_NOTE)
+    } else {
+        String::new()
+    }
+}
+
+/// The last `max` bytes of `file`, as text.
+fn tail_text(file: &Path, max: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(file) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(max)));
+    let mut buf = Vec::new();
+    let _ = f.take(max).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Run the command once: in the background, or in the foreground until it
+/// ends, moves to the background or times out.
+async fn execute(
+    ctx: &Ctx<'_>,
+    jobs: &Jobs,
+    sc: &crate::plugin::ShellCommand,
+    command: &str,
+    background: bool,
+    timeout: Option<u64>,
+    sandbox: Option<&crate::sandbox::Policy>,
+) -> Result<Ran, String> {
     let id = jobs.next_id();
     let out_dir = crate::paths::session_output_dir(&ctx.session_id);
     super::cleanup_once(&super::cleanup_root(&out_dir));
@@ -1948,7 +2269,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         stop_reason: None,
     };
     let mut child = jobs
-        .spawn_proc(&ctx.shell, &sc, &file, environment.as_ref(), meta)
+        .spawn_proc(&ctx.shell, sc, &file, environment.as_ref(), meta, sandbox)
         .await?;
     let mut job = Job {
         id: id.clone(),
@@ -1970,7 +2291,7 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         // A background timeout of 0 (or none) never stops the command.
         let stop_after = timeout.filter(|t| *t > 0).map(Duration::from_millis);
         jobs.watch(id, child, stop_after, control);
-        return Ok(Output::bounded(background_text(&job, None)));
+        return Ok(Ran::Returned(Output::bounded(background_text(&job, None))));
     }
     let (tx, mut rx) = control;
     // Declared after `child`, so it drops first: an interrupted call stops
@@ -2039,10 +2360,10 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
             // any stop timeout, as OpenCode's `shell.timeout(id, 0)` does.
             child.backgrounded();
             jobs.watch(id, child, None, (tx, rx));
-            return Ok(Output::bounded(background_text(
+            return Ok(Ran::Returned(Output::bounded(background_text(
                 &job,
                 timed_out.then_some(limit),
-            )));
+            ))));
         }
         Wait::Background(_) => {
             child.stopping("timeout");
@@ -2068,10 +2389,20 @@ pub async fn run(ctx: &Ctx<'_>, input: &Value) -> Outcome {
         }
     };
     let (text, truncated) = result_text(&file, &ending, limit, ctx.limits);
+    let failed = matches!(ending, Ending::Exited(c) if c != 0);
+    let raw = if failed {
+        tail_text(&file, 256 * 1024)
+    } else {
+        String::new()
+    };
     if !truncated {
         let _ = std::fs::remove_file(&file);
     }
-    Ok(Output::bounded(text))
+    Ok(if failed {
+        Ran::Failed { text, raw }
+    } else {
+        Ran::Returned(Output::bounded(text))
+    })
 }
 
 /// A command the user ran (OpenCode's `Session.shell`), once it ended.
@@ -2139,7 +2470,7 @@ pub async fn start_user(
         stop_reason: None,
     };
     let mut child = jobs
-        .spawn_proc(shell, &sc, &file, environment.as_ref(), meta)
+        .spawn_proc(shell, &sc, &file, environment.as_ref(), meta, None)
         .await?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     jobs.shared.controls.lock().unwrap().insert(id.clone(), tx);
@@ -2331,17 +2662,60 @@ pub(crate) fn default_stop_signals() {
 
 /// Start the command under `shell -c` with stdout and stderr appended to
 /// `file`, in `environment` when the session has one (else this process's).
+/// Where a sandboxed command's temporary files go: `TMPDIR`, and zsh's
+/// here-documents (`TMPPREFIX`, else `/tmp/zsh`), in the session's own temp
+/// folder.
+fn temp_env(p: &crate::sandbox::Policy) -> Vec<(String, String)> {
+    vec![
+        ("TMPDIR".into(), format!("{}/", p.tmpdir.display())),
+        (
+            "TMPPREFIX".into(),
+            p.tmpdir.join("zsh").display().to_string(),
+        ),
+    ]
+}
+
+/// The program and arguments that run `program args…`: as they are, or
+/// on macOS under `sandbox-exec` with the command's profile (see
+/// [`crate::sandbox::macos`]). On Linux the sandbox is applied in the
+/// child instead ([`crate::sandbox::linux`]), so they stay as they are.
+fn launch(
+    sandbox: Option<&crate::sandbox::Policy>,
+    program: &Path,
+    args: Vec<String>,
+) -> Result<(String, Vec<String>), String> {
+    match sandbox {
+        None => Ok((program.display().to_string(), args)),
+        #[cfg(target_os = "macos")]
+        Some(p) => crate::sandbox::macos::wrap(p, program, &args)
+            .map_err(|e| format!("Unable to prepare the sandbox: {e}")),
+        #[cfg(target_os = "linux")]
+        Some(_) => Ok((program.display().to_string(), args)),
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        Some(_) => Err("CodeSmith has no sandbox on this system".into()),
+    }
+}
+
 fn spawn(
     shell: &str,
     sc: &crate::plugin::ShellCommand,
     file: &Path,
     environment: Option<&BTreeMap<String, String>>,
     policy: &crate::child_env::Policy,
+    sandbox: Option<&crate::sandbox::Policy>,
 ) -> Result<tokio::process::Child, String> {
+    let mut args: Vec<String> = shell_args(shell).iter().map(|a| a.to_string()).collect();
+    args.push(sc.command.clone());
+    let (prog, args) = launch(sandbox, &program(shell), args)?;
+    #[cfg(target_os = "linux")]
+    let prepared = sandbox
+        .map(crate::sandbox::linux::Prepared::new)
+        .transpose()
+        .map_err(|e| format!("Unable to prepare the sandbox: {e}"))?;
     let out = std::fs::File::create(file)
         .map_err(|e| format!("Unable to create {}: {e}", file.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut cmd = tokio::process::Command::new(program(shell));
+    let mut cmd = tokio::process::Command::new(prog);
     // Mark the command as run by an agent, as OpenCode does (AGENT,
     // OPENCODE, AI_AGENT), keeping an outer AI_AGENT marker: the session
     // environment's (or this process's), else a plugin's.
@@ -2377,8 +2751,7 @@ fn spawn(
             cmd.env(k, v);
         }
     }
-    cmd.args(shell_args(shell))
-        .arg(&sc.command)
+    cmd.args(&args)
         .current_dir(&sc.cwd)
         .envs(&sc.env)
         // `cd` must resolve as the scan resolved it (see `shell_scan`).
@@ -2402,6 +2775,19 @@ fn spawn(
     // SAFETY: `own_session` only calls setsid, which is async-signal-safe.
     unsafe {
         cmd.pre_exec(own_session);
+    }
+    if let Some(p) = sandbox {
+        for (k, v) in temp_env(p) {
+            cmd.env(k, v);
+        }
+    }
+    // After `own_session`: the sandbox is the last thing before `exec`.
+    #[cfg(target_os = "linux")]
+    if let Some(prepared) = prepared {
+        // SAFETY: `apply` only makes system calls (see `Prepared`).
+        unsafe {
+            cmd.pre_exec(move || prepared.apply());
+        }
     }
     cmd.spawn()
         .map_err(|e| format!("Unable to run {shell}: {e}"))

@@ -843,6 +843,8 @@ impl Session {
                 policy.known.extend(own.known);
                 policy.pass = own.pass;
                 jobs.set_env_policy(Some(policy));
+                // The session's own config's sandbox settings.
+                jobs.set_sandbox(Some(config.sandbox.clone()));
                 jobs
             },
             questioner: opts.questioner,
@@ -2222,6 +2224,10 @@ impl Session {
         // What changed since the last turn comes before the new prompt; a
         // baseline that cannot be made yet leaves the prompt unsent.
         self.mcp.refresh().await;
+        // Once per session: commands run without the sandbox.
+        if let Some(n) = self.jobs.take_sandbox_notice() {
+            sink.notice(&n);
+        }
         if self.codemode_on() && !self.loaded.config.openapi.is_empty() {
             let config = &self.loaded.config.openapi;
             for n in crate::codemode::openapi::load(config, &self.root).await {

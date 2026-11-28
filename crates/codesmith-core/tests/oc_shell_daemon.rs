@@ -34,6 +34,7 @@ fn create() -> Request {
         group_id: "g".into(),
         output_path: "/tmp/x".into(),
         metadata: json!({}),
+        sandbox: None,
     }
 }
 
@@ -499,6 +500,7 @@ fn pipe(cwd: &Path, out: &Path, program: &str, args: &[&str]) -> Request {
         group_id: "proj_test".into(),
         output_path: out.display().to_string(),
         metadata: json!({"id": "sh_test", "command": "sleep"}),
+        sandbox: None,
     }
 }
 
@@ -1059,8 +1061,17 @@ async fn oc_runs_a_command_with_the_servers_environment_an_absolute_cwd_and_its_
         .await;
     assert!(!err, "{out}");
     let [proc_] = processes(&d.client).try_into().unwrap();
+    // On macOS the shell runs under `sandbox-exec` and its profile.
+    let shell = proc_
+        .command
+        .iter()
+        .position(|a| a == "/bin/sh")
+        .unwrap_or(0);
+    if shell > 0 {
+        assert_eq!(proc_.command[0], "/usr/bin/sandbox-exec");
+    }
     assert_eq!(
-        proc_.command,
+        proc_.command[shell..],
         vec!["/bin/sh".to_string(), "-c".into(), command.into()]
     );
     assert_eq!(proc_.cwd, p.root().join("sub").display().to_string());
@@ -1725,4 +1736,90 @@ async fn a_daemon_stop_still_kills_the_whole_group() {
             .status();
     }
     assert!(survivors.is_empty(), "survived the stop: {survivors:?}");
+}
+
+/// A command the daemon runs is sandboxed as a local one is: on macOS it
+/// runs under `sandbox-exec`, on Linux the daemon applies the policy in
+/// the child. It writes in the project and not outside, foreground and
+/// background. Where the machine can't sandbox, it is refused before it
+/// reaches the daemon.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_command_is_sandboxed() {
+    use codesmith_core::sandbox::{support, Support};
+    let d = real();
+    let p = Project::new();
+    let jobs = p.jobs(&d.client);
+    let out = tempfile::tempdir().unwrap();
+    let out = out.path().canonicalize().unwrap();
+    std::fs::write(p.root().join("p"), out.display().to_string()).unwrap();
+    let command = r#"echo in > inside; echo pwn > "$(cat p)/f"; true"#;
+    let (text, err) = p.shell(&jobs, json!({"command": command})).await;
+    if support() != Support::Yes {
+        assert!(err, "{text}");
+        assert!(text.contains(r#""unsupported": "run""#), "{text}");
+        return;
+    }
+    assert!(!err, "{text}");
+    assert!(p.root().join("inside").exists(), "{text}");
+    assert!(!out.join("f").exists(), "{text}");
+    let (text, err) = p
+        .shell(
+            &jobs,
+            json!({"command": r#"echo pwn > "$(cat p)/g"; echo bg > bg"#, "background": true}),
+        )
+        .await;
+    assert!(!err, "{text}");
+    settle(&jobs, 20).await;
+    assert!(p.root().join("bg").exists());
+    assert!(!out.join("g").exists());
+    let _ = jobs.take_finished();
+}
+
+/// A daemon that doesn't register the sandbox feature (one from before
+/// it) would run a command without the sandbox on Linux, where the daemon
+/// applies it: the command runs here, sandboxed, instead. On macOS the
+/// daemon runs `sandbox-exec`, which any daemon can, so it is still used.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_daemon_without_the_sandbox_feature_is_passed_over_on_linux() {
+    use codesmith_core::sandbox::{support, Support};
+    if support() != Support::Yes {
+        return;
+    }
+    let (_t, root, dir) = runtime();
+    let socket = dir.join("d.sock");
+    let creates = Arc::new(AtomicUsize::new(0));
+    let _fake = {
+        let creates = creates.clone();
+        listen(&socket, move |_, req, _| match op(req) {
+            "ping" => Some(pong()),
+            "create_pipe" => {
+                creates.fetch_add(1, Ordering::SeqCst);
+                Some(json!({"type": "error", "message": "old daemon"}))
+            }
+            _ => Some(json!({"type": "ok"})),
+        })
+    };
+    write_raw(
+        &dir,
+        &Registration {
+            instance_id: "test".into(),
+            pid: std::process::id(),
+            protocol: codesmith_core::daemon::protocol::PROTOCOL,
+            socket: socket.display().to_string(),
+            token: "test".into(),
+            features: vec![],
+        },
+    );
+    let client = Arc::new(Client::new(&root, "daemon", None, None));
+    let p = Project::new();
+    let jobs = p.jobs(&client);
+    let (out, err) = p.shell(&jobs, json!({"command": "printf here"})).await;
+    if cfg!(target_os = "linux") {
+        assert!(!err, "{out}");
+        assert_eq!(out, "here");
+        assert_eq!(creates.load(Ordering::SeqCst), 0);
+    } else {
+        assert!(err, "{out}");
+        assert_eq!(creates.load(Ordering::SeqCst), 1);
+    }
 }
