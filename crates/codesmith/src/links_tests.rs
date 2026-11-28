@@ -39,6 +39,8 @@ const NOT_PAGES: &[&str] = &[
     "https://auth.openai.com",
     "https://chatgpt.com/backend-api",
     "https://models.dev",
+    // Remote access's relays: iroh endpoints, not pages.
+    "https://relay-us.codesmith.skepticdogsoftware.com",
     "https://mcp.",
     "https://mcp-eu.",
     "https://docs.mcp.cloudflare.com/mcp",

@@ -10,6 +10,10 @@ publish = false
 name = "codesmith-example"
 path = "src/main.rs"
 
+[features]
+default = ["remote"]
+remote = ["codesmith/remote"]
+
 [dependencies]
-codesmith = { path = "../../crates/codesmith" }
+codesmith = { path = "../../crates/codesmith", default-features = false }
 serde_json.workspace = true

@@ -40,9 +40,12 @@ pub enum RemoteCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Revoke a device (its id, a prefix of it, or its name): it's no
-    /// longer paired and its connections close.
-    Revoke { device: String },
+    /// Revoke a device: it's no longer paired and its connections close.
+    Revoke {
+        /// The device: its id, a prefix of it (4 characters or more), or
+        /// its name.
+        device: String,
+    },
     /// Start the gateway, turning remote access on.
     Start,
     /// Stop the gateway.

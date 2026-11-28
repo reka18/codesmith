@@ -433,9 +433,7 @@ fn link_for(endpoint: &Endpoint, st: &State, code: &str) -> (Link, Option<String
         .clone()
         .or_else(|| addr.relay_urls().next().map(|u| u.to_string()))
         .or_else(|| st.opts.relay.urls().into_iter().next());
-    let mut addrs: Vec<String> = addr.ip_addrs().map(|a| a.to_string()).collect();
-    addrs.sort();
-    addrs.dedup();
+    let addrs = link_addrs(addr.ip_addrs().copied().collect());
     let l = Link {
         node_id: st.node_id.clone(),
         relay: relay.clone(),
@@ -445,6 +443,29 @@ fn link_for(endpoint: &Endpoint, st: &State, code: &str) -> (Link, Option<String
         code: code.to_string(),
     };
     (l, relay, connected.is_some())
+}
+
+/// The most direct addresses a link carries, so its QR code stays small.
+pub const LINK_ADDRS: usize = 8;
+
+/// The direct addresses for a link: IPv4 before IPv6, a tailnet address
+/// (`100.64.0.0/10`) first, no repeats, at most [`LINK_ADDRS`].
+pub fn link_addrs(mut addrs: Vec<std::net::SocketAddr>) -> Vec<String> {
+    let rank = |a: &std::net::SocketAddr| match a.ip() {
+        std::net::IpAddr::V4(ip) => {
+            let o = ip.octets();
+            if o[0] == 100 && (64..128).contains(&o[1]) {
+                0
+            } else {
+                1
+            }
+        }
+        std::net::IpAddr::V6(_) => 2,
+    };
+    addrs.sort_by_key(|a| (rank(a), *a));
+    addrs.dedup();
+    addrs.truncate(LINK_ADDRS);
+    addrs.into_iter().map(|a| a.to_string()).collect()
 }
 
 /// Give the dialog `dialog` a new code, if it's still the one open.
@@ -1166,4 +1187,67 @@ fn route(state: &Shared, device: &str, req: HttpRequest) -> Response {
         return Response::error(404, "not_found", "no such route");
     }
     Response::error(404, "not_found", "no such route")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_addresses_put_the_tailnet_first_and_are_capped() {
+        let a = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        let mut many = vec![
+            a("[2605::1]:5"),
+            a("192.168.1.2:5"),
+            a("100.72.137.44:5"),
+            a("192.168.1.2:5"),
+            a("10.0.0.1:5"),
+        ];
+        for i in 0..20 {
+            many.push(a(&format!("[fd00::{}]:5", i + 1)));
+        }
+        let out = link_addrs(many);
+        assert_eq!(out.len(), LINK_ADDRS);
+        assert_eq!(
+            &out[..3],
+            ["100.72.137.44:5", "10.0.0.1:5", "192.168.1.2:5"]
+        );
+        assert!(out[3].starts_with('['));
+    }
+
+    #[test]
+    fn only_a_p256_spki_is_an_unlock_key() {
+        use base64::Engine;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let mut good = P256_SPKI_PREFIX.to_vec();
+        good.extend([1u8; 64]);
+        assert!(valid_spki(&b64(&good)));
+        assert!(!valid_spki(&b64(&good[..90])), "short");
+        let mut other_curve = good.clone();
+        other_curve[20] ^= 1;
+        assert!(!valid_spki(&b64(&other_curve)));
+        assert!(!valid_spki(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(&good[..])
+                .replace('A', "-")
+        ));
+        assert!(!valid_spki("not base64"));
+    }
+
+    #[test]
+    fn a_device_key_is_locked_out_after_more_than_five_bad_claims() {
+        // The counting itself, without a network: see remote_tests for
+        // the claims end to end.
+        let limits = Limits::default();
+        assert_eq!(limits.bad_claims, 5);
+        assert_eq!(limits.window, Duration::from_secs(60));
+        assert_eq!(limits.lockout, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn names_are_cleaned_and_cut() {
+        assert_eq!(clean("  \u{1b}[1mRay\u{202e}  ", 64), "[1mRay");
+        assert_eq!(clean(&"é".repeat(100), 64).chars().count(), 64);
+        assert_eq!(clean("\u{7}\u{7}", 64), "");
+    }
 }
