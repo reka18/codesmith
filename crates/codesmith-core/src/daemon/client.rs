@@ -370,6 +370,12 @@ impl Client {
         i.owner = None;
     }
 
+    /// Whether the daemon (started when none runs) registered `feature`.
+    pub fn has_feature(&self, feature: &str) -> Result<bool, DaemonError> {
+        self.connect_daemon(true)
+            .map(|r| r.features.iter().any(|f| f == feature))
+    }
+
     /// Send `req`; with `start`, start the daemon when none runs. A
     /// request that failed before it was sent is retried once (after
     /// rediscovering the daemon); one whose reply was lost is not.

@@ -300,7 +300,7 @@ async fn serve(opts: Options) -> io::Result<()> {
         protocol: PROTOCOL,
         socket: socket.display().to_string(),
         token: crate::paths::random_token(32),
-        features: vec![],
+        features: vec![protocol::FEATURE_SANDBOX.into()],
     };
     fs::write_registration(&runtime, &reg)?;
     let (stop, mut stop_rx) = watch::channel(false);
@@ -714,6 +714,7 @@ async fn handle(shared: &Arc<Shared>, conn: u64, owner: bool, req: Request) -> R
             group_id,
             output_path,
             metadata,
+            sandbox,
         } => {
             let shared = shared.clone();
             let spec = PipeSpec {
@@ -724,6 +725,7 @@ async fn handle(shared: &Arc<Shared>, conn: u64, owner: bool, req: Request) -> R
                 group_id,
                 output_path,
                 metadata,
+                sandbox,
             };
             tokio::task::spawn_blocking(move || create_pipe(&shared, spec))
                 .await
@@ -885,6 +887,7 @@ struct PipeSpec {
     group_id: String,
     output_path: String,
     metadata: Value,
+    sandbox: Option<crate::sandbox::Policy>,
 }
 
 fn create_pipe(shared: &Arc<Shared>, spec: PipeSpec) -> Response {
@@ -934,6 +937,21 @@ fn create_pipe(shared: &Arc<Shared>, spec: PipeSpec) -> Response {
             Ok(w) => w,
             Err(e) => return Response::error(e.to_string()),
         };
+        // On Linux, the sandbox is made ready here and applied in the child.
+        #[cfg(target_os = "linux")]
+        let prepared = match spec
+            .sandbox
+            .as_ref()
+            .map(crate::sandbox::linux::Prepared::new)
+        {
+            Some(Err(e)) => return Response::error(format!("cannot prepare the sandbox: {e}")),
+            Some(Ok(p)) => Some(p),
+            None => None,
+        };
+        #[cfg(not(target_os = "linux"))]
+        if spec.sandbox.is_some() {
+            return Response::error("no sandbox to apply on this system");
+        }
         let mut cmd = std::process::Command::new(&spec.program);
         cmd.args(&spec.args)
             .env_clear()
@@ -949,6 +967,13 @@ fn create_pipe(shared: &Arc<Shared>, spec: PipeSpec) -> Response {
         // async-signal-safe.
         unsafe {
             cmd.pre_exec(crate::tool::shell::own_session);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(prepared) = prepared {
+            // SAFETY: `apply` only makes system calls.
+            unsafe {
+                cmd.pre_exec(move || prepared.apply());
+            }
         }
         cmd.spawn()
     };

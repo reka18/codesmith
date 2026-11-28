@@ -75,6 +75,7 @@ mod remote;
 mod repo_config;
 mod run_bridge;
 mod run_cli;
+mod sandbox;
 mod serve;
 mod swap;
 mod tui;

@@ -1,5 +1,5 @@
 {
-  "about": "A copy of the CodeSmith Mobile app's transport/fixtures/pairing.json: pairing-link vectors and check codes. The check codes are the 12-digit ones of remote-requirements.md P11. Keep it in step with the app's file.",
+  "about": "Pairing-link vectors (SPEC.md §8.2) and check codes (§8.3). transport/tests/fixtures.rs checks them against the Rust parser; the iOS and Android tests check them through the bindings. Keep CodeSmith's link builder in step.",
   "valid": [
     {
       "url": "codesmith://pair?v=1&n=aa980150be84faa3788d7d170f02984f084bcaeb6871fe1fe7805ff2505a375c&m=mini&c=pn00cOpwBxfLmPR62H1EaQ",
