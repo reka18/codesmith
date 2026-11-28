@@ -472,9 +472,13 @@ async fn a_paired_device_connects_and_revoking_it_closes_the_connection() {
     let p = Phone::new().await.unwrap();
     paired(&gw, &p, "ses_1").await;
     let c = gw.dial(&p, REMOTE_ALPN).await;
-    // The routes come next phase: a request answers 404 in the /v1 shape,
-    // and one with an Origin header is refused.
+    // Its routes answer (a session it has no grant for is 404 in the /v1
+    // shape), and a request with an Origin header is refused.
     let r = phone::request(&c, "GET", "/v1/sessions", &[], b"")
+        .await
+        .unwrap();
+    assert_eq!(r.status, 200, "{:?}", r.body);
+    let r = phone::request(&c, "GET", "/v1/sessions/ses_other", &[], b"")
         .await
         .unwrap();
     assert_eq!(r.status, 404);

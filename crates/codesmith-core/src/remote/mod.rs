@@ -30,6 +30,7 @@
 //! remote files are guarded from the agent ([`crate::permission`]).
 
 pub mod settings;
+pub mod tap;
 
 #[cfg(feature = "remote")]
 pub mod client;
@@ -43,12 +44,14 @@ pub mod http;
 pub mod key;
 #[cfg(feature = "remote")]
 pub mod link;
-#[cfg(feature = "remote")]
 pub mod mirror;
 #[cfg(feature = "remote")]
-pub mod phone;
+pub mod owners;
 #[cfg(feature = "remote")]
+pub mod phone;
 pub mod rebuild;
+#[cfg(feature = "remote")]
+pub mod routes;
 #[cfg(feature = "remote")]
 pub mod store;
 
@@ -56,6 +59,8 @@ pub mod store;
 mod fixture_tests;
 #[cfg(all(test, feature = "remote"))]
 mod remote_tests;
+#[cfg(all(test, unix, feature = "remote"))]
+mod watch_tests;
 
 use std::path::PathBuf;
 

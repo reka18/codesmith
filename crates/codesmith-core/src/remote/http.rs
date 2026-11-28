@@ -16,12 +16,24 @@ pub struct Request {
     pub method: String,
     /// The path, without the query.
     pub path: String,
+    /// The query, without the `?` (empty when there's none).
+    pub query: String,
     /// Header names lower-cased.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
 
 impl Request {
+    /// A query parameter's value (no percent-decoding: the parameters
+    /// the routes take are numbers).
+    pub fn param(&self, name: &str) -> Option<&str> {
+        self.query
+            .split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v)
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -76,7 +88,10 @@ pub async fn read_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<Request, Re
     }
     let method = req.method.unwrap_or("").to_string();
     let target = req.path.unwrap_or("");
-    let path = target.split('?').next().unwrap_or("").to_string();
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p.to_string(), q.to_string()),
+        None => (target.to_string(), String::new()),
+    };
     if !path.starts_with('/') {
         return Err(ReadError::Bad("a request target must be a path"));
     }
@@ -88,6 +103,7 @@ pub async fn read_request<R: AsyncRead + Unpin>(r: &mut R) -> Result<Request, Re
     let request = Request {
         method,
         path,
+        query,
         headers: out_headers,
         body: vec![],
     };
@@ -180,6 +196,7 @@ impl From<ReadError> for Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         403 => "Forbidden",
@@ -262,6 +279,9 @@ mod tests {
         let r = read(&b).await.unwrap();
         assert_eq!(r.method, "POST");
         assert_eq!(r.path, "/v1/pair/claim");
+        assert_eq!(r.query, "x=1");
+        assert_eq!(r.param("x"), Some("1"));
+        assert_eq!(r.param("y"), None);
         assert_eq!(r.body, br#"{"a":1}"#);
         assert_eq!(r.header("host"), Some("machine"));
     }

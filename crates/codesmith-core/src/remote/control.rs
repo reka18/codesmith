@@ -7,8 +7,9 @@
 //! code (again each time it's replaced), a `confirm` for each claim, and
 //! answers with [`Answer`] lines. Closing it ends the pairing.
 //!
-//! The owners' session registrations (I9) will be further requests on this
-//! socket.
+//! An `owner` connection (I9) stays open too: the TUI, `codesmith serve`
+//! or ACP registers its sessions and sends their events on it, and the
+//! gateway asks it for snapshots and resumes.
 
 use super::store::Scope;
 use crate::daemon::fs;
@@ -59,6 +60,11 @@ pub enum Request {
     Revoke { device: String },
     /// Open the pairing dialog.
     Pair(PairRequest),
+    /// An owning process (the TUI, `codesmith serve`, ACP) registering
+    /// the sessions it holds (I9). After the gateway's `ok`, the
+    /// connection carries the owner protocol's JSON lines both ways (see
+    /// [`super::tap`] and the gateway).
+    Owner { kind: String, pid: u32 },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,19 +159,35 @@ pub struct Status {
     pub connections: usize,
     pub pairing: bool,
     pub started: i64,
+    /// Owner processes (TUI, serve, ACP) registered.
+    #[serde(default)]
+    pub owners: usize,
 }
+
+/// The longest line an owner sends: an event is at most 1 MiB, but a
+/// resume's replay (up to 12 MiB of events) or a large turn's partial
+/// transcript is one line.
+pub const MAX_OWNER_LINE: usize = 64 << 20;
 
 /// Read one line of at most [`MAX_LINE`] bytes; `None` at the end.
 pub async fn read_line<R: AsyncBufRead + Unpin>(r: &mut R) -> io::Result<Option<String>> {
+    read_line_max(r, MAX_LINE).await
+}
+
+/// Read one line of at most `max` bytes; `None` at the end.
+pub async fn read_line_max<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> io::Result<Option<String>> {
     let mut buf = Vec::new();
     let n = (&mut *r)
-        .take(MAX_LINE as u64 + 1)
+        .take(max as u64 + 1)
         .read_until(b'\n', &mut buf)
         .await?;
     if n == 0 {
         return Ok(None);
     }
-    if buf.len() > MAX_LINE {
+    if buf.len() > max {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "line too long"));
     }
     String::from_utf8(buf)

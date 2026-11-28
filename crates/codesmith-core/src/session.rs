@@ -1455,6 +1455,16 @@ impl Session {
         &self.seqs
     }
 
+    /// The newest record this session has in its store (0 with none):
+    /// its stored history up to here is what a remote snapshot shows.
+    pub fn stored_seq(&self) -> i64 {
+        self.store
+            .as_ref()
+            .filter(|_| self.stored)
+            .and_then(|st| st.last_seq(&self.id).ok())
+            .unwrap_or(0)
+    }
+
     /// Give the session another id (a host that names its sessions itself
     /// before the first record is written). The rule letting it read its own
     /// saved tool output moves to the new id's directory: assigning

@@ -20,15 +20,24 @@
 //! # Connections
 //!
 //! On `codesmith/remote/1` only a paired, unrevoked device is accepted;
-//! revoking closes its connections at once. The routes a device may use
-//! come in the next phase ([`route`] is the seam); until then every
-//! request answers 404.
+//! revoking closes its connections at once. Its routes are in
+//! [`super::routes`]: the machine, the sessions it has grants for, their
+//! snapshots and messages, and their event streams.
+//!
+//! # Owners
+//!
+//! The TUI, `codesmith serve` and ACP register the sessions they hold over
+//! the control socket (I9), authenticated as every control connection is:
+//! the registration's token, and the peer's uid. Their events come in on
+//! it, and the gateway fans them out to the devices granted each session
+//! ([`super::owners`]).
 
 use super::control::{
     self, Answer, Asking, Frame, Hello, PairRequest, Registration, Request, Status,
 };
 use super::http::{self, Request as HttpRequest, Response};
 use super::link::{self, Link};
+use super::routes::Reply;
 use super::settings::Relay;
 use super::store::{self, Store};
 use super::{close, PAIR_ALPN, REMOTE_ALPN};
@@ -90,6 +99,14 @@ pub struct Options {
     /// The machine's name, as the link shows it.
     pub machine: String,
     pub limits: Limits,
+    /// The session store, read for snapshots and closed sessions (none:
+    /// no stored sessions are shown).
+    pub sessions_db: Option<PathBuf>,
+    /// How often an event stream sends `: ping` (S8).
+    pub ping: Duration,
+    /// The uid a control connection's peer must have (this user's;
+    /// another only in tests).
+    pub uid: u32,
 }
 
 /// Overrides of [`Options`] for tests, in milliseconds.
@@ -122,6 +139,9 @@ impl Options {
             version: env!("CARGO_PKG_VERSION").to_string(),
             machine: machine_name(),
             limits: Limits::default(),
+            sessions_db: Some(crate::store::default_path()),
+            ping: Duration::from_secs(15),
+            uid: fs::euid(),
         }
     }
 }
@@ -270,6 +290,8 @@ struct State {
     next: u64,
     /// When there was last something to do, for the idle exit.
     busy_at: Instant,
+    /// The owners and the devices following their sessions.
+    owners: Arc<super::owners::Owners>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -331,6 +353,7 @@ pub async fn serve(opts: Options, ready: Option<oneshot::Sender<Ready>>) -> io::
         open: 0,
         next: 1,
         busy_at: Instant::now(),
+        owners: Default::default(),
     }));
     let _ = state
         .lock()
@@ -396,6 +419,7 @@ pub async fn serve(opts: Options, ready: Option<oneshot::Sender<Ready>>) -> io::
         for c in st.conns.values().flatten() {
             c.close(close::STOPPING.into(), b"the gateway is stopping");
         }
+        st.owners.close();
         let _ = st.store.audit(None, "gateway_stopped", None, None);
     }
     let _ = tokio::time::timeout(Duration::from_secs(2), endpoint.close()).await;
@@ -497,7 +521,8 @@ async fn control_conn(
     token: String,
     stop: watch::Sender<bool>,
 ) -> io::Result<()> {
-    if fs::peer_uid(stream.as_raw_fd())? != fs::euid() {
+    let uid = state.lock().unwrap().opts.uid;
+    if fs::peer_uid(stream.as_raw_fd())? != uid {
         return Ok(());
     }
     let (r, mut w) = stream.into_split();
@@ -555,6 +580,10 @@ async fn control_conn(
             Err(e) => Frame::Error { message: e },
         },
         Request::Pair(req) => return dialog(r, w, state, endpoint, req).await,
+        Request::Owner { kind, .. } => {
+            let owners = state.lock().unwrap().owners.clone();
+            return owner_conn(r, w, owners, kind).await;
+        }
     };
     w.write_all(control::line(&reply).as_bytes()).await
 }
@@ -583,7 +612,41 @@ fn status(state: &Shared, endpoint: &Endpoint) -> Status {
         connections: st.open,
         pairing: st.pairing.is_some(),
         started: st.started,
+        owners: st.owners.count(),
     }
+}
+
+/// An owner's connection (I9): its lines in, the gateway's out, until it
+/// closes; its sessions are closed then.
+async fn owner_conn(
+    mut r: BufReader<tokio::net::unix::OwnedReadHalf>,
+    mut w: tokio::net::unix::OwnedWriteHalf,
+    owners: Arc<super::owners::Owners>,
+    kind: String,
+) -> io::Result<()> {
+    w.write_all(control::line(&Frame::Ok).as_bytes()).await?;
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let id = owners.connect(&kind, tx);
+    let writer = tokio::spawn(async move {
+        while let Some(l) = rx.recv().await {
+            if w.write_all(l.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        let l = tokio::select! {
+            l = control::read_line_max(&mut r, control::MAX_OWNER_LINE) => l,
+            _ = owners.closed() => break,
+        };
+        let Ok(Some(l)) = l else { break };
+        if let Ok(v) = serde_json::from_str::<Value>(&l) {
+            owners.handle(id, &v);
+        }
+    }
+    owners.disconnect(id);
+    writer.abort();
+    Ok(())
 }
 
 /// Revoke the device `query` names and close its connections.
@@ -1140,16 +1203,28 @@ async fn remote_conn(state: &Shared, conn: Connection) {
     while let Ok((mut send, mut recv)) = conn.accept_bi().await {
         let (state, device) = (state.clone(), device.clone());
         tokio::spawn(async move {
-            let resp =
+            let reply =
                 match tokio::time::timeout(Duration::from_secs(30), http::read_request(&mut recv))
                     .await
                 {
-                    Err(_) => Response::error(400, "bad_request", "the request took too long"),
+                    Err(_) => Reply::Json(Response::error(
+                        400,
+                        "bad_request",
+                        "the request took too long",
+                    )),
                     Ok(Err(http::ReadError::Closed)) => return,
-                    Ok(Err(e)) => e.into(),
-                    Ok(Ok(req)) => route(&state, &device, req),
+                    Ok(Err(e)) => Reply::Json(e.into()),
+                    Ok(Ok(req)) => route(&state, &device, req).await,
                 };
-            let _ = http::write_response(&mut send, &resp).await;
+            match reply {
+                Reply::Json(resp) => {
+                    let _ = http::write_response(&mut send, &resp).await;
+                }
+                Reply::Stream(rx) => {
+                    let ping = state.lock().unwrap().opts.ping;
+                    stream(&mut send, rx, ping).await;
+                }
+            }
             let _ = send.finish();
             let _ = send.stopped().await;
         });
@@ -1165,28 +1240,66 @@ async fn remote_conn(state: &Shared, conn: Connection) {
     }
 }
 
-/// A paired device's request. The phase A routes (`/v1/machine`,
-/// `/v1/sessions`, events) come here next; each checks the device's grant
-/// and answers 404 for a session it has none for.
-fn route(state: &Shared, device: &str, req: HttpRequest) -> Response {
+/// A paired device's request: see [`super::routes`].
+async fn route(state: &Shared, device: &str, req: HttpRequest) -> Reply {
     if req.header("origin").is_some() {
-        return Response::error(
+        return Reply::Json(Response::error(
             400,
             "bad_request",
             "requests with an Origin header are refused",
-        );
+        ));
     }
-    // Revoked while the connection was opening: nothing more.
-    if !state
-        .lock()
-        .unwrap()
-        .store
-        .is_paired(device)
-        .unwrap_or(false)
-    {
-        return Response::error(404, "not_found", "no such route");
+    let ctx = {
+        let st = state.lock().unwrap();
+        // Revoked while the connection was opening: nothing more.
+        let Some(d) = st
+            .store
+            .device(device)
+            .ok()
+            .flatten()
+            .filter(|d| d.revoked.is_none())
+        else {
+            return Reply::Json(Response::error(404, "not_found", "no such route"));
+        };
+        Arc::new(super::routes::Ctx {
+            node_id: st.node_id.clone(),
+            machine: st.opts.machine.clone(),
+            version: st.opts.version.clone(),
+            grants: d.grants,
+            owners: st.owners.clone(),
+            sessions_db: st.opts.sessions_db.clone(),
+        })
+    };
+    super::routes::route(ctx, &req).await
+}
+
+/// Write an event stream: its frames as they come, and `: ping` while
+/// there are none, until it ends or the device goes.
+async fn stream(
+    send: &mut iroh::endpoint::SendStream,
+    mut rx: mpsc::Receiver<super::owners::Item>,
+    ping: Duration,
+) {
+    use super::owners::Item;
+    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-store\r\nconnection: close\r\n\r\n";
+    if send.write_all(head.as_bytes()).await.is_err() {
+        return;
     }
-    Response::error(404, "not_found", "no such route")
+    let mut tick = tokio::time::interval_at(Instant::now() + ping, ping);
+    loop {
+        let bytes: std::borrow::Cow<'_, [u8]> = tokio::select! {
+            item = rx.recv() => match item {
+                Some(Item::Frame(f)) => std::borrow::Cow::Owned(f.as_bytes().to_vec()),
+                Some(Item::End) | None => return,
+            },
+            _ = tick.tick() => std::borrow::Cow::Borrowed(b": ping\n\n"),
+            // The device closed its side.
+            _ = send.stopped() => return,
+        };
+        if send.write_all(&bytes).await.is_err() {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]

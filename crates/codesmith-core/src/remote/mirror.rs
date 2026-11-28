@@ -766,8 +766,24 @@ impl Mirror {
     /// S20, S21, S25). Read under the lock that numbers events: the live
     /// stream goes on from the last event here.
     pub fn subscribe(&self, cursor: Option<(&str, u64)>) -> Replay {
+        self.subscribe_then(cursor, |r| r.clone())
+    }
+
+    /// [`Mirror::subscribe`], with `then` run on the replay before the lock
+    /// is let go: the owner queues it for the gateway there, so no event
+    /// numbered after it can reach the gateway before it.
+    pub fn subscribe_then<T>(
+        &self,
+        cursor: Option<(&str, u64)>,
+        then: impl FnOnce(&Replay) -> T,
+    ) -> T {
         let mut st = self.state.lock().unwrap();
         self.flush_locked(&mut st);
+        let r = self.replay_locked(&st, cursor);
+        then(&r)
+    }
+
+    fn replay_locked(&self, st: &State, cursor: Option<(&str, u64)>) -> Replay {
         let resend = |after: u64| -> Vec<Value> {
             st.open
                 .values()
