@@ -1,0 +1,936 @@
+{
+  "about": "Resuming a session's event stream (CodeSmith remote-requirements S4, S5, S17-S22; SPEC.md §9.4). Owned by CodeSmithMobile; CodeSmith's S22 tests run a pinned copy, and a change goes through both teams. observe: the cursor's decision for one event: {cursor ({epoch, seq} or null), id (the SSE id or null), data (the event JSON), expect: {verdict: apply|skip|reset, cursor (after apply: {epoch, seq}, or null for an unnumbered event), reason (reset)}}. Rules: a reset event resets with its reason (\"unknown\" if missing or not a string; clients treat any reason as reload); the SSE id `<epoch>:<seq>` is the position, the envelope's epoch and seq the fallback; no position means apply without moving the cursor (a machine that doesn't number events); another epoch than the cursor's resets with epoch; seq at or before the cursor's is skipped; a merged event (merged_from) starting at or before the cursor resets with merged. snapshots: the plan a GET /v1/sessions/{id} snapshot gives: cursor (turn.partial_seq if present, else events_seq, with epoch; null without a non-empty string epoch and an unsigned integer seq, for a machine that doesn't number events), replayingTurn (the turn key `epoch:turn.id` when there's a cursor and no partial: the subscription replays that running turn from its start, so its question and permission cards come back with the replay), and partial (whether to append turn.partial, in serve's message format, to messages; needs a cursor, partial_seq and a partial array; partial_seq without the array doesn't count, and the cursor is events_seq). turnKeys: the key a card's turn is filed under: `epoch:turn` with an epoch, else the bare turn id (an event's envelope gives both). reloadDelays: how long to wait before reloading: the first reset in a row reloads at once (0); another straight after waits the normal backoff, so a reset that keeps coming back can't loop without a pause. replays: a running turn's events after a snapshot taken during it (history: the stored messages before the turn; snapshot: the GET during the turn). For every cut k in cuts (events delivered before the stream drops): resume path: load(history, busy true), cursor from the snapshot, deliver events[0..k), then deliver events[max(0,k-2)..n) (a resumed stream repeating the last two the client applied, which must be skipped); reload path (only when k < n): the same first part, then load(history, busy true, replayingTurn: the snapshot plan's replayingTurn), cursor from the snapshot again, deliver all events. Each delivery goes through the cursor (observe), and only applied events reach the transcript. local: transcript steps the user takes, each applied once, right after the event with seq afterSeq is first applied. Both paths must end in expect (items and busy), the same as a client that watched the turn live.",
+  "observe": [
+    {
+      "name": "the next event applies and moves the cursor",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 4
+      },
+      "id": "e1:5",
+      "data": {
+        "type": "text",
+        "delta": "x"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 5
+        }
+      }
+    },
+    {
+      "name": "a jump ahead applies",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 4
+      },
+      "id": "e1:9",
+      "data": {
+        "type": "text"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 9
+        }
+      }
+    },
+    {
+      "name": "the cursor's own seq is skipped",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 5
+      },
+      "id": "e1:5",
+      "data": {
+        "type": "done",
+        "error": null
+      },
+      "expect": {
+        "verdict": "skip"
+      }
+    },
+    {
+      "name": "an earlier seq is skipped",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 5
+      },
+      "id": "e1:2",
+      "data": {
+        "type": "text"
+      },
+      "expect": {
+        "verdict": "skip"
+      }
+    },
+    {
+      "name": "no cursor yet: the first numbered event sets it",
+      "cursor": null,
+      "id": "e1:1",
+      "data": {
+        "type": "turn_start"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 1
+        }
+      }
+    },
+    {
+      "name": "the envelope is the fallback position",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 2
+      },
+      "id": null,
+      "data": {
+        "v": 1,
+        "epoch": "e1",
+        "seq": 3,
+        "type": "text"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 3
+        }
+      }
+    },
+    {
+      "name": "a malformed id falls back to the envelope",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 2
+      },
+      "id": "junk",
+      "data": {
+        "v": 1,
+        "epoch": "e1",
+        "seq": 3,
+        "type": "text"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 3
+        }
+      }
+    },
+    {
+      "name": "an unnumbered event applies without moving the cursor",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 3
+      },
+      "id": null,
+      "data": {
+        "type": "text",
+        "delta": "x"
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": null
+      }
+    },
+    {
+      "name": "another epoch resets",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 3
+      },
+      "id": "e2:4",
+      "data": {
+        "type": "text"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "epoch"
+      }
+    },
+    {
+      "name": "reset epoch",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 3
+      },
+      "id": null,
+      "data": {
+        "type": "reset",
+        "reason": "epoch"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "epoch"
+      }
+    },
+    {
+      "name": "reset gap",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 3
+      },
+      "id": null,
+      "data": {
+        "type": "reset",
+        "reason": "gap"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "gap"
+      }
+    },
+    {
+      "name": "reset turn_too_large",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 3
+      },
+      "id": null,
+      "data": {
+        "type": "reset",
+        "reason": "turn_too_large"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "turn_too_large"
+      }
+    },
+    {
+      "name": "an unknown reset reason is passed on",
+      "cursor": null,
+      "id": null,
+      "data": {
+        "type": "reset",
+        "reason": "later"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "later"
+      }
+    },
+    {
+      "name": "a reset with no reason",
+      "cursor": null,
+      "id": null,
+      "data": {
+        "type": "reset"
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "unknown"
+      }
+    },
+    {
+      "name": "a merged event wholly after the cursor applies",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 4
+      },
+      "id": "e1:9",
+      "data": {
+        "type": "text",
+        "delta": "abc",
+        "merged_from": 5
+      },
+      "expect": {
+        "verdict": "apply",
+        "cursor": {
+          "epoch": "e1",
+          "seq": 9
+        }
+      }
+    },
+    {
+      "name": "a merged event overlapping what was applied resets",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 6
+      },
+      "id": "e1:9",
+      "data": {
+        "type": "text",
+        "delta": "abc",
+        "merged_from": 5
+      },
+      "expect": {
+        "verdict": "reset",
+        "reason": "merged"
+      }
+    },
+    {
+      "name": "a merged event already applied is skipped",
+      "cursor": {
+        "epoch": "e1",
+        "seq": 9
+      },
+      "id": "e1:9",
+      "data": {
+        "type": "text",
+        "delta": "abc",
+        "merged_from": 5
+      },
+      "expect": {
+        "verdict": "skip"
+      }
+    }
+  ],
+  "snapshots": [
+    {
+      "name": "idle",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 19,
+        "turn": null,
+        "messages": [],
+        "busy": false
+      },
+      "expect": {
+        "cursor": {
+          "epoch": "e1",
+          "seq": 19
+        },
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "no events yet",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 0,
+        "turn": null
+      },
+      "expect": {
+        "cursor": {
+          "epoch": "e1",
+          "seq": 0
+        },
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "mid-turn",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 10,
+        "turn": {
+          "id": "trn_2",
+          "start_seq": 11
+        }
+      },
+      "expect": {
+        "cursor": {
+          "epoch": "e1",
+          "seq": 10
+        },
+        "replayingTurn": "e1:trn_2",
+        "partial": false
+      }
+    },
+    {
+      "name": "an oversized turn's partial transcript",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 10,
+        "turn": {
+          "id": "trn_2",
+          "start_seq": 11,
+          "partial": [],
+          "partial_seq": 40
+        }
+      },
+      "expect": {
+        "cursor": {
+          "epoch": "e1",
+          "seq": 40
+        },
+        "replayingTurn": null,
+        "partial": true
+      }
+    },
+    {
+      "name": "a machine that doesn't number events",
+      "snapshot": {
+        "messages": [],
+        "busy": true
+      },
+      "expect": {
+        "cursor": null,
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "an empty epoch",
+      "snapshot": {
+        "epoch": "",
+        "events_seq": 3
+      },
+      "expect": {
+        "cursor": null,
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "a negative seq",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": -1
+      },
+      "expect": {
+        "cursor": null,
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "a string seq",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": "3"
+      },
+      "expect": {
+        "cursor": null,
+        "replayingTurn": null,
+        "partial": false
+      }
+    },
+    {
+      "name": "partial_seq without its partial transcript doesn't count",
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 10,
+        "turn": {
+          "id": "trn_2",
+          "start_seq": 11,
+          "partial_seq": 40
+        }
+      },
+      "expect": {
+        "cursor": {
+          "epoch": "e1",
+          "seq": 10
+        },
+        "replayingTurn": "e1:trn_2",
+        "partial": false
+      }
+    }
+  ],
+  "replays": [
+    {
+      "name": "text and a tool, ending with done",
+      "history": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "data": "earlier"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "parts": [
+            {
+              "type": "text",
+              "data": "earlier answer"
+            }
+          ]
+        }
+      ],
+      "snapshot": {
+        "epoch": "e1",
+        "events_seq": 10,
+        "turn": {
+          "id": "trn_2",
+          "start_seq": 11
+        },
+        "messages": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "type": "text",
+                "data": "earlier"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "parts": [
+              {
+                "type": "text",
+                "data": "earlier answer"
+              }
+            ]
+          }
+        ],
+        "busy": true
+      },
+      "events": [
+        {
+          "id": "e1:11",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 11,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000011,
+            "type": "turn_start",
+            "origin": {
+              "kind": "device",
+              "name": "Phone"
+            }
+          }
+        },
+        {
+          "id": "e1:12",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 12,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000012,
+            "type": "user_message",
+            "text": "list files",
+            "attachments": []
+          }
+        },
+        {
+          "id": "e1:13",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 13,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000013,
+            "type": "text",
+            "delta": "Look"
+          }
+        },
+        {
+          "id": "e1:14",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 14,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000014,
+            "type": "text",
+            "delta": "ing."
+          }
+        },
+        {
+          "id": "e1:15",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 15,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000015,
+            "type": "tool_start",
+            "id": "c1",
+            "name": "shell",
+            "input": {
+              "command": "ls"
+            }
+          }
+        },
+        {
+          "id": "e1:16",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 16,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000016,
+            "type": "tool_output",
+            "id": "c1",
+            "delta": "a\n"
+          }
+        },
+        {
+          "id": "e1:17",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 17,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000017,
+            "type": "tool_end",
+            "id": "c1",
+            "name": "shell",
+            "output": "a\n",
+            "error": false
+          }
+        },
+        {
+          "id": "e1:18",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 18,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000018,
+            "type": "text",
+            "delta": "Done."
+          }
+        },
+        {
+          "id": "e1:19",
+          "data": {
+            "v": 1,
+            "epoch": "e1",
+            "seq": 19,
+            "session": "ses_a",
+            "turn": "trn_2",
+            "ts": 1764300000019,
+            "type": "done",
+            "error": null
+          }
+        }
+      ],
+      "cuts": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "local": [],
+      "expect": {
+        "busy": false,
+        "items": [
+          {
+            "kind": "user",
+            "text": "earlier"
+          },
+          {
+            "kind": "assistant",
+            "text": "earlier answer"
+          },
+          {
+            "kind": "user",
+            "text": "list files"
+          },
+          {
+            "kind": "assistant",
+            "text": "Looking."
+          },
+          {
+            "kind": "tool",
+            "callId": "c1",
+            "name": "shell",
+            "input": "ls",
+            "output": "a\n",
+            "status": "done"
+          },
+          {
+            "kind": "assistant",
+            "text": "Done."
+          }
+        ]
+      }
+    },
+    {
+      "name": "a question and a permission answered on this phone during the turn",
+      "history": [],
+      "snapshot": {
+        "epoch": "e7",
+        "events_seq": 0,
+        "turn": {
+          "id": "trn_1",
+          "start_seq": 1
+        },
+        "messages": [],
+        "busy": true
+      },
+      "events": [
+        {
+          "id": "e7:1",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 1,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000001,
+            "type": "turn_start",
+            "origin": {
+              "kind": "terminal",
+              "name": ""
+            }
+          }
+        },
+        {
+          "id": "e7:2",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 2,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000002,
+            "type": "user_message",
+            "text": "pick a db",
+            "attachments": []
+          }
+        },
+        {
+          "id": "e7:3",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 3,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000003,
+            "type": "tool_start",
+            "id": "cq",
+            "name": "question",
+            "input": {}
+          }
+        },
+        {
+          "id": "e7:4",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 4,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000004,
+            "type": "permission",
+            "id": "p1",
+            "action": "edit",
+            "resources": [
+              "db.rs"
+            ],
+            "title": "Edit db.rs"
+          }
+        },
+        {
+          "id": "e7:5",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 5,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000005,
+            "type": "question",
+            "id": "q-1",
+            "prompts": [
+              {
+                "question": "Which database?",
+                "header": "DB",
+                "options": [
+                  {
+                    "label": "Postgres (Recommended)",
+                    "description": "Relational"
+                  },
+                  {
+                    "label": "SQLite",
+                    "description": "Embedded"
+                  }
+                ],
+                "multiple": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "e7:6",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 6,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000006,
+            "type": "prompt_resolved",
+            "id": "q-1",
+            "kind": "question",
+            "reply": [
+              [
+                "SQLite"
+              ]
+            ],
+            "by": {
+              "kind": "device",
+              "name": "Phone"
+            }
+          }
+        },
+        {
+          "id": "e7:7",
+          "data": {
+            "v": 1,
+            "epoch": "e7",
+            "seq": 7,
+            "session": "ses_a",
+            "turn": "trn_1",
+            "ts": 1764300000007,
+            "type": "text",
+            "delta": "Using SQLite."
+          }
+        }
+      ],
+      "cuts": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "local": [
+        {
+          "afterSeq": 4,
+          "step": {
+            "answered": {
+              "id": "p1",
+              "reply": "once"
+            }
+          }
+        },
+        {
+          "afterSeq": 5,
+          "step": {
+            "questionAnswered": {
+              "id": "q-1",
+              "answers": [
+                [
+                  "SQLite"
+                ]
+              ]
+            }
+          }
+        }
+      ],
+      "expect": {
+        "busy": true,
+        "items": [
+          {
+            "kind": "user",
+            "text": "pick a db"
+          },
+          {
+            "kind": "tool",
+            "callId": "cq",
+            "name": "question",
+            "input": "{}",
+            "output": "",
+            "status": "running"
+          },
+          {
+            "kind": "permission",
+            "requestId": "p1",
+            "title": "Edit db.rs",
+            "action": "edit",
+            "resources": [
+              "db.rs"
+            ],
+            "answered": "once"
+          },
+          {
+            "kind": "question",
+            "questionId": "q-1",
+            "prompts": [
+              {
+                "question": "Which database?",
+                "header": "DB",
+                "options": [
+                  {
+                    "label": "Postgres (Recommended)",
+                    "description": "Relational"
+                  },
+                  {
+                    "label": "SQLite",
+                    "description": "Embedded"
+                  }
+                ],
+                "multiple": false
+              }
+            ],
+            "status": "answered",
+            "answers": [
+              [
+                "SQLite"
+              ]
+            ]
+          },
+          {
+            "kind": "assistant",
+            "text": "Using SQLite."
+          }
+        ]
+      }
+    }
+  ],
+  "turnKeys": [
+    {
+      "epoch": "e1",
+      "turn": "trn_2",
+      "key": "e1:trn_2"
+    },
+    {
+      "epoch": null,
+      "turn": "trn_2",
+      "key": "trn_2"
+    },
+    {
+      "epoch": "",
+      "turn": "trn_2",
+      "key": "trn_2"
+    }
+  ],
+  "reloadDelays": [
+    {
+      "resetsInARow": 1,
+      "backoffMs": 4000,
+      "delayMs": 0
+    },
+    {
+      "resetsInARow": 2,
+      "backoffMs": 4000,
+      "delayMs": 4000
+    },
+    {
+      "resetsInARow": 5,
+      "backoffMs": 30000,
+      "delayMs": 30000
+    },
+    {
+      "resetsInARow": 0,
+      "backoffMs": 2000,
+      "delayMs": 2000
+    }
+  ]
+}

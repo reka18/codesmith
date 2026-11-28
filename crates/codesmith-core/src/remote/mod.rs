@@ -32,6 +32,8 @@
 pub mod settings;
 
 #[cfg(feature = "remote")]
+pub mod client;
+#[cfg(feature = "remote")]
 pub mod control;
 #[cfg(feature = "remote")]
 pub mod gateway;
@@ -50,6 +52,8 @@ pub mod rebuild;
 #[cfg(feature = "remote")]
 pub mod store;
 
+#[cfg(all(test, feature = "remote"))]
+mod fixture_tests;
 #[cfg(all(test, feature = "remote"))]
 mod remote_tests;
 
