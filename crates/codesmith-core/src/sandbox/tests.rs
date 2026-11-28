@@ -494,6 +494,20 @@ fn a_refused_write_is_read_from_each_tools_error() {
         out.join("x"),
         &out,
     );
+    // xcrun's cache note isn't a refusal worth a folder; a real one on
+    // the same output still is.
+    let xcrun = format!(
+        "xcrun: error: couldn't create cache file '{o}/xcrun_db-AbC123' (errno=Operation not permitted)"
+    );
+    assert_eq!(refused_write(&xcrun, &proj, &p), None);
+    want(
+        &format!(
+            "{xcrun}
+/bin/sh: {o}/f: Operation not permitted"
+        ),
+        out.join("f"),
+        &out,
+    );
     // Relative to the working directory.
     want("cp: ../out/f: Operation not permitted", out.join("f"), &out);
     // Inside the project, or nothing like a path, or a failure that isn't

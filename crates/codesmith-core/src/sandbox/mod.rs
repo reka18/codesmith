@@ -787,6 +787,9 @@ pub fn refused_write(output: &str, cwd: &Path, policy: &Policy) -> Option<Refusa
             continue;
         }
         for cand in path_candidates(line) {
+            if ignored_refusal(&cand) {
+                continue;
+            }
             let p = Path::new(&cand);
             let abs = if p.is_absolute() {
                 p.to_path_buf()
@@ -816,6 +819,19 @@ pub fn refused_write(output: &str, cwd: &Path, policy: &Policy) -> Option<Refusa
         }
     }
     None
+}
+
+/// Refusals that don't make a command fail and aren't worth a folder:
+/// Xcode's `xcrun` (behind `/usr/bin/git`, `make`, `clang` and the other
+/// developer-tool shims on macOS) notes it couldn't write its cache of
+/// tool paths, `xcrun_db`, in the per-user temp folder, and goes on.
+/// That cache must stay unwritable: an entry planted there could point a
+/// later `xcrun` outside the sandbox at another program.
+fn ignored_refusal(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("xcrun_db"))
 }
 
 /// What the sandbox refused, read from a command's output.

@@ -4750,6 +4750,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(jobs.running(), 1);
+        // A gate, not a sleep: cancel once it has printed (a sandboxed
+        // command takes longer to start on a slow runner).
+        let file = jobs.job("shell_1").unwrap().file;
+        for _ in 0..1000 {
+            if std::fs::read_to_string(&file).is_ok_and(|t| t == "partial") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(jobs.cancel("shell_1"));
         jobs.wait_any().await;
         let job = jobs.take_finished().remove(0);

@@ -211,6 +211,12 @@ parameters too. Folders an approval adds for one command aren't shown.
   `TMPDIR` and uses the per-user temp folder, which the sandbox refuses like
   any other folder. `mktemp "$TMPDIR/x.XXXXXX"` works; so does allowing the
   folder when asked.
+- **`xcrun: error: couldn't create cache file …/xcrun_db-…`** on macOS.
+  Xcode's tool shims (`/usr/bin/git`, `make`, `clang` and others) keep a
+  cache of tool paths in the per-user temp folder; the sandbox refuses it,
+  and they run anyway. The cache stays unwritable on purpose: an entry
+  planted there could point a later `xcrun`, outside the sandbox, at
+  another program. CodeSmith doesn't offer that folder for it.
 - **Something writes to `/tmp`.** Programs that follow `TMPDIR` use the
   session's temp folder; one that writes to `/tmp` by name is refused, and
   you're offered `/tmp` for that run.
