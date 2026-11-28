@@ -27,6 +27,11 @@ cargo clippy --all-targets --workspace -- -D warnings
 step "cargo test --workspace"
 cargo test --workspace --no-fail-fast
 
+# Whether this machine can sandbox shell commands, for the log: where it
+# can't (no Landlock), the sandbox tests check the refusal instead.
+step "codesmith debug sandbox"
+cargo run -q -p codesmith -- debug sandbox | sed -n '1,2p'
+
 if command -v shellcheck >/dev/null 2>&1; then
   step "shellcheck"
   shellcheck install.sh scripts/*.sh

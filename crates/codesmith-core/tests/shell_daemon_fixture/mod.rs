@@ -130,7 +130,7 @@ pub fn write_registration(dir: &Path, socket: &Path, instance: &str, token: &str
             protocol: protocol::PROTOCOL,
             socket: socket.display().to_string(),
             token: token.into(),
-            features: vec![],
+            features: vec![protocol::FEATURE_SANDBOX.into()],
         },
     );
 }

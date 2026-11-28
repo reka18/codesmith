@@ -124,6 +124,9 @@ pub struct Config {
     /// only, never a project's; the home folder and `/` are asked about
     /// regardless.
     pub repo_warning: Option<bool>,
+    /// The operating-system sandbox under shell commands (see
+    /// [`crate::sandbox`]): on unless `enabled` is `false`.
+    pub sandbox: crate::sandbox::Settings,
     /// Unattended automation runs: `permissions` are rules applied after
     /// the default unattended denies (shell, edit, webfetch,
     /// external_directory), to opt back in.
@@ -1273,6 +1276,7 @@ pub fn load(cwd: &Path) -> Result<Loaded> {
     loaded.config.models_dev = Some(crate::catalog::ModelsDev::global(options));
     // What programs CodeSmith starts may see of its environment.
     crate::child_env::install(&loaded.config);
+    crate::sandbox::install(&loaded.config.sandbox);
     Ok(loaded)
 }
 
