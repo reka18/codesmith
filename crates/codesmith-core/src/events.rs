@@ -155,12 +155,16 @@ impl<F: FnMut(Value) + Send> Sink for JsonEvents<F> {
 
 /// Two sinks as one: every event goes to `first`, then to `second`. The
 /// remote adapters tee an owner's own sink with a [`JsonEvents`] this way.
-pub struct Tee<'a, 'b> {
-    pub first: &'a mut dyn Sink,
-    pub second: &'b mut dyn Sink,
+/// Either may be a sink or a `&mut` one.
+pub struct Tee<A: Sink, B: Sink> {
+    pub first: A,
+    pub second: B,
 }
 
-impl Sink for Tee<'_, '_> {
+/// A borrowed sink is a sink.
+pub struct Borrowed<'a>(pub &'a mut dyn Sink);
+
+impl<A: Sink, B: Sink> Sink for Tee<A, B> {
     fn text(&mut self, d: &str) {
         self.first.text(d);
         self.second.text(d);
@@ -267,6 +271,87 @@ impl Sink for Tee<'_, '_> {
     }
 }
 
+impl Sink for Borrowed<'_> {
+    fn text(&mut self, d: &str) {
+        self.0.text(d);
+    }
+    fn reasoning(&mut self, d: &str) {
+        self.0.reasoning(d);
+    }
+    fn media(&mut self, m: &codesmith_ai::Media) {
+        self.0.media(m);
+    }
+    fn tool_input(&mut self, id: &str, name: &str) {
+        self.0.tool_input(id, name);
+    }
+    fn tool_input_end(&mut self, id: &str, call: Option<&str>) {
+        self.0.tool_input_end(id, call);
+    }
+    fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
+        self.0.tool_start(id, name, input);
+    }
+    fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
+        self.0.tool_end(id, name, output, is_error);
+    }
+    fn tool_change(&mut self, id: &str, path: &std::path::Path, before: Option<&str>) {
+        self.0.tool_change(id, path, before);
+    }
+    fn tool_media(&mut self, id: &str, media: &[codesmith_ai::Media]) {
+        self.0.tool_media(id, media);
+    }
+    fn tool_progress(&mut self, id: &str, metadata: &Value) {
+        self.0.tool_progress(id, metadata);
+    }
+    fn tool_output(&mut self, id: &str, delta: &str) {
+        self.0.tool_output(id, delta);
+    }
+    fn served(&mut self, served: &codesmith_ai::Served) {
+        self.0.served(served);
+    }
+    fn step_billed(&mut self, billed: Option<f64>) {
+        self.0.step_billed(billed);
+    }
+    fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
+        self.0.step_end(reason, usage);
+    }
+    fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
+        self.0.retry(attempt, error, wait);
+    }
+    fn compaction_start(&mut self) {
+        self.0.compaction_start();
+    }
+    fn compaction_delta(&mut self, d: &str) {
+        self.0.compaction_delta(d);
+    }
+    fn compaction_end(&mut self, outcome: Result<&str, &str>) {
+        self.0.compaction_end(outcome);
+    }
+    fn compacted(&mut self, before: u64, after: u64) {
+        self.0.compacted(before, after);
+    }
+    fn todos(&mut self, todos: &[Todo]) {
+        self.0.todos(todos);
+    }
+    fn notice(&mut self, m: &str) {
+        self.0.notice(m);
+    }
+    fn instructions(&mut self, paths: &[std::path::PathBuf]) {
+        self.0.instructions(paths);
+    }
+    fn child_start(&mut self, child: &ChildSession) {
+        self.0.child_start(child);
+    }
+    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
+        self.0.child_end(id, status, error);
+    }
+    fn child_text(&mut self, d: &str) {
+        self.0.child_text(d);
+    }
+    fn child_reasoning(&mut self, d: &str) {
+        self.0.child_reasoning(d);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,8 +399,8 @@ mod tests {
         }
         let (mut a, mut b) = (Count(0), Count(0));
         let mut t = Tee {
-            first: &mut a,
-            second: &mut b,
+            first: Borrowed(&mut a),
+            second: Borrowed(&mut b),
         };
         t.text("x");
         t.tool_output("c", "y");

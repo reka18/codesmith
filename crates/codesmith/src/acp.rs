@@ -9,10 +9,12 @@
 use anyhow::{anyhow, Result};
 use codesmith_ai::{FinishReason, Media, Message, Part, Reason, Role, Usage};
 use codesmith_core::config::Loaded;
+use codesmith_core::events::{Borrowed, Tee};
 use codesmith_core::mcp::{Mcp, ServerConfig};
 use codesmith_core::media::{self, ImageLimits};
 use codesmith_core::permission::{Approvals, Asker, Effect, Reply, Request, Rule};
 use codesmith_core::question::{Prompt as Question, Questioner};
+use codesmith_core::remote::tap::{self as remote, Hub, Origin, TapSlot};
 use codesmith_core::session::{Options, Session, Sink};
 use codesmith_core::store::{self, Record, Store};
 use codesmith_core::tool::shell::Jobs;
@@ -1347,6 +1349,9 @@ struct Slot {
     /// Resumed turns that failed in a row, and until when the next waits.
     failures: AtomicU32,
     backoff: Mutex<Option<tokio::time::Instant>>,
+    /// Its events for the phones (remote access); its asker and
+    /// questioner report there too.
+    tap_slot: TapSlot,
 }
 
 /// How long a session waits to resume again after `failures` resumed
@@ -1356,6 +1361,13 @@ fn resume_backoff(failures: u32) -> Duration {
 }
 
 pub type Loader = Arc<dyn Fn(&Path) -> Result<Loaded> + Send + Sync>;
+
+/// Tell the phones the session is idle (C10), unless a turn runs again.
+fn idle_if_so(slot: &Slot) {
+    if slot.task.lock().unwrap().is_none() {
+        slot.tap_slot.get().idle();
+    }
+}
 
 /// Sessions per `session/list` page, as OpenCode lists them.
 const LIST_PAGE: usize = 100;
@@ -1382,6 +1394,8 @@ pub struct Agent {
     /// arrived in: a prompt still being set up when it came is cancelled
     /// once its turn starts.
     cancels: Mutex<HashMap<String, u64>>,
+    /// Remote access: phones follow this agent's sessions through it.
+    hub: Hub,
 }
 
 /// Editor-supplied MCP servers, in CodeSmith's config shape. Like OpenCode,
@@ -1980,19 +1994,21 @@ impl Agent {
             .store()
             .and_then(|db| db.get(&slot.id).ok().flatten())
             .is_some();
-        let asker = Arc::new(AcpAsker {
+        let asker = slot.tap_slot.asker(Arc::new(AcpAsker {
             conn: self.conn.clone(),
             session: slot.id.clone(),
             cwd: slot.cwd.clone(),
             current: slot.current.clone(),
-        });
-        let questioner = self.client_has("/elicitation/form").then(|| {
-            Arc::new(AcpQuestioner {
-                conn: self.conn.clone(),
-                session: slot.id.clone(),
-                current: slot.current.clone(),
-            }) as Arc<dyn Questioner>
-        });
+        }));
+        let questioner = slot
+            .tap_slot
+            .questioner(self.client_has("/elicitation/form").then(|| {
+                Arc::new(AcpQuestioner {
+                    conn: self.conn.clone(),
+                    session: slot.id.clone(),
+                    current: slot.current.clone(),
+                }) as Arc<dyn Questioner>
+            }));
         crate::serve_bifrost_fetch(&slot.loaded.config);
         let mut s = Session::new(
             &slot.loaded,
@@ -2013,6 +2029,7 @@ impl Agent {
         s.set_id(slot.id.clone());
         s.share_approvals(slot.approvals.clone());
         s.adopt_jobs(slot.jobs.clone());
+        slot.tap_slot.set(self.hub.tap(&s));
         *slot.shown.lock().unwrap() = (s.model_spec.clone(), s.agent.id.clone());
         if stored {
             if let Some(db) = self.store() {
@@ -2072,6 +2089,7 @@ impl Agent {
             held: AtomicUsize::new(0),
             failures: AtomicU32::new(0),
             backoff: Mutex::new(None),
+            tap_slot: TapSlot::default(),
         });
         let s = self.build(&slot)?;
         *slot.session.lock().await = Some(s);
@@ -2592,13 +2610,27 @@ impl Agent {
         let compaction = self.client_has("/session/compaction");
         let child_updates = self.child_updates();
         let (me, slot2) = (self.clone(), slot.clone());
+        let tap = slot.tap_slot.get();
+        tap.turn_start(&Origin::terminal(), Some(&content.text));
         let task = tokio::spawn(async move {
             let mut sink = AcpSink::new(me.conn.clone(), &sid, &slot2, compaction, child_updates);
+            let mut phones = tap.sink();
             let title_before = s.title.clone();
             attach_files(&s, &mut content);
             let result = me
-                .run_turn(&mut s, &slot2, &content.text, content.media, &mut sink)
+                .run_turn(
+                    &mut s,
+                    &slot2,
+                    &content.text,
+                    content.media,
+                    &mut sink,
+                    &mut phones,
+                )
                 .await;
+            tap.end(
+                &s,
+                result.as_ref().err().map(|e| format!("{e:#}")).as_deref(),
+            );
             sink.settle();
             #[cfg(test)]
             tests::settle_pause(&sid).await;
@@ -2642,7 +2674,8 @@ impl Agent {
                 Ok(reason) => response(reason),
                 Err(err) => me.conn.error(&rpc, &err),
             }
-            me.clone().wake(slot2).await;
+            me.clone().wake(slot2.clone()).await;
+            idle_if_so(&slot2);
         });
         *slot.task.lock().unwrap() = Some(task);
         // A cancel that came while the prompt was set up (reading its
@@ -2775,13 +2808,25 @@ impl Agent {
         );
         let title_before = s.title.clone();
         slot.held.store(0, Ordering::SeqCst);
+        let tap = slot.tap_slot.get();
+        tap.turn_start(&Origin::resumed(), None);
+        let mut phones = tap.sink();
+        let mut tee = Tee {
+            first: Borrowed(&mut sink),
+            second: Borrowed(&mut phones),
+        };
         #[cfg(test)]
         let resumed = match tests::resume_hook(&slot.id).await {
             Some(e) => Err(e),
-            None => s.resume_background(&mut sink).await,
+            None => s.resume_background(&mut tee).await,
         };
         #[cfg(not(test))]
-        let resumed = s.resume_background(&mut sink).await;
+        let resumed = s.resume_background(&mut tee).await;
+        tap.end_with(
+            &s,
+            resumed.as_ref().err().map(|e| format!("{e:#}")).as_deref(),
+            json!({"resumed": true}),
+        );
         match resumed {
             Ok(()) => {
                 slot.failures.store(0, Ordering::SeqCst);
@@ -2821,7 +2866,8 @@ impl Agent {
             slot.task.lock().unwrap().take();
         }
         slot.idle.notify_waiters();
-        self.wake(slot).await;
+        self.wake(slot.clone()).await;
+        idle_if_so(&slot);
     }
 
     /// Context use after a turn, when the model's window is known.
@@ -2852,6 +2898,7 @@ impl Agent {
         text: &str,
         attached: Vec<Media>,
         sink: &mut AcpSink,
+        phones: &mut dyn Sink,
     ) -> Result<()> {
         let all = if text.trim_start().starts_with('/') {
             crate::all_commands_with(&slot.cwd, &slot.loaded, &slot.mcp)
@@ -2885,21 +2932,36 @@ impl Agent {
                     let (report, usage) =
                         codesmith_core::review::run_command(&name, &args, &env, &progress).await?;
                     sink.text(&report);
+                    phones.text(&report);
                     return s.append_exchange(text, &report, &usage);
                 }
-                return s.run_command(text, c, &args, attached, sink).await;
+                let mut tee = Tee {
+                    first: Borrowed(sink),
+                    second: Borrowed(phones),
+                };
+                return s.run_command(text, c, &args, attached, &mut tee).await;
             }
             if name == "compact" {
                 sink.manual = true;
-                let compacted = s.compact(sink).await;
+                let compacted = s
+                    .compact(&mut Tee {
+                        first: Borrowed(sink),
+                        second: Borrowed(phones),
+                    })
+                    .await;
                 sink.manual = false;
                 if let Err(e) = compacted {
                     sink.text(&format!("{e:#}"));
+                    phones.text(&format!("{e:#}"));
                 }
                 return Ok(());
             }
         }
-        s.prompt_with(text, attached, sink).await
+        let mut tee = Tee {
+            first: Borrowed(sink),
+            second: Borrowed(phones),
+        };
+        s.prompt_with(text, attached, &mut tee).await
     }
 
     /// Stop a running turn, a prompt or a resumed one, and answer its
@@ -2949,6 +3011,10 @@ impl Agent {
         }
         if reload {
             slot.stopping.fetch_sub(1, Ordering::SeqCst);
+            idle_if_so(slot);
+        } else {
+            // Closed: the phones see it closed.
+            slot.tap_slot.get().release();
         }
         slot.idle.notify_waiters();
         // Last, so a client acting on it finds the session reloaded.
@@ -2977,6 +3043,7 @@ impl Agent {
     /// call in flight fails and its prompt is answered (a resumed turn's
     /// failed call is the last the client hears of it).
     async fn cancelled(&self, sid: &str, slot: &Slot, running: Running, reload: bool) {
+        slot.tap_slot.get().end_stopped("cancelled");
         if reload {
             slot.stale.store(false, Ordering::SeqCst);
             match self.build(slot) {
@@ -3089,6 +3156,7 @@ where
         sessions: Default::default(),
         client: Mutex::new(Value::Null),
         cancels: Default::default(),
+        hub: Hub::start(remote::kind::ACP),
     });
     let mut lines = reader.lines();
     let mut seq: u64 = 0;

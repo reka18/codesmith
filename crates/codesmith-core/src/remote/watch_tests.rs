@@ -328,7 +328,7 @@ fn step(t: &Tap, i: usize) {
         3 => t.push(json!({"type": "tool_start", "id": "c1", "name": "shell", "input": {"command": "ls"}})),
         4 => t.push(json!({"type": "tool_output", "id": "c1", "delta": "a\n"})),
         5 => t.push(json!({"type": "permission", "id": "p1", "action": "edit", "resources": ["db.rs"], "title": "Edit db.rs"})),
-        6 => t.push(json!({"type": "prompt_resolved", "id": "p1", "kind": "permission", "reply": "once"})),
+        6 => t.push(json!({"type": "prompt_resolved", "id": "p1", "kind": "permission", "reply": "once", "by": {"kind": "terminal", "name": ""}})),
         7 => t.push(json!({"type": "tool_end", "id": "c1", "name": "shell", "output": "a\n", "error": false})),
         8 => t.push(json!({"type": "text", "delta": "Done."})),
         _ => unreachable!(),
@@ -857,5 +857,70 @@ async fn many_followers_get_every_event_in_order() {
     while let Some(r) = tasks.join_next().await {
         r.unwrap();
     }
+    w.stop().await;
+}
+
+/// G4: the published schema's required fields are in what the machine
+/// sends: the machine, the list, a snapshot (idle and mid-turn), a page of
+/// messages, and every event of a scripted turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_bodies_and_events_match_the_published_schema() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../../docs/remote-protocol.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    let has = |def: &Value, v: &Value, what: &str| {
+        for k in def["required"].as_array().unwrap() {
+            assert!(v.get(k.as_str().unwrap()).is_some(), "{what}: {k} in {v}");
+        }
+    };
+    let w = W::start(instant()).await;
+    w.stored("ses_a");
+    w.append("ses_a", Message::user("earlier"));
+    let tap = w.tap("ses_a").await;
+    let (_p, c) = w.phone(&[("ses_a", Scope::Watch)]).await;
+    has(
+        &defs["machine"],
+        &get(&c, "/v1/machine").await.body,
+        "machine",
+    );
+    for i in get(&c, "/v1/sessions").await.body.as_array().unwrap() {
+        has(&defs["sessionItem"], i, "sessionItem");
+    }
+    has(
+        &defs["snapshot"],
+        &get(&c, "/v1/sessions/ses_a").await.body,
+        "snapshot",
+    );
+    has(
+        &defs["messagesPage"],
+        &get(&c, "/v1/sessions/ses_a/messages").await.body,
+        "messagesPage",
+    );
+    let mut e = stream(&c, "/v1/sessions/ses_a/events", None).await;
+    for i in 0..STEPS {
+        step(&tap, i);
+    }
+    let mid = get(&c, "/v1/sessions/ses_a").await.body;
+    has(&defs["snapshot"], &mid, "snapshot mid-turn");
+    has(&defs["turn"], &mid["turn"], "turn");
+    tap.queued(1, Some("next"));
+    tap.config("plan", "m/y", None);
+    finish(&w, &tap);
+    tap.idle();
+    let last = tap.mirror().unwrap().last_seq();
+    let mut types = std::collections::BTreeSet::new();
+    loop {
+        let (_, ev) = next(&mut e).await;
+        has(&defs["envelope"], &ev, "envelope");
+        let t = ev["type"].as_str().unwrap().to_string();
+        let def = &defs["events"]["properties"][&t];
+        assert!(def.is_object(), "{t} is in the schema");
+        has(def, &ev, &t);
+        types.insert(t);
+        if ev["seq"].as_u64() == Some(last) {
+            break;
+        }
+    }
+    assert_eq!(types.len(), 12, "{types:?}");
     w.stop().await;
 }

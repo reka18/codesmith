@@ -54,9 +54,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use codesmith_core::config::Loaded;
-use codesmith_core::events::{JsonEvents, SharedChildren};
+use codesmith_core::events::{JsonEvents, SharedChildren, Tee};
 use codesmith_core::permission::{Approvals, Asker, Fixed, Reply, Request};
 use codesmith_core::question::{Prompt, Questioner};
+use codesmith_core::remote::tap::{self as remote, Hub, Origin, Tap, TapSlot};
 use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::Store;
@@ -270,6 +271,10 @@ struct Live {
     /// redo), so they outlive the session a stopped turn dropped. Stopped
     /// by `DELETE` or an abort of the idle session.
     jobs: Jobs,
+    /// Its events for the phones (remote access), and where its asker
+    /// and questioner report theirs.
+    tap: Tap,
+    slot: TapSlot,
 }
 
 /// How long an abort waits for the turn's task to stop. A tool parked in a
@@ -300,6 +305,8 @@ pub struct Server {
     /// so they survive a restart that hands it over; none when they live
     /// in this process.
     daemon: Option<Daemon>,
+    /// The link to the remote-access gateway, made on first use.
+    hub: OnceLock<Hub>,
 }
 
 /// A server's shell daemon client.
@@ -424,6 +431,7 @@ impl Server {
             hosts: OnceLock::new(),
             live: Default::default(),
             watching: OnceLock::new(),
+            hub: OnceLock::new(),
         })
     }
 
@@ -447,7 +455,23 @@ impl Server {
         agent: Option<String>,
         model: Option<String>,
     ) -> Result<Live> {
-        self.make_with(resume, agent, model, Watchers::default())
+        let mut l = self.make_with(resume, agent, model, Watchers::default())?;
+        self.attach(&mut l);
+        Ok(l)
+    }
+
+    /// The remote-access hub: phones follow this server's sessions
+    /// through it while remote access is on.
+    fn hub(&self) -> &Hub {
+        self.hub.get_or_init(|| Hub::start(remote::kind::SERVE))
+    }
+
+    /// Give `l` its session's tap (under the session's final id).
+    fn attach(&self, l: &mut Live) {
+        if let Some(s) = &l.session {
+            l.tap = self.hub().tap(s);
+            l.slot.set(l.tap.clone());
+        }
     }
 
     fn make_with(
@@ -461,10 +485,14 @@ impl Server {
             watchers,
             ..Default::default()
         });
+        let slot = TapSlot::default();
         let (asker, questioner): (Arc<dyn Asker>, Option<Arc<dyn Questioner>>) = if self.auto {
             (Arc::new(Fixed(Reply::Once)), None)
         } else {
-            (prompter.clone(), Some(prompter.clone()))
+            (
+                slot.asker(prompter.clone()),
+                slot.questioner(Some(prompter.clone() as Arc<dyn Questioner>)),
+            )
         };
         crate::serve_bifrost_fetch(&self.loaded.config);
         let s = Session::new(
@@ -497,6 +525,8 @@ impl Server {
             waiter: None,
             held: None,
             prompter,
+            tap: Tap::default(),
+            slot,
         })
     }
 
@@ -523,6 +553,8 @@ impl Server {
         g.selection = fresh.selection;
         g.session = Some(s);
         g.prompter = fresh.prompter;
+        g.slot = fresh.slot;
+        self.attach(g);
         Ok(())
     }
 
@@ -1060,6 +1092,7 @@ async fn remove(
         }
         // Its background commands go with it; watchers' streams end.
         g.session.take();
+        st.hub().release(&id);
         g.jobs.stop_all().await;
         g.prompter.watchers.lock().unwrap().clear();
     }
@@ -1087,9 +1120,14 @@ async fn message(
     }
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     g.prompter.set(Some(tx.clone()));
-    let (live2, prompter) = (live.clone(), g.prompter.clone());
+    let (live2, prompter, tap) = (live.clone(), g.prompter.clone(), g.tap.clone());
+    // A local client's prompt: "terminal", this machine (S7).
+    tap.turn_start(&Origin::terminal(), Some(&text));
     g.task = Some(tokio::spawn(async move {
-        let mut sink = json_sink(prompter.clone());
+        let mut sink = Tee {
+            first: json_sink(prompter.clone()),
+            second: tap.sink(),
+        };
         // Paths are checked now, so their permission requests reach this
         // stream.
         let mut media = Vec::new();
@@ -1114,13 +1152,16 @@ async fn message(
             Some(e) => Err(anyhow::anyhow!(e)),
             None => s.prompt_attached(&text, media, &mut sink).await,
         };
-        let done = json!({"type": "done", "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
+        let error = r.err().map(|e| format!("{e:#}"));
+        let done = json!({"type": "done", "error": error, "usage": s.usage, "title": s.title});
         let mut g = live2.lock().await;
+        tap.end(&s, error.as_deref());
         g.session = Some(s);
         g.task = None;
         prompter.set(None);
         prompter.watch(done.clone());
         wake(&live2, &mut g);
+        idle_if_so(&g);
         drop(g);
         let _ = tx.send(done);
     }));
@@ -1241,6 +1282,14 @@ fn wake(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
     }
 }
 
+/// Tell the phones the session is idle (C10), unless [`wake`] just
+/// started a turn for it.
+fn idle_if_so(g: &Live) {
+    if g.task.is_none() && g.session.is_some() {
+        g.tap.idle();
+    }
+}
+
 /// Run [`wake`] again once `wait` is over (aborted when `g`'s waiter is).
 fn wake_after(
     live: &Arc<tokio::sync::Mutex<Live>>,
@@ -1270,16 +1319,23 @@ fn resume(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
     let Some(mut s) = g.session.take() else {
         return;
     };
-    let (live2, prompter) = (live.clone(), g.prompter.clone());
+    let (live2, prompter, tap) = (live.clone(), g.prompter.clone(), g.tap.clone());
+    tap.turn_start(&Origin::resumed(), None);
     g.task = Some(tokio::spawn(async move {
-        let mut sink = json_sink(prompter.clone());
+        let mut sink = Tee {
+            first: json_sink(prompter.clone()),
+            second: tap.sink(),
+        };
         let r = s.resume_background(&mut sink).await;
-        let done = json!({"type": "done", "resumed": true, "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
+        let error = r.err().map(|e| format!("{e:#}"));
+        let done = json!({"type": "done", "resumed": true, "error": error, "usage": s.usage, "title": s.title});
         let mut g = live2.lock().await;
+        tap.end_with(&s, error.as_deref(), json!({"resumed": true}));
         g.session = Some(s);
         g.task = None;
         prompter.watch(done);
         wake(&live2, &mut g);
+        idle_if_so(&g);
     }));
 }
 
@@ -1388,6 +1444,7 @@ async fn abort(
     }
     g.prompter
         .watch(json!({"type": "done", "error": "aborted"}));
+    g.tap.end_stopped("aborted");
     if !stopped {
         // Still inside a blocking call: reload when it returns. The
         // session stays busy until then.
@@ -1399,7 +1456,8 @@ async fn abort(
                 match st.reload(&mut g, &id) {
                     Ok(()) => {
                         hold(&mut g);
-                        wake(&live, &mut g)
+                        wake(&live, &mut g);
+                        idle_if_so(&g);
                     }
                     Err(e) => eprintln!("serve: could not reload session {id}: {e:#}"),
                 }
@@ -1417,6 +1475,7 @@ async fn abort(
     // for them again. An abort of the idle session stops them.
     hold(&mut g);
     wake(&live, &mut g);
+    idle_if_so(&g);
     Ok(Json(json!({"aborted": true})))
 }
 
@@ -1676,6 +1735,9 @@ async fn undo_redo(
         session::redo(&db, &id, &snaps)?
     };
     st.reload(&mut g, &id)?;
+    if let Some(s) = &g.session {
+        g.tap.history_changed(s);
+    }
     // Undo restores files, not commands: the background ones keep running.
     wake(&live, &mut g);
     Ok(Json(
@@ -1949,6 +2011,184 @@ mod tests {
             }
         }
         events
+    }
+
+    /// A phone follows a serve-owned session end to end: the gateway on
+    /// loopback iroh with relays off, a fake device key, and serve's hub
+    /// on the gateway's control socket. The prompt shows as sent, its
+    /// permission request and answer come with the same id, the session
+    /// goes idle, and a snapshot afterwards (from serve's store) shows
+    /// what the phone saw live.
+    #[cfg(all(unix, feature = "remote"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phone_watches_a_serve_session() {
+        use codesmith_core::remote::{client, gateway, phone, settings::Relay, store, tap};
+        let wait = Duration::from_secs(20);
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.join("p")).unwrap();
+        let mut o = gateway::Options::new(dir.join("run"), Relay::None);
+        o.key = dir.join("remote-key");
+        o.db = dir.join("remote.db");
+        o.sessions_db = Some(dir.join("p/sessions.db"));
+        o.config_dir = None;
+        o.loopback = true;
+        o.idle = Duration::from_secs(3600);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let gw = tokio::spawn(gateway::serve(o, Some(tx)));
+        let ready = tokio::time::timeout(wait, rx).await.unwrap().unwrap();
+        // serve, with its hub on this gateway.
+        let base = fake_model().await;
+        let config = serde_json::from_value(json!({
+            "model": "fake/m",
+            "snapshots": false,
+            "providers": {"fake": {"protocol": "openai-chat", "settings": {"baseURL": base, "apiKey": "x"}}},
+            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]
+        }))
+        .unwrap();
+        let p = dir.join("p");
+        let st = Server::new(
+            Loaded {
+                config,
+                files: vec![],
+                root: p.clone(),
+                ..Default::default()
+            },
+            p.clone(),
+            p.join("sessions.db"),
+            false,
+            TOKEN.to_string(),
+            codesmith_core::mcp::Mcp::empty(),
+        );
+        let hub = Hub::connect_to(
+            tap::kind::SERVE,
+            dir.join("run"),
+            tap::Limits {
+                merge_window: Duration::ZERO,
+                ..Default::default()
+            },
+            Duration::from_millis(20),
+        );
+        assert!(st.hub.set(hub.clone()).is_ok());
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(serve_on(st, l, "127.0.0.1"));
+        let c = client();
+        let id = c
+            .post(format!("{addr}/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(hub.sync().await);
+        // A phone with a grant on it.
+        let ph = phone::Phone::new().await.unwrap();
+        store::Store::open(&dir.join("remote.db"))
+            .unwrap()
+            .pair(
+                &ph.id(),
+                "Phone",
+                "ios",
+                None,
+                None,
+                Some((&id, store::Scope::Watch)),
+            )
+            .unwrap();
+        let conn = ph
+            .connect(
+                &ready.node_id,
+                &ready.addrs,
+                codesmith_core::remote::REMOTE_ALPN,
+            )
+            .await
+            .unwrap();
+        let list = phone::request(&conn, "GET", "/v1/sessions", &[], b"")
+            .await
+            .unwrap();
+        assert_eq!(list.body[0]["id"], id.as_str());
+        assert_eq!(list.body[0]["owner"], "serve");
+        let snap = phone::request(&conn, "GET", &format!("/v1/sessions/{id}"), &[], b"")
+            .await
+            .unwrap();
+        let mut live = client::Transcript::default();
+        let plan = live.load(&snap.body);
+        let mut ev = phone::events(
+            &conn,
+            &format!("/v1/sessions/{id}/events"),
+            plan.cursor.map(|c| c.id()).as_deref(),
+        )
+        .await
+        .unwrap();
+        // The turn, through serve's own API.
+        let text = "say it\twith  spaces ✓";
+        let own = turn(&c, &addr, &id, text, json!({"reply": "once"})).await;
+        assert_eq!(own.last().unwrap()["type"], "done");
+        let mut seen = vec![];
+        loop {
+            let (sse_id, data) = tokio::time::timeout(wait, ev.event())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                live.deliver(sse_id.as_deref(), &data),
+                client::Verdict::Apply(_)
+            ));
+            seen.push(data.clone());
+            if data["type"] == "session_status" {
+                break;
+            }
+        }
+        let kinds: Vec<&str> = seen.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds[..2], ["turn_start", "user_message"]);
+        assert_eq!(seen[0]["origin"], json!({"kind": "terminal", "name": ""}));
+        assert_eq!(seen[1]["text"], text, "S25: as sent");
+        let perm = seen.iter().find(|e| e["type"] == "permission").unwrap();
+        let resolved = seen
+            .iter()
+            .find(|e| e["type"] == "prompt_resolved")
+            .unwrap();
+        assert_eq!(resolved["id"], perm["id"]);
+        assert_eq!(resolved["reply"], "once");
+        let done = seen.iter().find(|e| e["type"] == "done").unwrap();
+        assert!(done["error"].is_null());
+        assert_eq!(seen.last().unwrap()["busy"], json!(false));
+        for e in &seen {
+            assert_eq!(e["session"], id.as_str());
+            assert_eq!(e["epoch"], hub.epoch());
+        }
+        // A snapshot now has the turn from serve's store.
+        let snap = phone::request(&conn, "GET", &format!("/v1/sessions/{id}"), &[], b"")
+            .await
+            .unwrap();
+        assert_eq!(snap.body["busy"], json!(false));
+        assert!(snap.body["turn"].is_null());
+        let mut later = client::Transcript::default();
+        later.load(&snap.body);
+        let no_cards = |t: &client::Transcript| -> Vec<Value> {
+            t.items
+                .iter()
+                .filter(|i| i["kind"] != "permission")
+                .cloned()
+                .collect()
+        };
+        assert_eq!(no_cards(&later), no_cards(&live));
+        assert_eq!(later.items[0]["text"], text);
+        assert_eq!(
+            later.cursor, live.cursor,
+            "the snapshot's cursor is where the phone is"
+        );
+        drop(hub);
+        let _ = ready.stop.send(true);
+        tokio::time::timeout(wait, gw)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

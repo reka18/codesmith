@@ -114,6 +114,7 @@ impl Hub {
             return Tap::default();
         };
         let mut map = h.mirrors.lock().unwrap();
+        map.retain(|_, m| !m.is_released());
         let m = map
             .entry(id.to_string())
             .or_insert_with(|| {
@@ -253,11 +254,13 @@ impl Tap {
     }
 
     /// The turn ended without its session back (it was stopped): `done`
-    /// with `error`, history as it was.
+    /// with `error`, history as it was. Nothing when it had ended.
     pub fn end_stopped(&self, error: &str) {
         if let Some(t) = &self.0 {
-            let seq = t.mirror.snapshot().history_seq;
-            t.mirror.done(Some(error), json!({}), seq, None);
+            if t.mirror.turn_running() {
+                let seq = t.mirror.snapshot().history_seq;
+                t.mirror.done(Some(error), json!({}), seq, None);
+            }
         }
     }
 
@@ -292,6 +295,14 @@ impl Tap {
     /// text.
     pub fn queued(&self, count: usize, next: Option<&str>) {
         self.push(json!({"type": "queued", "count": count, "next": next}));
+    }
+
+    /// The process lets the session go: the phones see it closed. A tap
+    /// made for it later starts afresh.
+    pub fn release(&self) {
+        if let Some(t) = &self.0 {
+            t.mirror.release();
+        }
     }
 
     /// The mirror behind it (tests).

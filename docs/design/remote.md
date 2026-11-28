@@ -1,8 +1,9 @@
 # Design: remote access from a phone
 
 Status: **design settled; being built.** Ray answered the open questions on
-2026-11-26 and approved building on 2026-11-28. The first part of milestone
-M1 (the machine key, the gateway and pairing) is built; see
+2026-11-26 and approved building on 2026-11-28. Milestone M1's first two
+parts are built: the machine key, the gateway and pairing, then watching
+(the owners' registration, the read routes, events and resuming); see
 [the user guide](../remote.md) and [the protocol](../remote-protocol.md).
 
 Remote access lets you pair a phone with a CodeSmith session by scanning a QR

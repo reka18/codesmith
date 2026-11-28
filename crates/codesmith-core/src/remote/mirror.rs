@@ -400,6 +400,15 @@ impl Mirror {
         st.released = true;
     }
 
+    /// Whether a turn is running.
+    pub fn turn_running(&self) -> bool {
+        self.state.lock().unwrap().turn.is_some()
+    }
+
+    pub fn is_released(&self) -> bool {
+        self.state.lock().unwrap().released
+    }
+
     fn send(&self, st: &State, out: Out) {
         if let Some(o) = &st.out {
             o(&self.session, out);
