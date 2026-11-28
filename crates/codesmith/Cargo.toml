@@ -18,6 +18,12 @@ path = "src/lib.rs"
 name = "codesmith"
 path = "src/main.rs"
 
+[features]
+default = ["remote"]
+# Remote access from a phone (docs/remote.md): built in, dormant until
+# you opt in. `--no-default-features` builds CodeSmith without it.
+remote = ["codesmith-core/remote", "dep:qrcode"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -49,6 +55,7 @@ hyper-util.workspace = true
 tokio-tungstenite.workspace = true
 regex.workspace = true
 toml_edit.workspace = true
+qrcode = { workspace = true, optional = true }
 
 [dev-dependencies]
 vt100 = "0.15"
