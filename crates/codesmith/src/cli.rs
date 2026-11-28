@@ -875,6 +875,13 @@ enum Debug {
         /// provider/model or provider/model#variant (default: the configured model).
         spec: Option<String>,
     },
+    /// Show the sandbox policy a shell command run here would get, and
+    /// whether this machine can sandbox commands.
+    Sandbox {
+        /// Print the macOS Seatbelt profile too.
+        #[arg(long)]
+        profile: bool,
+    },
     /// Print the system prompt an agent would get here.
     Prompt {
         /// Model as provider/model (default: the configured model).
@@ -1570,6 +1577,59 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// What `codesmith debug sandbox` prints: whether this machine can
+/// sandbox, what happens to commands with the config here, and the policy
+/// a command in `cwd` would get (before any approval adds a folder).
+fn debug_sandbox(cwd: &std::path::Path, profile: bool) -> Result<String> {
+    use codesmith_core::sandbox;
+    let loaded = config::load(cwd)?;
+    let settings = &loaded.config.sandbox;
+    let support = sandbox::support();
+    let mut out = String::new();
+    match &support {
+        sandbox::Support::Yes => out.push_str(&format!(
+            "supported: yes ({})\n",
+            if cfg!(target_os = "macos") {
+                "Seatbelt, through /usr/bin/sandbox-exec"
+            } else {
+                "Landlock, seccomp and no_new_privs"
+            }
+        )),
+        sandbox::Support::No(why) => out.push_str(&format!("supported: no: {why}\n")),
+    }
+    match sandbox::decide(settings, &support) {
+        sandbox::Decision::Enforce => out.push_str("commands: sandboxed\n"),
+        sandbox::Decision::Unsandboxed { notice } => {
+            out.push_str(&format!("commands: run without the sandbox: {notice}\n"))
+        }
+        sandbox::Decision::Refuse { message } => {
+            out.push_str(&format!("commands: refused: {message}\n"))
+        }
+    }
+    let project = codesmith_core::tool::boundary_of(&loaded.root, cwd);
+    let mut rules = loaded.config.permissions.clone();
+    rules.extend(codesmith_core::permission::base_rules());
+    let policy = sandbox::policy(&sandbox::Inputs {
+        project: project.as_deref(),
+        session_id: "debug",
+        settings,
+        grants: &[],
+        rules: &rules,
+        env: None,
+    })?;
+    out.push_str(&sandbox::describe(&policy));
+    if profile {
+        let (text, params) = sandbox::macos::profile(&policy).map_err(|e| anyhow!(e))?;
+        out.push_str("\nprofile parameters:\n");
+        for (k, v) in params {
+            out.push_str(&format!("  {k}={v}\n"));
+        }
+        out.push_str("profile:\n");
+        out.push_str(&text);
+    }
+    Ok(out)
+}
+
 fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
     match what {
         Debug::Paths => {
@@ -1698,6 +1758,9 @@ fn debug(cwd: PathBuf, what: Debug) -> Result<()> {
             }
         }
         Debug::Links { .. } => unreachable!("handled before debug()"),
+        Debug::Sandbox { profile } => {
+            print!("{}", debug_sandbox(&cwd, profile)?);
+        }
         Debug::Plugins => {
             let loaded = config::load(&cwd)?;
             let reg = codesmith_core::plugin::active();

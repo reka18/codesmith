@@ -183,7 +183,9 @@ impl Pairing {
                 &mut s,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut ws,
+                // A raw pointer: the window size is `*mut` on macOS and
+                // `*const` on Linux, and `&mut` trips clippy on Linux.
+                std::ptr::addr_of_mut!(ws),
             )
         };
         assert_eq!(r, 0);

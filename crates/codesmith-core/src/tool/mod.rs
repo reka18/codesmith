@@ -600,6 +600,15 @@ pub struct Roots {
 /// Whether `dir` is too broad to be the project's boundary: `/` (a drive
 /// root) or the home folder, where everything, `~/.ssh` included, would be
 /// inside the project.
+/// The project boundary for a session with `root` and working directory
+/// `cwd`, as [`Ctx::boundary`] finds it.
+pub fn boundary_of(root: &Path, cwd: &Path) -> Option<PathBuf> {
+    if !too_broad(root) {
+        return Some(root.to_path_buf());
+    }
+    (!too_broad(cwd)).then(|| cwd.to_path_buf())
+}
+
 fn too_broad(dir: &Path) -> bool {
     dir.parent().is_none()
         || dirs::home_dir().is_some_and(|h| h == dir || real_path(&h) == real_path(dir))

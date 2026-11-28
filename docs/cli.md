@@ -385,6 +385,7 @@ The [local bus](bus.md) between sessions on this machine.
 |---|---|
 | `debug paths` | The config, data, tool-output, scratch and cache folders. |
 | `debug config` | The merged config, the files it came from (per-repo files marked with the `path` that matched), and warnings such as equally specific per-repo files. |
+| `debug sandbox` | Whether this machine can sandbox shell commands (and why not), what happens to commands with the config here, and the policy a command in this folder would get; `--profile` adds the macOS Seatbelt profile. See [Sandbox](sandbox.md#codesmith-debug-sandbox). |
 | `debug agents` | Every agent, its tools and its final permission rules. |
 | `debug plugins` | The plugins compiled into this binary, and whether config turns them off. |
 | `debug model [provider/model[#variant]]` | What a model resolves to: provider, URL, protocol, limits, extra body, provider options (JSON), the selected variant, and every variant with its options. |

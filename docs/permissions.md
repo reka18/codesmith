@@ -352,6 +352,18 @@ one could ask, you are asked. Likewise, a redirect to a path that is only
 known at run time runs only as far as the `edit` and `external_directory`
 rules allow writes in general.
 
+## Sandbox
+
+Under these checks, every command the agent runs is in an operating-system
+sandbox (Seatbelt on macOS; Landlock, seccomp and `no_new_privs` on Linux).
+It writes only to the project, its own temp folder, CodeSmith's scratch
+folders, the package caches and folders you approved, and it can't read the
+protected secret files, whatever its command line looks like. When the
+sandbox refuses a write, CodeSmith offers that folder and runs the command
+again if you allow it. It is on by default, and only your own config can turn
+it off. See [Sandbox](sandbox.md) for what is allowed, the settings,
+`codesmith debug sandbox`, machines that can't sandbox and troubleshooting.
+
 ## Paths outside the project
 
 The project is the nearest folder with `.git` (or `.hg`) above the working directory, or

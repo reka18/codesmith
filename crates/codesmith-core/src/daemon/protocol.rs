@@ -14,6 +14,9 @@ use std::io::{self, Read, Write};
 /// Bumped only by a change older clients cannot read; a client refuses a
 /// daemon that registers another version.
 pub const PROTOCOL: u32 = 1;
+/// The feature a daemon registers when it applies `create_pipe`'s
+/// `sandbox`.
+pub const FEATURE_SANDBOX: &str = "sandbox";
 /// The largest frame either side sends or accepts.
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 /// The largest metadata object a pipe process may carry, serialized.
@@ -84,6 +87,12 @@ pub enum Request {
         /// Absolute; truncated on open, a symlink refused.
         output_path: String,
         metadata: Value,
+        /// On Linux, the sandbox to apply in the child before it runs
+        /// `program` (see [`crate::sandbox::linux`]). A daemon that
+        /// registers [`FEATURE_SANDBOX`] applies it; on macOS the program
+        /// is `sandbox-exec` instead, and this is unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox: Option<crate::sandbox::Policy>,
     },
     List {
         mode: Mode,

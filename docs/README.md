@@ -20,6 +20,8 @@ New here? Start with [Getting started](getting-started.md).
   variables.
 - [Permissions](permissions.md): the rule model, shell checks, paths outside
   the project, defaults per agent and saved approvals.
+- [Sandbox](sandbox.md): the operating-system sandbox under the agent's shell
+  commands, its settings, and what to do when it refuses something.
 - [Agents and subagents](agents-and-subagents.md): built-in agents, your own
   agents, delegation.
 - [Skills and commands](skills-and-commands.md): reusable instructions and

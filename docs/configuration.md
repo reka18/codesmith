@@ -182,6 +182,7 @@ is parsed:
 | `bus` | `true` | `false` keeps this process's sessions off the [local bus](bus.md). |
 | `remote` | off | [Remote access from a phone](remote.md#settings): `enabled` and `relay`. Read only from your global config file; a `remote` key anywhere else is ignored with a warning. In development. |
 | `repo_warning` | `true` | `false` stops the warning about starting outside a repository ([details](cli.md#starting-outside-a-repository)). Your own config, so a folder can't silence the warning about itself; your home folder and `/` are asked about regardless. |
+| `sandbox` | on | The operating-system sandbox under shell commands: `enabled`, `network` (`all`, `none`), `write`, `caches`, `unsupported` (`refuse`, `run`). Your own config only (the global file and per-repo files); a repository can't set it. See [Sandbox](sandbox.md). |
 | `automation` | `{}` | `{"permissions": [...]}`, rules for unattended runs. See [automations](automations.md#permissions-for-unattended-runs). |
 | `catalog` | no fetching | `{"fetch": true, "url": "..."}` opts in to fetching the models.dev catalog. See [the model catalog](#the-model-catalog-modelsdev). |
 | `update` | `"disable"` | Global config only: `"notify"` checks for a new release once a day and says so after the UI exits. See [update checks](cli.md#update-checks). |

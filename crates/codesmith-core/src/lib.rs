@@ -50,6 +50,7 @@ pub mod repository;
 pub mod retry;
 pub mod review;
 pub mod runner;
+pub mod sandbox;
 pub mod session;
 pub mod shell_select;
 pub mod skill;
