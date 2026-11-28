@@ -53,15 +53,14 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use codesmith_ai::{FinishReason, Usage};
 use codesmith_core::config::Loaded;
+use codesmith_core::events::{JsonEvents, SharedChildren};
 use codesmith_core::permission::{Approvals, Asker, Fixed, Reply, Request};
 use codesmith_core::question::{Prompt, Questioner};
-use codesmith_core::session::{self, Options, Session, Sink};
+use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::Store;
 use codesmith_core::tool::shell::Jobs;
-use codesmith_core::tool::todo::Todo;
 use codesmith_core::watch;
 use futures_util::Stream;
 use serde_json::{json, Value};
@@ -106,23 +105,13 @@ struct Prompter {
     /// followers that connect while they are open).
     pending: Mutex<HashMap<String, (Pending, Value)>>,
     /// The subagents running in the current turn, innermost last.
-    children: Mutex<Children>,
-}
-
-/// The subagents a turn runs, as its events name them.
-#[derive(Default)]
-struct Children {
-    /// Running subagent sessions, outermost first.
-    stack: Vec<String>,
-    /// The latest `subagent` call and the agent it named, for the next
-    /// `child_start`.
-    call: Option<(String, Option<String>)>,
+    children: SharedChildren,
 }
 
 impl Prompter {
     /// The running subagent whose events these are, if any.
     fn child(&self) -> Option<String> {
-        self.children.lock().unwrap().stack.last().cloned()
+        self.children.lock().unwrap().current()
     }
     fn set(&self, tx: Option<Tx>) {
         *self.events.lock().unwrap() = tx;
@@ -252,106 +241,13 @@ impl Questioner for Prompter {
     }
 }
 
-struct JsonSink(Arc<Prompter>);
-
-impl JsonSink {
-    fn send(&self, v: Value) {
-        self.0.send(v);
-    }
-    /// Send a tool event, naming the subagent whose call it is.
-    fn send_tool(&self, mut v: Value) {
-        if let Some(child) = self.0.child() {
-            v["session"] = json!(child);
-        }
-        self.send(v);
-    }
-}
-
-/// A generated file's metadata (its bytes are in the session's messages).
-fn media_event(m: &codesmith_ai::Media) -> Value {
-    let mut ev = json!({"type": "media", "mime": m.mime, "name": m.filename});
-    match &m.source {
-        codesmith_ai::Source::Base64(b) => {
-            let pad = b.bytes().rev().take_while(|c| *c == b'=').count();
-            ev["size"] = json!((b.len() / 4 * 3).saturating_sub(pad));
-        }
-        codesmith_ai::Source::Url(u) => ev["url"] = json!(u),
-    }
-    ev
-}
-
-impl Sink for JsonSink {
-    fn text(&mut self, delta: &str) {
-        self.send(json!({"type": "text", "delta": delta}));
-    }
-    fn reasoning(&mut self, delta: &str) {
-        self.send(json!({"type": "reasoning", "delta": delta}));
-    }
-    fn media(&mut self, media: &codesmith_ai::Media) {
-        self.send(media_event(media));
-    }
-    fn tool_start(&mut self, id: &str, name: &str, input: &Value) {
-        if name.rsplit(" › ").next() == Some("subagent") {
-            let agent = input["agent"].as_str().map(str::to_string);
-            self.0.children.lock().unwrap().call = Some((id.to_string(), agent));
-        }
-        self.send_tool(json!({"type": "tool_start", "id": id, "name": name, "input": input}));
-    }
-    fn tool_end(&mut self, id: &str, name: &str, output: &str, is_error: bool) {
-        self.send_tool(json!({"type": "tool_end", "id": id, "name": name, "output": output, "error": is_error}));
-    }
-    fn child_start(&mut self, child: &session::ChildSession) {
-        let (call, agent) = {
-            let mut c = self.0.children.lock().unwrap();
-            c.stack.push(child.id.clone());
-            c.call.take().unzip()
-        };
-        self.send(json!({
-            "type": "child_start",
-            "session": child.id,
-            "parent": child.parent_id,
-            "depth": child.depth,
-            "title": child.title,
-            "agent": agent.flatten(),
-            "tool": call,
-        }));
-    }
-    fn child_end(&mut self, id: &str, status: &str, error: Option<&str>) {
-        {
-            let mut c = self.0.children.lock().unwrap();
-            if let Some(at) = c.stack.iter().rposition(|s| s == id) {
-                c.stack.truncate(at);
-            }
-        }
-        self.send(json!({"type": "child_end", "session": id, "status": status, "error": error}));
-    }
-    fn child_text(&mut self, delta: &str) {
-        self.send(json!({"type": "child_text", "session": self.0.child(), "delta": delta}));
-    }
-    fn child_reasoning(&mut self, delta: &str) {
-        self.send(json!({"type": "child_reasoning", "session": self.0.child(), "delta": delta}));
-    }
-    fn step_end(&mut self, reason: &FinishReason, usage: &Usage) {
-        self.send(json!({"type": "step_end", "reason": reason.normalized, "finish": reason, "usage": usage}));
-    }
-    fn retry(&mut self, attempt: u32, error: &str, wait: Duration) {
-        self.send(json!({"type": "retry", "attempt": attempt, "error": error, "wait_ms": wait.as_millis() as u64}));
-    }
-    fn compacted(&mut self, before: u64, after: u64) {
-        self.send(json!({"type": "compacted", "before": before, "after": after}));
-    }
-    fn todos(&mut self, todos: &[Todo]) {
-        self.send(json!({"type": "todos", "todos": todos}));
-    }
-    fn notice(&mut self, message: &str) {
-        self.send(json!({"type": "notice", "message": message}));
-    }
-    fn tool_progress(&mut self, id: &str, metadata: &Value) {
-        self.send_tool(json!({"type": "tool_progress", "id": id, "metadata": metadata}));
-    }
-    fn tool_output(&mut self, id: &str, delta: &str) {
-        self.send_tool(json!({"type": "tool_output", "id": id, "delta": delta}));
-    }
+/// A turn's sink: serve's events, as [`JsonEvents`] makes them, to the
+/// turn's client and the watchers.
+fn json_sink(p: Arc<Prompter>) -> JsonEvents<impl FnMut(Value) + Send> {
+    let children = p.children.clone();
+    JsonEvents::new(children, move |v| {
+        p.send(v);
+    })
 }
 
 /// A session held in memory. `session` is `None` while a turn runs.
@@ -1193,7 +1089,7 @@ async fn message(
     g.prompter.set(Some(tx.clone()));
     let (live2, prompter) = (live.clone(), g.prompter.clone());
     g.task = Some(tokio::spawn(async move {
-        let mut sink = JsonSink(prompter.clone());
+        let mut sink = json_sink(prompter.clone());
         // Paths are checked now, so their permission requests reach this
         // stream.
         let mut media = Vec::new();
@@ -1376,7 +1272,7 @@ fn resume(live: &Arc<tokio::sync::Mutex<Live>>, g: &mut Live) {
     };
     let (live2, prompter) = (live.clone(), g.prompter.clone());
     g.task = Some(tokio::spawn(async move {
-        let mut sink = JsonSink(prompter.clone());
+        let mut sink = json_sink(prompter.clone());
         let r = s.resume_background(&mut sink).await;
         let done = json!({"type": "done", "resumed": true, "error": r.err().map(|e| format!("{e:#}")), "usage": s.usage, "title": s.title});
         let mut g = live2.lock().await;
@@ -1837,6 +1733,7 @@ pub async fn serve_on(st: St, listener: tokio::net::TcpListener, host: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codesmith_core::session::Sink;
     use futures_util::StreamExt;
 
     // Generated media is announced by its metadata only; clients read the
@@ -1846,7 +1743,7 @@ mod tests {
         let p = Arc::new(Prompter::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
         p.follow(tx);
-        let mut sink = JsonSink(p);
+        let mut sink = json_sink(p);
         let png = codesmith_ai::Media::base64("image/png", "iVBORw0KGgo=").named("cat.png");
         sink.media(&png);
         let ev = rx.try_recv().unwrap();
@@ -1870,7 +1767,7 @@ mod tests {
         let p = Arc::new(Prompter::default());
         let (tx, mut rx) = mpsc::unbounded_channel();
         p.follow(tx);
-        let mut sink = JsonSink(p);
+        let mut sink = json_sink(p);
         let child = |id: &str, parent: &str, depth| session::ChildSession {
             id: id.into(),
             parent_id: parent.into(),
@@ -2616,7 +2513,7 @@ mod tests {
             parent_id: None,
             created: 1,
             updated: 1,
-            usage: Usage::default(),
+            usage: codesmith_ai::Usage::default(),
         })
         .unwrap();
         let c = client();
