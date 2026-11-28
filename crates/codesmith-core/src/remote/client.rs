@@ -129,6 +129,16 @@ pub fn turn_key(epoch: Option<&str>, turn: &str) -> String {
     }
 }
 
+/// The resets in a row after a stream ends: one more when it ended with
+/// a reset, none when it ended otherwise.
+pub fn next_streak(streak: u64, ended_by_reset: bool) -> u64 {
+    if ended_by_reset {
+        streak + 1
+    } else {
+        0
+    }
+}
+
 /// How long to wait before reloading after `in_a_row` resets.
 pub fn reload_delay(in_a_row: u64, backoff_ms: u64) -> u64 {
     if in_a_row == 1 {

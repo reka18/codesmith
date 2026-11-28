@@ -391,7 +391,10 @@ impl Server {
         token: String,
         mcp: Arc<codesmith_core::mcp::Mcp>,
     ) -> Arc<Server> {
-        Server::with_daemon(loaded, cwd, db, auto, token, mcp, None)
+        let st = Server::with_daemon(loaded, cwd, db, auto, token, mcp, None);
+        // Tests never reach the user's own gateway.
+        let _ = st.hub.set(Hub::inert());
+        st
     }
 
     /// A server whose commands and terminals run in `daemon` (none: in
@@ -2047,7 +2050,7 @@ mod tests {
         }))
         .unwrap();
         let p = dir.join("p");
-        let st = Server::new(
+        let st = Server::with_daemon(
             Loaded {
                 config,
                 files: vec![],
@@ -2059,6 +2062,7 @@ mod tests {
             false,
             TOKEN.to_string(),
             codesmith_core::mcp::Mcp::empty(),
+            None,
         );
         let hub = Hub::connect_to(
             tap::kind::SERVE,

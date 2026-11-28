@@ -304,7 +304,7 @@ Every event has an envelope:
 | Type | Fields |
 |---|---|
 | `turn_start` | `origin: {kind, name}`: `kind` is `terminal` (a prompt on this machine: the TUI, an editor or a `serve` client), `device`, `bus` (another session, `name` saying which) or `resumed` (the machine resumed the session itself when a background command finished). |
-| `user_message` | `text`, exactly as the session got it, and `attachments`. Prompts typed in the terminal send one too. |
+| `user_message` | `text`, the prompt exactly as it was typed in the terminal or posted, never with a skill's or command's content joined in, and `attachments`. |
 | `text`, `reasoning` | `delta`. |
 | `tool_start` | `id`, `name`, `input`. |
 | `tool_output` | `id`, `delta`: a running command's output so far. |
@@ -389,9 +389,11 @@ cursor's decision for each event (apply, skip, or reset, including
 snapshot gives, and scripted turns cut at every point. CodeSmith's tests
 run it against what the machine sends.
 
-One thing the stored history doesn't have: prompt cards. A snapshot taken
-after a turn ends shows its messages, not its permission requests and
-questions.
+Two things differ in the stored history. It has no prompt cards: a
+snapshot taken after a turn ends shows its messages, not its permission
+requests and questions. And a stored user message can be longer than the
+turn's `user_message`, when the prompt brought in a skill, a command's
+template or a mentioned file's text.
 
 ## Versioning
 

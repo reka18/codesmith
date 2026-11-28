@@ -441,10 +441,10 @@ impl Runner {
             self.app.error("no session");
             return;
         };
+        // The prompt as typed, not as expanded for the model (S7, S25).
+        let tap = self.remote_start(Origin::terminal(), Some(&shown));
         self.app.entries.push(Entry::User(shown));
         self.app.start_turn();
-        // As the session stores it (S22: the same after a reload).
-        let tap = self.remote_start(Origin::terminal(), Some(&text));
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
@@ -2710,7 +2710,12 @@ async fn run_in(
         asker: parts.asker,
         questioner: parts.questioner,
         tap_slot: parts.slot,
-        hub: Hub::start(remote::kind::TUI),
+        // Tests never reach the user's own gateway.
+        hub: if cfg!(test) {
+            Hub::inert()
+        } else {
+            Hub::start(remote::kind::TUI)
+        },
         remote_turn: false,
         mcp,
         agent: opts.agent,

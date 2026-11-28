@@ -28,7 +28,7 @@ fn the_copy_is_the_pinned_one() {
         .find(|l| l.contains("`remote_events.json`"))
         .unwrap();
     assert!(row.contains(&hash), "{hash} isn't pinned in: {row}");
-    assert!(row.contains("`ba23710`"));
+    assert!(row.contains("`d6396fd`"));
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn the_observe_table() {
 }
 
 #[test]
-fn the_snapshot_plans_turn_keys_and_reload_delays() {
+fn the_snapshot_plans_turn_keys_reset_streaks_and_reload_delays() {
     let f = fixture();
     for case in f["snapshots"].as_array().unwrap() {
         let p = client::plan(&case["snapshot"]);
@@ -76,6 +76,16 @@ fn the_snapshot_plans_turn_keys_and_reload_delays() {
         assert_eq!(
             client::turn_key(k["epoch"].as_str(), k["turn"].as_str().unwrap()),
             k["key"]
+        );
+    }
+    for r in f["resetStreaks"].as_array().unwrap() {
+        assert_eq!(
+            json!(client::next_streak(
+                r["streak"].as_u64().unwrap(),
+                r["endedByReset"].as_bool().unwrap()
+            )),
+            r["next"],
+            "{r}"
         );
     }
     for d in f["reloadDelays"].as_array().unwrap() {

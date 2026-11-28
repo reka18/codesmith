@@ -2029,7 +2029,11 @@ impl Agent {
         s.set_id(slot.id.clone());
         s.share_approvals(slot.approvals.clone());
         s.adopt_jobs(slot.jobs.clone());
-        slot.tap_slot.set(self.hub.tap(&s));
+        #[cfg(test)]
+        let hub = tests::hub_for(&slot.cwd).unwrap_or_else(|| self.hub.clone());
+        #[cfg(not(test))]
+        let hub = self.hub.clone();
+        slot.tap_slot.set(hub.tap(&s));
         *slot.shown.lock().unwrap() = (s.model_spec.clone(), s.agent.id.clone());
         if stored {
             if let Some(db) = self.store() {
@@ -3156,7 +3160,12 @@ where
         sessions: Default::default(),
         client: Mutex::new(Value::Null),
         cancels: Default::default(),
-        hub: Hub::start(remote::kind::ACP),
+        // Tests never reach the user's own gateway (see `tests::hub_for`).
+        hub: if cfg!(test) {
+            Hub::inert()
+        } else {
+            Hub::start(remote::kind::ACP)
+        },
     });
     let mut lines = reader.lines();
     let mut seq: u64 = 0;
@@ -3797,6 +3806,68 @@ mod tests {
             .find(|o| o["id"] == id)
             .cloned()
             .unwrap()
+    }
+
+    /// Hubs for the sessions opened in a directory, as a test sets them.
+    static HUBS: std::sync::LazyLock<Mutex<HashMap<PathBuf, Hub>>> =
+        std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn hub_for(cwd: &Path) -> Option<Hub> {
+        HUBS.lock().unwrap().get(cwd).cloned()
+    }
+
+    /// S7, S25: a slash command's turn tells the phones the prompt as the
+    /// client sent it, not the command's expanded template.
+    #[cfg(all(unix, feature = "remote"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phone_gets_a_slash_command_as_typed() {
+        use codesmith_core::remote::tap::{kind, Limits};
+        let (_d, cwd, base) = tmp().await;
+        // A hub that keeps the events (no gateway needed to read them).
+        let hub = Hub::connect_to(
+            kind::ACP,
+            cwd.join("no-gateway"),
+            Limits {
+                merge_window: Duration::ZERO,
+                ..Default::default()
+            },
+            Duration::from_secs(60),
+        );
+        HUBS.lock().unwrap().insert(cwd.clone(), hub.clone());
+        let mut c = start_with(
+            &cwd,
+            &base,
+            json!({"commands": {"look": {"template": "describe $ARGUMENTS", "description": "Look around"}}}),
+        );
+        let sid = c.new_session(&cwd).await;
+        let id = c
+            .call(
+                "session/prompt",
+                json!({"sessionId": sid, "prompt": [{"type": "text", "text": "/look now"}]}),
+            )
+            .await;
+        let (done, seen) = c.until(id, |_| None).await;
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{seen:?}");
+        let tap = hub.tap_for(&sid, Default::default(), 0);
+        let m = tap.mirror().unwrap();
+        let events = m.subscribe(Some((hub.epoch(), 0))).events;
+        let user: Vec<&Value> = events
+            .iter()
+            .filter(|e| e["type"] == "user_message")
+            .collect();
+        assert_eq!(user.len(), 1, "{events:?}");
+        assert_eq!(user[0]["text"], "/look now");
+        let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(kinds.first(), Some(&"turn_start"));
+        assert!(kinds.contains(&"done"));
+        // The turn's own text came through the tee too.
+        let said: String = events
+            .iter()
+            .filter(|e| e["type"] == "text")
+            .filter_map(|e| e["delta"].as_str())
+            .collect();
+        assert_eq!(said, "described");
+        HUBS.lock().unwrap().remove(&cwd);
     }
 
     async fn tmp() -> (tempfile::TempDir, PathBuf, String) {
