@@ -251,6 +251,18 @@ impl Sink for ChanSink {
     }
 }
 
+/// A turn's sink: the UI's, and the phones' (remote access) through `tap`.
+pub fn turn_sink(
+    tx: UnboundedSender<Ev>,
+    cwd: PathBuf,
+    tap: &codesmith_core::remote::tap::Tap,
+) -> impl Sink {
+    codesmith_core::events::Tee {
+        first: ChanSink::new(tx, cwd),
+        second: tap.sink(),
+    }
+}
+
 /// Answers permission requests and questions through the UI. Called on a
 /// blocking section of the session task, so it may wait. While the UI stops
 /// a turn (`stopping`), open and new prompts are refused at once, so the

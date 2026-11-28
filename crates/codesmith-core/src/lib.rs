@@ -17,6 +17,7 @@ pub mod compaction;
 pub mod config;
 #[cfg(unix)]
 pub mod daemon;
+pub mod events;
 pub mod export;
 pub mod folder;
 pub mod fork;

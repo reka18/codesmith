@@ -20,6 +20,7 @@ use super::tabs::{self, Attention, Item, Saved, Status, Strip, Tab, Unread};
 use super::{open_store, Runner};
 use codesmith_core::permission::{Approvals, Asker, Fixed, Reply};
 use codesmith_core::question::Questioner;
+use codesmith_core::remote::tap::TapSlot;
 use codesmith_core::session::Session;
 use codesmith_core::store;
 use codesmith_core::tool::shell::Jobs;
@@ -48,6 +49,8 @@ pub(super) struct Slot {
     waiter: Option<JoinHandle<()>>,
     resume_held: Option<usize>,
     jobs: Jobs,
+    tap_slot: TapSlot,
+    remote_turn: bool,
 }
 
 /// Where a tab's state is.
@@ -77,6 +80,8 @@ pub(super) struct Parts {
     pub asker: Arc<dyn Asker>,
     pub questioner: Option<Arc<dyn Questioner>>,
     pub prompter: Option<Arc<ChanPrompter>>,
+    /// The tap its asker and questioner report to.
+    pub slot: TapSlot,
 }
 
 pub(super) struct Host {
@@ -148,13 +153,16 @@ impl Host {
         };
         let questioner: Option<Arc<dyn Questioner>> =
             prompter.as_ref().map(|p| p.clone() as Arc<dyn Questioner>);
+        // Its prompts go to the phones too (remote access).
+        let slot = TapSlot::default();
         (
             id,
             Parts {
                 tx,
-                asker,
-                questioner,
+                asker: slot.asker(asker),
+                questioner: slot.questioner(questioner),
                 prompter,
+                slot,
             },
         )
     }
@@ -167,6 +175,8 @@ impl Host {
             asker: p.asker,
             questioner: p.questioner,
             prompter: p.prompter,
+            tap_slot: p.slot,
+            remote_turn: false,
             agent,
             model,
             session: None,
@@ -241,6 +251,8 @@ const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
 /// Stop a closed tab's turn and background commands.
 fn teardown(mut s: Box<Slot>) {
+    // The phones see its session closed.
+    s.tap_slot.get().release();
     if let Some(p) = &s.prompter {
         p.set_stopping(true);
     }
@@ -281,6 +293,8 @@ impl Runner {
         std::mem::swap(&mut self.waiter, &mut s.waiter);
         std::mem::swap(&mut self.resume_held, &mut s.resume_held);
         std::mem::swap(&mut self.jobs, &mut s.jobs);
+        std::mem::swap(&mut self.tap_slot, &mut s.tap_slot);
+        std::mem::swap(&mut self.remote_turn, &mut s.remote_turn);
     }
 
     /// Open the tabs: the ones kept from last time (when tabs are on) and

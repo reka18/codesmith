@@ -66,7 +66,7 @@ pub async fn request(
     send.write_all(&http::request_bytes(method, path, headers, body))
         .await?;
     send.finish()?;
-    let bytes = recv.read_to_end(1 << 20).await?;
+    let bytes = recv.read_to_end(64 << 20).await?;
     Ok(http::parse_response(&bytes)?)
 }
 
@@ -88,5 +88,124 @@ pub async fn close_code(conn: &Connection) -> Option<u64> {
     match conn.closed().await {
         ConnectionError::ApplicationClosed(c) => Some(c.error_code.into_inner()),
         _ => None,
+    }
+}
+
+/// One thing an event stream sent.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sse {
+    /// An event: its SSE id (none for one sent again, or a `reset`) and
+    /// its JSON.
+    Event {
+        id: Option<String>,
+        data: serde_json::Value,
+    },
+    /// A comment line (`: ping`).
+    Comment(String),
+}
+
+/// An open event stream.
+pub struct Events {
+    recv: iroh::endpoint::RecvStream,
+    _send: iroh::endpoint::SendStream,
+    buf: Vec<u8>,
+    /// The response's status.
+    pub status: u16,
+    /// The body of a response that isn't a stream.
+    pub body: serde_json::Value,
+}
+
+/// `GET path` as an event stream, resuming after `last_event_id`.
+pub async fn events(
+    conn: &Connection,
+    path: &str,
+    last_event_id: Option<&str>,
+) -> anyhow::Result<Events> {
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let headers: Vec<(&str, &str)> = last_event_id
+        .map(|id| vec![("last-event-id", id)])
+        .unwrap_or_default();
+    send.write_all(&http::request_bytes("GET", path, &headers, b""))
+        .await?;
+    let mut buf = Vec::new();
+    let head_end = loop {
+        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break i + 4;
+        }
+        let mut chunk = [0u8; 4096];
+        match recv.read(&mut chunk).await? {
+            Some(n) => buf.extend_from_slice(&chunk[..n]),
+            None => anyhow::bail!("the stream ended before its head"),
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let rest = buf[head_end..].to_vec();
+    if !head.contains("text/event-stream") {
+        let mut all = rest;
+        let mut chunk = [0u8; 4096];
+        while let Ok(Some(n)) = recv.read(&mut chunk).await {
+            all.extend_from_slice(&chunk[..n]);
+        }
+        let body = serde_json::from_slice(&all).unwrap_or_default();
+        return Ok(Events {
+            recv,
+            _send: send,
+            buf: vec![],
+            status,
+            body,
+        });
+    }
+    Ok(Events {
+        recv,
+        _send: send,
+        buf: rest,
+        status,
+        body: serde_json::Value::Null,
+    })
+}
+
+impl Events {
+    /// The next event or comment; `None` when the stream ended.
+    pub async fn next(&mut self) -> Option<Sse> {
+        loop {
+            if let Some(i) = self.buf.windows(2).position(|w| w == b"\n\n") {
+                let block = String::from_utf8_lossy(&self.buf[..i]).to_string();
+                self.buf.drain(..i + 2);
+                let (mut id, mut data) = (None, String::new());
+                for l in block.lines() {
+                    if let Some(c) = l.strip_prefix(':') {
+                        return Some(Sse::Comment(c.trim().to_string()));
+                    } else if let Some(v) = l.strip_prefix("id: ") {
+                        id = Some(v.to_string());
+                    } else if let Some(v) = l.strip_prefix("data: ") {
+                        data.push_str(v);
+                    }
+                }
+                return Some(Sse::Event {
+                    id,
+                    data: serde_json::from_str(&data).unwrap_or_default(),
+                });
+            }
+            let mut chunk = vec![0u8; 64 * 1024];
+            match self.recv.read(&mut chunk).await {
+                Ok(Some(n)) => self.buf.extend_from_slice(&chunk[..n]),
+                _ => return None,
+            }
+        }
+    }
+
+    /// The next event, skipping comments.
+    pub async fn event(&mut self) -> Option<(Option<String>, serde_json::Value)> {
+        loop {
+            match self.next().await? {
+                Sse::Event { id, data } => return Some((id, data)),
+                Sse::Comment(_) => {}
+            }
+        }
     }
 }

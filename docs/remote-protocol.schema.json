@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/reka18/codesmith/blob/main/docs/remote-protocol.schema.json",
   "title": "CodeSmith remote protocol bodies",
-  "description": "Every request and response body of the CodeSmith remote protocol built so far (see remote-protocol.md). In development: more are added as the protocol grows.",
+  "description": "Every request and response body of the CodeSmith remote protocol built so far (see remote-protocol.md): pairing, the read routes and the events. In development: more are added as the protocol grows.",
   "$defs": {
     "nodeId": {
       "description": "An ed25519 public key as 64 lower-case hex characters.",
@@ -11,28 +11,41 @@
     },
     "scope": {
       "type": "string",
-      "enum": ["control", "watch"]
+      "enum": [
+        "control",
+        "watch"
+      ]
     },
     "grant": {
       "type": "object",
-      "required": ["session", "scope"],
+      "required": [
+        "session",
+        "scope"
+      ],
       "properties": {
         "session": {
           "description": "A session id, or \"*\" for every session on the machine, now and future.",
           "type": "string",
           "minLength": 1
         },
-        "scope": { "$ref": "#/$defs/scope" }
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
       }
     },
     "error": {
       "description": "Every /v1 error body.",
       "type": "object",
-      "required": ["error"],
+      "required": [
+        "error"
+      ],
       "properties": {
         "error": {
           "type": "object",
-          "required": ["code", "message"],
+          "required": [
+            "code",
+            "message"
+          ],
           "properties": {
             "code": {
               "description": "What a client acts on. New codes may be added; treat an unknown one by its HTTP status.",
@@ -40,10 +53,12 @@
               "examples": [
                 "bad_request",
                 "not_found",
+                "forbidden_scope",
                 "pairing_refused",
                 "code_expired",
                 "too_large",
                 "rate_limited",
+                "unavailable",
                 "internal"
               ]
             },
@@ -58,7 +73,10 @@
     "claimRequest": {
       "description": "POST /v1/pair/claim on ALPN codesmith/pair/1.",
       "type": "object",
-      "required": ["code", "device"],
+      "required": [
+        "code",
+        "device"
+      ],
       "properties": {
         "code": {
           "description": "The pairing code from the link's c.",
@@ -66,7 +84,10 @@
         },
         "device": {
           "type": "object",
-          "required": ["name", "platform"],
+          "required": [
+            "name",
+            "platform"
+          ],
           "properties": {
             "name": {
               "description": "Shown at the terminal. Control and text-direction characters are removed and it is cut to 64 characters; it must not be empty after that.",
@@ -81,7 +102,10 @@
         "push": {
           "description": "An opaque push token, kept for wake-ups.",
           "type": "object",
-          "required": ["kind", "token"],
+          "required": [
+            "kind",
+            "token"
+          ],
           "properties": {
             "kind": {
               "type": "string",
@@ -97,9 +121,14 @@
         "unlock_key": {
           "description": "A passkey for unlocking terminals: a P-256 key kept apart from the device's iroh key. Replaced only by pairing again.",
           "type": "object",
-          "required": ["alg", "spki"],
+          "required": [
+            "alg",
+            "spki"
+          ],
           "properties": {
-            "alg": { "const": "ES256" },
+            "alg": {
+              "const": "ES256"
+            },
             "spki": {
               "description": "The DER SubjectPublicKeyInfo, standard base64 with padding.",
               "type": "string",
@@ -112,29 +141,665 @@
     "claimResponse": {
       "description": "200 to POST /v1/pair/claim.",
       "type": "object",
-      "required": ["machine", "device", "grants"],
+      "required": [
+        "machine",
+        "device",
+        "grants"
+      ],
       "properties": {
         "machine": {
           "type": "object",
-          "required": ["id", "name"],
+          "required": [
+            "id",
+            "name"
+          ],
           "properties": {
-            "id": { "$ref": "#/$defs/nodeId" },
-            "name": { "type": "string" }
+            "id": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "name": {
+              "type": "string"
+            }
           }
         },
         "device": {
           "type": "object",
-          "required": ["id", "name", "platform"],
+          "required": [
+            "id",
+            "name",
+            "platform"
+          ],
           "properties": {
-            "id": { "$ref": "#/$defs/nodeId" },
-            "name": { "type": "string" },
-            "platform": { "type": "string" }
+            "id": {
+              "$ref": "#/$defs/nodeId"
+            },
+            "name": {
+              "type": "string"
+            },
+            "platform": {
+              "type": "string"
+            }
           }
         },
         "grants": {
           "description": "Every grant the device has now.",
           "type": "array",
-          "items": { "$ref": "#/$defs/grant" }
+          "items": {
+            "$ref": "#/$defs/grant"
+          }
+        }
+      }
+    },
+    "message": {
+      "description": "A message in serve's record format: a role, then parts with a type and data.",
+      "type": "object",
+      "required": [
+        "role",
+        "parts"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant",
+            "system"
+          ]
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "examples": [
+                  "text",
+                  "reasoning",
+                  "tool_call",
+                  "tool_result",
+                  "media"
+                ]
+              },
+              "data": {}
+            }
+          }
+        }
+      }
+    },
+    "machine": {
+      "description": "200 to GET /v1/machine.",
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "version",
+        "protocol",
+        "features"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nodeId"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "protocol": {
+          "const": 1
+        },
+        "features": {
+          "description": "What this machine supports; a client hides what isn't listed. Watching is \"watch\"; later ones include session_reply, terminal and push.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sessionItem": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "agent",
+        "model",
+        "directory",
+        "busy",
+        "owner",
+        "scope"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "busy": {
+          "type": "boolean"
+        },
+        "owner": {
+          "description": "The process holding it: tui, serve or acp; closed when none does (read-only, from the store).",
+          "type": "string",
+          "examples": [
+            "tui",
+            "serve",
+            "acp",
+            "closed"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
+      }
+    },
+    "sessions": {
+      "description": "200 to GET /v1/sessions: the sessions the device has grants for.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sessionItem"
+      }
+    },
+    "turn": {
+      "description": "The running turn: null while idle.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "start_seq"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "start_seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "partial": {
+          "description": "Only while the running turn is over 8 MiB: the turn so far.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "partial_seq": {
+          "description": "With partial: the last seq in it, to subscribe from.",
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "snapshot": {
+      "description": "200 to GET /v1/sessions/{id}: a snapshot.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/sessionItem"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "id",
+        "busy",
+        "epoch",
+        "events_seq",
+        "turn",
+        "messages",
+        "seqs"
+      ],
+      "properties": {
+        "epoch": {
+          "description": "Random per owning process; \"closed\" for a session no process holds.",
+          "type": "string",
+          "minLength": 1
+        },
+        "events_seq": {
+          "description": "The last seq whose effect is in this snapshot; 0 before any event. A running turn's events all come after it.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "turn": {
+          "$ref": "#/$defs/turn"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "seqs": {
+          "description": "Each message's record seq (null for a checkpoint), as before in the messages route takes it.",
+          "type": "array",
+          "items": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "messagesPage": {
+      "description": "200 to GET /v1/sessions/{id}/messages.",
+      "type": "object",
+      "required": [
+        "messages",
+        "seqs",
+        "more"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        },
+        "seqs": {
+          "type": "array",
+          "items": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "more": {
+          "type": "boolean"
+        }
+      }
+    },
+    "envelope": {
+      "description": "What every numbered event carries. Other fields depend on type; clients ignore types and fields they don't know.",
+      "type": "object",
+      "required": [
+        "v",
+        "epoch",
+        "seq",
+        "session",
+        "turn",
+        "ts",
+        "type"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "epoch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "description": "Rises by one per session across turns, from 1.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "session": {
+          "type": "string"
+        },
+        "turn": {
+          "description": "The running turn's id (unique across epochs), or null between turns.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts": {
+          "description": "Milliseconds since the Unix epoch.",
+          "type": "integer"
+        },
+        "type": {
+          "type": "string"
+        },
+        "child": {
+          "description": "On a subagent's events: its session id.",
+          "type": "string"
+        },
+        "merged_from": {
+          "description": "On a merged delta: the first seq it stands for; seq is the last.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "truncated": {
+          "description": "A text in it was cut to keep the event under 1 MiB.",
+          "const": true
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "examples": [
+            "terminal",
+            "device",
+            "bus",
+            "resumed"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "events": {
+      "description": "The event types and their fields (each also has the envelope).",
+      "type": "object",
+      "properties": {
+        "turn_start": {
+          "type": "object",
+          "required": [
+            "origin"
+          ],
+          "properties": {
+            "origin": {
+              "$ref": "#/$defs/origin"
+            }
+          }
+        },
+        "user_message": {
+          "type": "object",
+          "required": [
+            "text",
+            "attachments"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "attachments": {
+              "type": "array"
+            }
+          }
+        },
+        "text": {
+          "type": "object",
+          "required": [
+            "delta"
+          ],
+          "properties": {
+            "delta": {
+              "type": "string"
+            }
+          }
+        },
+        "reasoning": {
+          "type": "object",
+          "required": [
+            "delta"
+          ],
+          "properties": {
+            "delta": {
+              "type": "string"
+            }
+          }
+        },
+        "tool_start": {
+          "type": "object",
+          "required": [
+            "id",
+            "name",
+            "input"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "input": {}
+          }
+        },
+        "tool_output": {
+          "type": "object",
+          "required": [
+            "id",
+            "delta"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "delta": {
+              "type": "string"
+            }
+          }
+        },
+        "tool_end": {
+          "type": "object",
+          "required": [
+            "id",
+            "name",
+            "output",
+            "error"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            },
+            "error": {
+              "type": "boolean"
+            }
+          }
+        },
+        "permission": {
+          "type": "object",
+          "required": [
+            "id",
+            "action",
+            "resources",
+            "title"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "action": {
+              "type": "string"
+            },
+            "resources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        },
+        "question": {
+          "type": "object",
+          "required": [
+            "id",
+            "prompts"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "prompts": {
+              "type": "array"
+            }
+          }
+        },
+        "prompt_resolved": {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "reply",
+            "by"
+          ],
+          "properties": {
+            "id": {
+              "description": "The permission's or question's id.",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "permission",
+                "question"
+              ]
+            },
+            "reply": {
+              "description": "once, session, always or reject for a permission; the answers (or null, dismissed) for a question."
+            },
+            "by": {
+              "$ref": "#/$defs/origin"
+            }
+          }
+        },
+        "notice": {
+          "type": "object",
+          "required": [
+            "message"
+          ],
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "required": [
+            "attempt",
+            "error",
+            "wait_ms"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer"
+            },
+            "error": {
+              "type": "string"
+            },
+            "wait_ms": {
+              "type": "integer"
+            }
+          }
+        },
+        "config": {
+          "type": "object",
+          "required": [
+            "agent",
+            "model",
+            "effort"
+          ],
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "effort": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "queued": {
+          "type": "object",
+          "required": [
+            "count",
+            "next"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "next": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "done": {
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "description": "null when clean.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "session_status": {
+          "type": "object",
+          "required": [
+            "busy"
+          ],
+          "properties": {
+            "busy": {
+              "type": "boolean"
+            }
+          }
+        },
+        "reset": {
+          "type": "object",
+          "required": [
+            "reason"
+          ],
+          "properties": {
+            "reason": {
+              "description": "epoch, gap or turn_too_large on a resume (sent alone, without an SSE id or seq, and the stream ends); history as a numbered event when the history changed outside a turn. Treat any other as a reload.",
+              "type": "string",
+              "examples": [
+                "epoch",
+                "gap",
+                "turn_too_large",
+                "history"
+              ]
+            }
+          }
         }
       }
     }

@@ -59,6 +59,19 @@ All notable changes to CodeSmith are listed here. Versions follow
   files, and its `codesmith remote` commands, always ask. Following and
   driving sessions from the phone come next. See
   [remote access](docs/remote.md) and the [protocol](docs/remote-protocol.md).
+- **Remote access, part two: watching** (in development, like part one).
+  A paired phone sees the sessions it has a grant for and follows them
+  live: prompts as typed in the terminal, the model's answer as it streams,
+  tool calls and their output, permission requests and questions with
+  their answers, and each turn's end. The TUI, `codesmith serve` and ACP
+  register the sessions they hold with the gateway over its private
+  socket; a session held nowhere shows as closed, from the store. A phone
+  that reconnects mid-turn resumes with nothing missing or twice: each
+  session's events are numbered and kept (the running turn whole up to
+  8 MiB), deltas are merged to ten a second, and no event is over 1 MiB.
+  The protocol adds `GET /v1/machine`, `/v1/sessions`, a session's snapshot
+  and messages, and the event streams. The app team's `remote_events.json`
+  fixture runs in the tests.
 - The `remote` cargo feature (on by default) builds it in;
   `--no-default-features` leaves it out.
 

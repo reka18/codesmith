@@ -1,9 +1,9 @@
 # The remote protocol
 
 > **In development**, like [remote access](remote.md) itself. This page
-> describes the parts built so far: the transport, pairing and the error
-> shape. Sessions, events and control are added as they're built. The
-> JSON Schema for every body is
+> describes the parts built so far: the transport, pairing, the error
+> shape, and watching sessions (the read routes and the events). Control
+> is added as it's built. The JSON Schema for every body is
 > [remote-protocol.schema.json](remote-protocol.schema.json).
 
 This is the wire protocol between a CodeSmith machine's gateway
@@ -16,6 +16,10 @@ anyone may write a client.
 - [Pairing](#pairing)
 - [The check code](#the-check-code)
 - [Paired connections](#paired-connections)
+- [Sessions](#sessions)
+- [Events](#events)
+- [Resuming](#resuming)
+- [Rebuilding a turn](#rebuilding-a-turn)
 - [Versioning](#versioning)
 
 ## Transport
@@ -70,11 +74,13 @@ Every error body is:
 | Code | Status | |
 |---|---|---|
 | `bad_request` | 400 | A malformed request or body. |
-| `not_found` | 404 | No such route (or, later, a session the device has no grant for). |
+| `not_found` | 404 | No such route, or a session the device has no grant for (never 403, so a device can't probe which sessions exist). |
+| `forbidden_scope` | 403 | A control route on a session the device may only watch. |
 | `pairing_refused` | 403 | The terminal refused the pairing, or didn't answer in time. |
 | `code_expired` | 410 | The pairing code is wrong, already used, or expired. |
 | `too_large` | 413 | The request is too large. |
 | `rate_limited` | 429 | Too many bad claims from this device key. |
+| `unavailable` | 503 | The process holding the session didn't answer in time. |
 | `internal` | 500 | The machine couldn't save the pairing. |
 
 `message` is for people; clients act on `code`. New codes may be added: a
@@ -191,10 +197,203 @@ On `codesmith/remote/1`, only a paired, unrevoked device key is accepted;
 any other connection closes with code 1. Revoking a device closes its open
 connections with code 1 at once.
 
-The routes come with the next part: until then, every request answers 404
-`not_found`. They'll be `GET /v1/machine`, `/v1/sessions`,
-`/v1/sessions/{id}` and its messages, and the event streams, each checking
-the device's grants and answering 404 for a session it has none for.
+Every route checks the device's grants. A session it has no grant for
+answers 404 `not_found` on every route, and the lists leave it out.
+
+| Route | |
+|---|---|
+| `GET /v1/machine` | The machine and what it supports. |
+| `GET /v1/sessions` | The sessions the device has grants for. |
+| `GET /v1/sessions/{id}` | A snapshot of one: its messages, and where its event stream goes on from. |
+| `GET /v1/sessions/{id}/messages` | Its messages, a page at a time. |
+| `GET /v1/sessions/{id}/events` | Its events, as they happen (Server-Sent Events). |
+| `GET /v1/events` | The events of every session the device has grants for. |
+
+Control (sending prompts, answering permission requests, aborting) comes
+later. Until then, any other method on a session's routes answers 403
+`forbidden_scope` for a device that may only watch it, and 404 for one with
+control.
+
+### The machine
+
+```json
+{"id": "<node id>", "name": "Rays-Mac-mini", "version": "0.8.0", "protocol": 1,
+ "features": ["watch"]}
+```
+
+`features` lists what this machine supports; a client hides what isn't
+listed. So far it's `watch` alone. Later ones include `session_reply`,
+`terminal` and `push`.
+
+## Sessions
+
+A session is **held** while a process has it open: the TUI, `codesmith
+serve` or an editor over ACP. That process numbers its events, and the
+machine reads its snapshots from it. A session no process holds is
+**closed**: read-only, from the session store. Each process registers the
+sessions it holds with the gateway itself.
+
+`GET /v1/sessions` is a list, held sessions first:
+
+```json
+[{"id": "ses_1a2b", "title": "fix the login page", "agent": "build",
+  "model": "anthropic/claude-sonnet-4-5", "directory": "/Users/ray/app",
+  "busy": true, "owner": "tui", "scope": "control"}]
+```
+
+`owner` is `tui`, `serve`, `acp` or `closed`. `busy` is a JSON boolean:
+whether a turn is running. With a grant for every session (`*`), the list
+has the held sessions and the 200 most recently changed closed ones.
+
+`GET /v1/sessions/{id}` adds:
+
+| Field | |
+|---|---|
+| `epoch` | Random per process holding the session; `closed` for a closed one. |
+| `events_seq` | The last event seq whose effect is in this snapshot. 0 before any event. |
+| `turn` | `null` while idle; `{id, start_seq}` while a turn runs. |
+| `messages` | The stored history, in serve's record format: a role, then parts with a type and data (text as a string or `{text}`; `tool_call {id, name, input}`; `tool_result {id, name, content, is_error}`). |
+| `seqs` | Each message's record seq (`null` for a summary checkpoint). |
+| `effort` | The reasoning effort, when one was set. |
+
+While a turn runs, `messages` has the finished turns only, and
+`events_seq` is the seq just before the turn's `turn_start`: the running
+turn's events all come after it. Subscribe from `<epoch>:<events_seq>` and
+the stream replays the turn from its start.
+
+When the running turn is over 8 MiB, `turn` also has `partial` (the turn
+so far, in the same message format) and `partial_seq`. Add `partial` to
+`messages` and subscribe from `partial_seq` instead. `partial_seq` counts
+only with `partial` there.
+
+`GET /v1/sessions/{id}/messages?limit=N&before=SEQ` gives the newest
+`limit` messages (50 by default, at most 500) whose record seq is below
+`before`, oldest first: `{"messages": [...], "seqs": [...], "more": true}`.
+`more` says whether older ones remain.
+
+## Events
+
+An event stream is Server-Sent Events on the request's stream, which stays
+open: `content-type: text/event-stream`, then events, each as
+
+```
+id: <epoch>:<seq>
+event: <type>
+data: <the event as one line of JSON>
+
+```
+
+and a `: ping` comment every 15 seconds while there are none.
+
+Every event has an envelope:
+
+```json
+{"v": 1, "epoch": "9c0e5f7a1b2c3d4e", "seq": 42, "session": "ses_1a2b",
+ "turn": "trn_9c0e5f7a1b2c3d4e_7", "ts": 1764300000042, "type": "text", "delta": "Look"}
+```
+
+- `epoch` is random per process holding the session. It changes when that
+  process restarts or another one takes the session.
+- `seq` rises by one per session, across turns, from 1.
+- `session` is the session's id, on every event. A subagent's events also
+  name the subagent's session in `child`.
+- `turn` is the running turn's id, unique across epochs, or `null` between
+  turns.
+- `ts` is milliseconds since the Unix epoch.
+
+| Type | Fields |
+|---|---|
+| `turn_start` | `origin: {kind, name}`: `kind` is `terminal` (a prompt on this machine: the TUI, an editor or a `serve` client), `device`, `bus` (another session, `name` saying which) or `resumed` (the machine resumed the session itself when a background command finished). |
+| `user_message` | `text`, the prompt exactly as it was typed in the terminal or posted, never with a skill's or command's content joined in, and `attachments`. |
+| `text`, `reasoning` | `delta`. |
+| `tool_start` | `id`, `name`, `input`. |
+| `tool_output` | `id`, `delta`: a running command's output so far. |
+| `tool_end` | `id`, `name`, `output`, `error` (a boolean). |
+| `permission` | `id`, `action`, `resources`, `title`, `save`. |
+| `question` | `id`, `prompts`. |
+| `prompt_resolved` | `id` (the permission's or question's), `kind`, `reply`, `by: {kind, name}`. |
+| `notice` | `message`. |
+| `retry` | `attempt`, `error`, `wait_ms`. |
+| `todos`, `media`, `step_end`, `compacted`, `child_start`, `child_end`, `child_text`, `child_reasoning`, `tool_progress` | As `codesmith serve` sends them. |
+| `config` | `agent`, `model`, `effort`: the selection changed. |
+| `queued` | `count`, `next`: prompts waiting for the running turn. |
+| `done` | `error`: `null` when the turn ended cleanly, else why (`aborted`, `interrupted`, `cancelled`, or the failure). |
+| `session_status` | `busy: false`: the session really is idle now. It can come a little after `done`, for example after an abort. |
+| `reset` | `reason`. See [Resuming](#resuming). |
+
+Clients ignore types and fields they don't know. Every boolean is a JSON
+boolean.
+
+**Merging.** Consecutive `text`, `reasoning`, `tool_output` (of one call),
+`child_text` and `child_reasoning` deltas are sent at most ten a second per
+kind: the deltas of a tenth of a second come as one event.
+
+**Size.** No event is over 1 MiB. A longer one has its longest text cut,
+ending with `[… N more bytes not sent]`, and says `"truncated": true`.
+
+**Prompts.** When a stream opens, the permission requests and questions
+still open that the client hasn't been sent are sent again, as they were,
+without an SSE id. A replay of a running turn has all of its own, answered
+or not, with their `prompt_resolved`.
+
+`GET /v1/events` sends every granted session's events from now on, with
+the same ids. It doesn't replay: resume a session with its own stream.
+
+## Resuming
+
+Send `Last-Event-ID: <epoch>:<seq>` (the last id applied) on
+`GET /v1/sessions/{id}/events`. The stream replays every event after it,
+each with its original seq, then goes on live. A client that skips seqs at
+or before the one it has applied never applies anything twice, `done`
+included.
+
+The machine keeps, per session, the events of finished turns up to 2,000
+events or 4 MiB, and every event of the running turn from its
+`turn_start`, up to 8 MiB. To keep the running turn under that, consecutive
+deltas of one block are merged into one event that has the last seq and
+says `"merged_from": <first seq>`. A resume from inside a merged event gets
+the rest of it, from the next seq, so a replayed event never begins at or
+before the cursor.
+
+When it can't resume, the stream sends one `reset` and ends:
+
+```
+event: reset
+data: {"v": 1, "session": "ses_1a2b", "type": "reset", "reason": "gap"}
+
+```
+
+| `reason` | When |
+|---|---|
+| `epoch` | The cursor is from another epoch: the process restarted, another one holds the session, or it was closed. |
+| `gap` | The events after the cursor are older than the buffer. |
+| `turn_too_large` | The running turn is over 8 MiB and the events after the cursor are gone. The snapshot has `turn.partial`. |
+
+Reload the session (`GET /v1/sessions/{id}`) and subscribe from its
+cursor. A fresh snapshot's cursor doesn't reset. A `reset` with reason
+`history` also comes as an ordinary numbered event when the history
+changed outside a turn (an undo, a redo, `/compact`): reload then too.
+Treat a reason you don't know as a reload.
+
+A closed session's stream, from `closed:0` (its snapshot's cursor), stays
+open with pings. When a process opens the session, it sends `reset`
+`epoch` and ends.
+
+## Rebuilding a turn
+
+A client that loads a snapshot during a turn and subscribes from its
+cursor ends with the same transcript as one that watched the turn live.
+The app team's `remote_events.json` fixture pins the client's side: the
+cursor's decision for each event (apply, skip, or reset, including
+`merged` for a merged event that overlaps what was applied), the plan a
+snapshot gives, and scripted turns cut at every point. CodeSmith's tests
+run it against what the machine sends.
+
+Two things differ in the stored history. It has no prompt cards: a
+snapshot taken after a turn ends shows its messages, not its permission
+requests and questions. And a stored user message can be longer than the
+turn's `user_message`, when the prompt brought in a skill, a command's
+template or a mentioned file's text.
 
 ## Versioning
 

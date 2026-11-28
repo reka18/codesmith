@@ -2,8 +2,9 @@
 
 > **In development.** This is being built and is not in a release yet. It
 > ships when Skeptic Dog's relays are ready and Ray says so. What this page
-> describes is what's built so far: pairing a phone and managing paired
-> devices. Following and driving a session from the phone come next.
+> describes is what's built so far: pairing a phone, managing paired
+> devices, and watching sessions from the phone. Driving a session from
+> the phone comes next.
 
 Remote access lets you pair a phone with CodeSmith by scanning a QR code.
 Skeptic Dog's CodeSmith Mobile app is the first client; the
@@ -152,15 +153,30 @@ The design's other settings (`prompt_timeout`, `notify`, `push_endpoint`,
 
 ## What a phone can and can't do yet
 
-**It can:** pair with this machine and keep a connection open while it's
-paired.
+**It can watch.** A paired phone sees the sessions it has a grant for
+(this one, or every one with `/mobile all`) and follows them live: your
+prompts, as you type them in the terminal, the model's answer as it
+streams, each tool call and its output, permission requests and questions
+and how they were answered, and when a turn ends. If the phone loses its
+connection in the middle of a turn, it picks up where it left off, with
+nothing missing or twice.
 
-**It can't yet:** see sessions, follow them, send prompts, answer
-permission requests, open terminals or get push notifications. Those come
-in the next steps; until then every request a paired phone makes answers
-"not found". Even then, a phone will never run shell commands outside a
-turn, fork, delete or archive sessions, see your environment, or edit your
-saved permission rules.
+A session you have open in CodeSmith (the TUI, `codesmith serve`, or an
+editor over ACP) shows live. One that's open nowhere shows as closed: the
+phone can read its history but nothing new happens in it. The phone sees
+it come alive when you open it again.
+
+**It can't yet:** send prompts, answer permission requests, switch the
+agent or model, open terminals or get push notifications. Those come in
+the next steps. A phone will never run shell commands outside a turn,
+fork, delete or archive sessions, see your environment, or edit your saved
+permission rules.
+
+How each process finds the gateway: while `remote.enabled` is on and the
+gateway runs, every CodeSmith you have open registers its sessions with it
+over its private socket (with the same token and user check as
+`codesmith remote` uses), and tries again every few seconds, so a gateway
+started later, by `/mobile` elsewhere, finds them.
 
 ## Security
 

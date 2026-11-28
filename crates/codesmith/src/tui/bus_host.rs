@@ -5,7 +5,7 @@
 //! what peers see.
 
 use super::app::Entry;
-use super::bridge::{ChanSink, Ev};
+use super::bridge::Ev;
 use super::Runner;
 use codesmith_core::bus::{self, client, Joined, Kind, Message};
 use codesmith_core::session::Session;
@@ -224,10 +224,14 @@ impl Runner {
         self.app.bus_origin = Some(m.from_name.clone());
         self.bus_running = Some(m.clone());
         self.bus_busy(true);
+        let tap = self.remote_start(
+            codesmith_core::remote::tap::Origin::bus(&m.from_name),
+            Some(&m.body),
+        );
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let mut sink = super::bridge::turn_sink(tx.clone(), cwd, &tap);
             let result = s
                 .prompt_from_bus(&m, &mut sink)
                 .await

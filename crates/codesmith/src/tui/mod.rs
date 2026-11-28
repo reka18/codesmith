@@ -90,10 +90,11 @@ pub(crate) use view::display_safe;
 
 use anyhow::{anyhow, Result};
 use app::{Action, App, Entry, Modal, Pick, Picker};
-use bridge::{ChanPrompter, ChanSink, Ev};
+use bridge::{turn_sink, ChanPrompter, ChanSink, Ev};
 use codesmith_core::config::{self, Loaded};
 use codesmith_core::permission::{Approvals, Asker};
 use codesmith_core::question::Questioner;
+use codesmith_core::remote::tap::{self as remote, Hub, Origin, Tap, TapSlot};
 use codesmith_core::session::{self, Options, Session};
 use codesmith_core::snapshot::Snapshots;
 use codesmith_core::store::{self, Store};
@@ -223,6 +224,13 @@ struct Runner {
     bus_paused: bool,
     /// The session, title, agent and model the bus last heard about.
     bus_seen: Option<(String, Option<String>, String, String)>,
+    /// Remote access: phones follow this UI's sessions through the hub.
+    hub: Hub,
+    /// The shown tab's session's tap, which its asker and questioner
+    /// report to.
+    tap_slot: TapSlot,
+    /// The running turn told the phones it started (`/compact` doesn't).
+    remote_turn: bool,
 }
 
 /// How long an interrupt waits for the turn's task to stop. A tool parked
@@ -292,6 +300,12 @@ impl Runner {
     /// Install a session and refresh the header (and transcript when continuing).
     fn install(&mut self, mut s: Session, replay: bool) {
         self.bus_follow(&mut s);
+        if s.id != self.session_id && !self.session_id.is_empty() {
+            // This tab moved to another session: the phones see the old
+            // one closed.
+            self.tap_slot.get().release();
+        }
+        self.tap_slot.set(self.hub.tap(&s));
         self.selections.record(&s.id, &s.agent.id, &s.model_spec);
         self.app.header.agent = s.agent.name.clone();
         self.app.header.next_agent = self.next_agent(&s.agent.id, 1).and_then(|id| {
@@ -379,6 +393,14 @@ impl Runner {
         Ok(())
     }
 
+    /// Tell the phones a turn starts; the tap its events go to.
+    fn remote_start(&mut self, origin: Origin, text: Option<&str>) -> Tap {
+        let t = self.tap_slot.get();
+        t.turn_start(&origin, text);
+        self.remote_turn = true;
+        t
+    }
+
     /// Run a custom or MCP command: its prompt (an MCP prompt fetched
     /// first, `` !`cmd` `` output filled in) sent, or run in a child session.
     fn submit_command(&mut self, shown: String, c: command::Command, args: String) {
@@ -393,10 +415,11 @@ impl Runner {
         };
         self.app.entries.push(Entry::User(shown.clone()));
         self.app.start_turn();
+        let tap = self.remote_start(Origin::terminal(), Some(&shown));
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let mut sink = turn_sink(tx.clone(), cwd, &tap);
             let result = s
                 .run_command(&shown, &c, &args, vec![], &mut sink)
                 .await
@@ -418,12 +441,14 @@ impl Runner {
             self.app.error("no session");
             return;
         };
+        // The prompt as typed, not as expanded for the model (S7, S25).
+        let tap = self.remote_start(Origin::terminal(), Some(&shown));
         self.app.entries.push(Entry::User(shown));
         self.app.start_turn();
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let mut sink = turn_sink(tx.clone(), cwd, &tap);
             let result = s
                 .prompt_with(&text, media, &mut sink)
                 .await
@@ -449,11 +474,12 @@ impl Runner {
         };
         self.app.busy = true;
         self.shell_command = Some(command.clone());
+        let tap = self.remote_start(Origin::terminal(), None);
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
             use codesmith_core::session::Sink;
-            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let mut sink = turn_sink(tx.clone(), cwd, &tap);
             let id = format!("user-shell-{}", session::new_id());
             sink.tool_start(&id, "shell", &serde_json::json!({"command": command}));
             let result = match s.shell(&command).await {
@@ -503,6 +529,7 @@ impl Runner {
             Some(s.id.clone()),
             None,
         );
+        let tap = self.remote_start(Origin::terminal(), Some(&shown));
         let (tx, name, args) = (self.tx.clone(), name.to_string(), args.to_string());
         self.task = Some(tokio::spawn(async move {
             let notes = tx.clone();
@@ -513,6 +540,7 @@ impl Runner {
                 match codesmith_core::review::run_command(&name, &args, &env, &progress).await {
                     Ok((report, usage)) => {
                         let _ = tx.send(Ev::Text(report.clone()));
+                        tap.push(serde_json::json!({"type": "text", "delta": report}));
                         s.append_exchange(&shown, &report, &usage)
                             .map_err(|e| format!("{e:#}"))
                     }
@@ -574,9 +602,13 @@ impl Runner {
         self.app.end_turn(true);
         self.app.drop_forming();
         self.app.notice("interrupted");
+        if std::mem::take(&mut self.remote_turn) {
+            self.tap_slot.get().end_stopped("interrupted");
+        }
         if let Err(e) = self.reload() {
             self.app.error(format!("{e:#}"));
         }
+        self.tap_slot.get().idle();
         // The user stopped the turn: commands that already finished wait
         // for the next prompt (or another to finish) instead of resuming
         // the session at once, which after an interrupted resume would
@@ -661,10 +693,11 @@ impl Runner {
             return;
         };
         self.app.start_turn();
+        let tap = self.remote_start(Origin::resumed(), None);
         let tx = self.tx.clone();
         let cwd = s.cwd.clone();
         self.task = Some(tokio::spawn(async move {
-            let mut sink = ChanSink::new(tx.clone(), cwd);
+            let mut sink = turn_sink(tx.clone(), cwd, &tap);
             let result = s
                 .resume_background(&mut sink)
                 .await
@@ -2289,6 +2322,13 @@ impl Runner {
                     Err(e) => app::TurnEnd::Failed(e.clone()),
                 });
                 self.app.end_turn(false);
+                let tap = self.tap_slot.get();
+                if std::mem::take(&mut self.remote_turn) {
+                    tap.end(&session, result.as_ref().err().map(String::as_str));
+                } else {
+                    // `/compact` rewrote the history.
+                    tap.history_changed(&session);
+                }
                 match (result, self.shell_command.take()) {
                     (Err(e), Some(command)) => self.app.shell_failed(&command, &e),
                     (Err(e), None) => self.app.error(e),
@@ -2297,6 +2337,9 @@ impl Runner {
                 self.install(*session, false);
                 self.app.diff_turn_done();
                 self.bus_turn_done();
+                if self.task.is_none() {
+                    tap.idle();
+                }
             }
             Ev::Bus(m) => self.on_bus(*m),
             Ev::BusStatus(st) => self.on_bus_status(st),
@@ -2666,6 +2709,14 @@ async fn run_in(
         tx: parts.tx,
         asker: parts.asker,
         questioner: parts.questioner,
+        tap_slot: parts.slot,
+        // Tests never reach the user's own gateway.
+        hub: if cfg!(test) {
+            Hub::inert()
+        } else {
+            Hub::start(remote::kind::TUI)
+        },
+        remote_turn: false,
         mcp,
         agent: opts.agent,
         model: opts.model,
